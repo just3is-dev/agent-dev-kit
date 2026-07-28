@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: astral-sh/setup-uv@v5
+      - name: Install deps
+        # Дефолт под типовую монорепу: корневые npm workspaces либо отдельные
+        # пакеты + python-пакеты через uv. Подстрой под свою структуру.
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            for f in $(git ls-files '*/package.json'); do
+              (cd "$(dirname "$f")" && npm ci)
+            done
+          fi
+          for f in $(git ls-files 'pyproject.toml' '*/pyproject.toml'); do
+            (cd "$(dirname "$f")" && uv sync --dev)
+          done
+      - run: ./scripts/check
+      - run: ./scripts/test

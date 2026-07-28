@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit, монорепа: тесты всех пакетов.
+# Пакет = поддиректория со своим scripts/test. Падение любого пакета — провал.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+root="$PWD"
+
+packages=$(find . -mindepth 3 -maxdepth 5 \( -name node_modules -o -name .git -o -name .venv \) -prune -o -type f -path '*/scripts/test' -print | sed 's|/scripts/test$||; s|^\./||' | sort)
+
+for p in $packages; do
+  echo "── test: $p"
+  (cd "$root/$p" && ./scripts/test)
+done

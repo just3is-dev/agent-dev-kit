@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit, монорепа: корневой диспетчер статических проверок.
+# Пакет = поддиректория со своим scripts/check (из шаблонов стеков agent-dev-kit).
+# С аргументами гоняет проверки только пакетов, которым принадлежат файлы;
+# без аргументов — все пакеты. Файлы вне пакетов (корневые доки и т.п.) пропускает.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+root="$PWD"
+
+packages=$(find . -mindepth 3 -maxdepth 5 \( -name node_modules -o -name .git -o -name .venv \) -prune -o -type f -path '*/scripts/check' -print | sed 's|/scripts/check$||; s|^\./||' | sort)
+
+run_pkg() {
+  pkg="$1"; shift
+  echo "── check: $pkg"
+  (cd "$root/$pkg" && ./scripts/check "$@")
+}
+
+if [ $# -eq 0 ]; then
+  for p in $packages; do run_pkg "$p"; done
+  exit 0
+fi
+
+for p in $packages; do
+  pkg_files=()
+  for f in "$@"; do
+    abs="$f"
+    case "$abs" in /*) ;; *) abs="$root/$f" ;; esac
+    case "$abs" in "$root/$p"/*) pkg_files+=("$abs") ;; esac
+  done
+  if [ ${#pkg_files[@]} -gt 0 ]; then
+    run_pkg "$p" "${pkg_files[@]}"
+  fi
+done
