@@ -57,6 +57,7 @@ templates/        (фаза 2) base, nextjs, nestjs, python-service, ...
 ## Статус (roadmap)
 
 - [x] Фаза 1: контракт команд + хуки-гейты
-- [ ] Фаза 2: `/project-init`, шаблоны стеков, spec/plan процесс, CI-шаблон
-- [ ] Фаза 3: агенты planner / reviewer, интеграция с GitHub issues
-- [ ] Фаза 4: обкатка на реальных проектах
+- [x] Фаза 2: `/project-init`, шаблоны стеков (nextjs / nestjs / python-service), spec/adr-шаблоны, CI
+- [x] Фаза 3: скиллы (decompose, tdd, adr, stack-choice), агенты planner / reviewer, `/spec` `/plan` `/work` с GitHub issues
+- [x] Фаза 4: e2e-обкатка — `claude plugin validate` чистый; на живом TS-проекте (tsc+eslint+vitest) проверено: контрактные скрипты работают, хук ловит ошибку типов после правки, Stop-гейт блокирует завершение с падающим тестом
+- [ ] Обкатка на реальных проектах: прогнать `/project-init` → `/spec` → `/plan` → `/work` на настоящей задаче, вернуть найденное в плагин

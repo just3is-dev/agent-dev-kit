@@ -3,6 +3,9 @@
   "owner": {
     "name": "a.yalaev"
   },
+  "metadata": {
+    "description": "Локальный marketplace плагина agent-dev-kit"
+  },
   "plugins": [
     {
       "name": "agent-dev-kit",
