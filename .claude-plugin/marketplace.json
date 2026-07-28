@@ -1,0 +1,13 @@
+{
+  "name": "agent-dev-kit",
+  "owner": {
+    "name": "a.yalaev"
+  },
+  "plugins": [
+    {
+      "name": "agent-dev-kit",
+      "source": "./",
+      "description": "Инициализация и ведение проектов, разрабатываемых ИИ-агентами."
+    }
+  ]
+}
