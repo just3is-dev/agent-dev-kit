@@ -28,6 +28,10 @@ if printf '%s' "$cmd" | grep -Eq 'git push[^|;&]*( --force| -f)\b' \
   deny "Запрещено: force push в main/master."
 fi
 
+if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
+  deny "Запрещено: merge PR делает человек после чтения спеки, тестов и вердикта ревьюера. Заверши работу отчётом со ссылкой на PR."
+fi
+
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---
 if printf '%s' "$cmd" | grep -q 'git commit'; then
   proj="${CLAUDE_PROJECT_DIR:-$PWD}"

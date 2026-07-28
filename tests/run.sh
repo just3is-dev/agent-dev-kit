@@ -80,6 +80,10 @@ printf '{"tool_input":{"command":"git push --force origin issue-42-fix"}}' | CLA
 assert_exit "bash-guard: force push в фичевую ветку разрешён" 0 $?
 printf '{"tool_input":{"command":"git commit -m ok"}}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "bash-guard: обычный commit без секретов разрешён" 0 $?
+printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "bash-guard: gh pr merge запрещён (merge делает человек)" 2 $?
+printf '{"tool_input":{"command":"gh pr create --title x"}}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "bash-guard: gh pr create разрешён" 0 $?
 
 # bash-guard: секрет-гейт (фейковый ключ собирается конкатенацией,
 # чтобы литерал не лежал в исходниках кита)
