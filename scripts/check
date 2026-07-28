@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit для самого кита: синтаксис bash, валидность JSON,
+# валидация плагина. Полный прогон занимает секунды, поэтому аргументы
+# (изменённые файлы) не сужают область — проверяем всё всегда.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+for f in hooks/scripts/* templates/*/scripts/* scripts/* tests/*.sh; do
+  [ -f "$f" ] || continue
+  bash -n "$f"
+done
+
+for j in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
+  python3 -m json.tool "$j" >/dev/null
+done
+
+if command -v claude >/dev/null 2>&1; then
+  claude plugin validate . >/dev/null 2>&1
+fi
+
+echo "check: OK"

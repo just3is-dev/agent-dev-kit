@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit для самого кита: смоук-тесты хуков и диспетчера.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+./tests/run.sh

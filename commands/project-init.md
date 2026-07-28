@@ -60,6 +60,12 @@ argument-hint: "[путь к проекту; по умолчанию текущ�
 
 8. **Git.** Если репозитория нет — `git init -b main` и первый коммит.
    Спроси про GitHub: если нужен remote — предложи `gh repo create`.
+   После создания remote предложи включить защиту main (серверный гейт,
+   который не обойти локально): merge только через PR с зелёным
+   required-чеком `gates`, прямые пуши и force push в main запрещены —
+   `gh api -X PUT repos/{owner}/{repo}/branches/main/protection` с
+   `required_status_checks.contexts=["gates"]`, `allow_force_pushes=false`,
+   `enforce_admins=false` (чтобы владелец мог мержить без апрувов).
 
 9. **Итог пользователю:** что создано; гейты уже активны (проверки после
    каждой правки, тесты перед завершением работы); дальше процесс:
