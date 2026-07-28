@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit: все тесты проекта.
+# --passWithNoTests: свежий проект без тестов не должен блокировать Stop-гейт.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+npx vitest run --passWithNoTests

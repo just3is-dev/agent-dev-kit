@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit: автоформат + авто-исправимый линт.
+# Молча правит что может; оставшиеся проблемы — забота scripts/check.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+if [ $# -gt 0 ]; then
+  uv run ruff format "$@"
+  uv run ruff check --fix "$@" >/dev/null 2>&1 || true
+else
+  uv run ruff format .
+  uv run ruff check --fix . >/dev/null 2>&1 || true
+fi

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit: все тесты проекта.
+# Exit-код 5 у pytest означает "тестов не найдено" — для свежего проекта это не провал.
+set -o pipefail
+cd "$(dirname "$0")/.."
+
+uv run pytest -q
+status=$?
+[ "$status" -eq 5 ] && exit 0
+exit "$status"
