@@ -78,7 +78,8 @@ Planner-агент декомпозирует спеку на атомарные
 
 ```
 issue → ветка issue-N-слаг → падающие тесты из DoD → минимальная реализация
-      → зелёные check и test → PR (Closes #N) → reviewer-агент → вердикт в PR
+      → зелёные check и test → draft-PR (Closes #N) → reviewer-агент
+      → APPROVE → PR переводится в ready (до этого merge физически недоступен)
 ```
 
 Без номера берётся следующий незаблокированный issue текущего milestone.
