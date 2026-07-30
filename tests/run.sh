@@ -105,6 +105,15 @@ printf '{"tool_input":{"command":"git commit -m env"}}' | CLAUDE_PROJECT_DIR="$P
 assert_exit "bash-guard: застейдженный .env блокирует commit" 2 $?
 (cd "$P" && git rm -q --cached .env && rm .env)
 
+# bash-guard: мульти-директорная сессия — корень сессии не репозиторий,
+# рабочая директория определяется из cwd payload или из cd в самой команде
+echo "aws2 = '$FAKE_AWS'" > "$P/src/leak2.ts"
+printf '{"tool_input":{"command":"git commit -m x"},"cwd":"%s"}' "$P" | CLAUDE_PROJECT_DIR="$TMP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "bash-guard: секрет-гейт при корне сессии вне репо (cwd из payload)" 2 $?
+printf '{"tool_input":{"command":"cd %s && git commit -m x"}}' "$P" | CLAUDE_PROJECT_DIR="$TMP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "bash-guard: секрет-гейт через cd в команде" 2 $?
+rm "$P/src/leak2.ts"
+
 # ── Уведомления ──────────────────────────────────────────────────────────────
 NDIR="$TMP/tmpdir/agent-dev-kit-notify"
 mkdir -p "$TMP/tmpdir"
