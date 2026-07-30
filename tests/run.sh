@@ -101,6 +101,66 @@ printf '{"tool_input":{"command":"git commit -m env"}}' | CLAUDE_PROJECT_DIR="$P
 assert_exit "bash-guard: застейдженный .env блокирует commit" 2 $?
 (cd "$P" && git rm -q --cached .env && rm .env)
 
+# ── Уведомления ──────────────────────────────────────────────────────────────
+NDIR="$TMP/tmpdir/agent-dev-kit-notify"
+mkdir -p "$TMP/tmpdir"
+NFILE="$TMP/notifications.log"
+
+printf '{"session_id":"sid1"}' | TMPDIR="$TMP/tmpdir" "$HOOKS/prompt-timestamp.sh"
+if [ -f "$NDIR/sid1" ] && grep -Eq '^[0-9]+$' "$NDIR/sid1"; then
+  echo "PASS: prompt-timestamp: время начала хода записано"
+else
+  echo "FAIL: prompt-timestamp: файл с меткой не создан"
+  fails=$((fails + 1))
+fi
+
+printf '{"message":"Нужно разрешение на Bash"}' | ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/notification.sh"
+if grep -q "Нужно разрешение на Bash" "$NFILE" 2>/dev/null; then
+  echo "PASS: notification: запрос ввода порождает уведомление"
+else
+  echo "FAIL: notification: уведомление не отправлено"
+  fails=$((fails + 1))
+fi
+
+# stop-test: долгий ход (метка старше порога) на чистом дереве → уведомление
+echo $(( $(date +%s) - 100 )) > "$NDIR/sid2"
+rm -f "$NFILE"
+printf '{"session_id":"sid2"}' | TMPDIR="$TMP/tmpdir" ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
+assert_exit "stop-test: уведомление — exit 0 при чистом дереве" 0 $?
+if grep -q "Задача завершена" "$NFILE" 2>/dev/null; then
+  echo "PASS: stop-test: долгий ход завершён — уведомление отправлено"
+else
+  echo "FAIL: stop-test: уведомление о завершении не отправлено"
+  fails=$((fails + 1))
+fi
+
+# stop-test: короткий ход (метка свежая) → без уведомления
+date +%s > "$NDIR/sid3"
+rm -f "$NFILE"
+printf '{"session_id":"sid3"}' | TMPDIR="$TMP/tmpdir" ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
+if [ -f "$NFILE" ]; then
+  echo "FAIL: stop-test: короткий ход не должен порождать уведомление"
+  fails=$((fails + 1))
+else
+  echo "PASS: stop-test: короткий ход — без уведомления"
+fi
+
+# stop-test: провал тестов → БЕЗ уведомления «завершено» (работа продолжается)
+# правка файла инвалидирует кэш успешного прогона (.fail-tests гитигнорится и хэш не меняет)
+echo "// change" >> "$P/src/config.ts"
+touch "$P/.fail-tests"
+echo $(( $(date +%s) - 100 )) > "$NDIR/sid4"
+rm -f "$NFILE"
+printf '{"session_id":"sid4"}' | TMPDIR="$TMP/tmpdir" ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
+st=$?
+rm "$P/.fail-tests"
+if [ "$st" -eq 2 ] && [ ! -f "$NFILE" ]; then
+  echo "PASS: stop-test: красные тесты — блок без уведомления о завершении"
+else
+  echo "FAIL: stop-test: при красных тестах exit=$st, уведомление: $([ -f "$NFILE" ] && echo да || echo нет)"
+  fails=$((fails + 1))
+fi
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"

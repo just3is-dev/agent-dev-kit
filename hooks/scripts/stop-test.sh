@@ -13,6 +13,37 @@ try:
 except Exception:
     print("0")
 ')
+session_id=$(printf '%s' "$payload" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("session_id", ""))
+except Exception:
+    pass
+')
+
+# Уведомление «задача завершена» при успешном выходе (exit 0), если ход
+# длился дольше порога (ADK_NOTIFY_MIN_SECONDS, по умолчанию 45 с) —
+# короткие реплики живого диалога уведомлений не порождают.
+notify_done() {
+  [ -n "$session_id" ] || return 0
+  ts_file="${TMPDIR:-/tmp}/agent-dev-kit-notify/$session_id"
+  [ -f "$ts_file" ] || return 0
+  started=$(cat "$ts_file" 2>/dev/null)
+  case "$started" in ''|*[!0-9]*) return 0 ;; esac
+  elapsed=$(( $(date +%s) - started ))
+  threshold="${ADK_NOTIFY_MIN_SECONDS:-45}"
+  [ "$elapsed" -ge "$threshold" ] || return 0
+  proj_name=$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")
+  "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" \
+    "Claude — $proj_name" "Задача завершена (${elapsed} c), гейты зелёные"
+}
+on_exit() {
+  status=$?
+  [ "$status" -eq 0 ] && notify_done
+  exit "$status"
+}
+trap on_exit EXIT
+
 # защита от цикла: этот Stop уже вызван из-за нашего же блокирующего хука
 [ "$stop_active" = "1" ] && exit 0
 
