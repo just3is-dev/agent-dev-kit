@@ -28,8 +28,26 @@ if printf '%s' "$cmd" | grep -Eq 'git push[^|;&]*( --force| -f)\b' \
   deny "Запрещено: force push в main/master."
 fi
 
+# Политика merge: только PR, прошедший ревью. Ready — единственный путь
+# после вердикта APPROVE (draft ставится при создании, ready — ревью-процессом),
+# поэтому "не draft" = машинное доказательство апрува.
+# ADK_GUARD_PR_STATE=draft|ready|unknown — тестовый обход сетевого вызова.
 if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
-  deny "Запрещено: merge PR делает человек после чтения спеки, тестов и вердикта ревьюера. Заверши работу отчётом со ссылкой на PR."
+  state="${ADK_GUARD_PR_STATE:-}"
+  if [ -z "$state" ]; then
+    prnum=$(printf '%s' "$cmd" | grep -Eo 'gh +pr +merge +[0-9]+' | grep -Eo '[0-9]+' | head -1)
+    proj="${CLAUDE_PROJECT_DIR:-$PWD}"
+    if isdraft=$(cd "$proj" && gh pr view ${prnum:+"$prnum"} --json isDraft -q .isDraft 2>/dev/null); then
+      if [ "$isdraft" = "false" ]; then state="ready"; else state="draft"; fi
+    else
+      state="unknown"
+    fi
+  fi
+  case "$state" in
+    ready) ;;
+    draft) deny "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
+    *) deny "Запрещено: статус PR проверить не удалось (gh недоступен?) — merge только для PR со статусом ready после APPROVE." ;;
+  esac
 fi
 
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---
