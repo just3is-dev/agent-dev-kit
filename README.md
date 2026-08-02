@@ -22,12 +22,15 @@
 В Claude Code:
 
 ```
-/plugin marketplace add /Users/a.yalaev/Developments/agent-dev-kit
+/plugin marketplace add just3is-dev/agent-dev-kit
 ```
 
 ```
 /plugin install agent-dev-kit@agent-dev-kit
 ```
+
+(при разработке самого кита можно подключать локальный клон:
+`/plugin marketplace add /путь/к/agent-dev-kit`)
 
 Плагин можно держать установленным глобально: в проектах без контрактных
 скриптов хуки молча бездействуют и ничему не мешают. Для установки на
