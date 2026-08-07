@@ -268,6 +268,268 @@ else
   fails=$((fails + 1))
 fi
 
+# ── Сводка по журналу (adk-stats.sh, AC-3) ───────────────────────────────────
+# Схема событий — ADR-001 (docs/adr/001-journal-event-schema.md).
+
+# пустой каталог журнала — exit 0, сообщение, без выдуманных цифр
+STATS_EMPTY="$TMP/stats-empty"
+mkdir -p "$STATS_EMPTY"
+stats_out=$(ADK_LOGS_DIR="$STATS_EMPTY" "$HOOKS/adk-stats.sh" 2>&1)
+stats_st=$?
+assert_exit "AC-3: adk-stats: пустой каталог журнала — exit 0" 0 "$stats_st"
+if printf '%s' "$stats_out" | grep -qi "пуст"; then
+  echo "PASS: AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей"
+else
+  echo "FAIL: AC-3: adk-stats: нет сообщения о пустом журнале: $stats_out"
+  fails=$((fails + 1))
+fi
+if printf '%s' "$stats_out" | grep -q "Всего задач"; then
+  echo "FAIL: AC-3: adk-stats: пустой журнал не должен показывать агрегаты"
+  fails=$((fails + 1))
+else
+  echo "PASS: AC-3: adk-stats: пустой журнал не выдумывает агрегаты"
+fi
+
+# каталог журнала вовсе не существует — тоже exit 0 с сообщением, не падение
+stats_out=$(ADK_LOGS_DIR="$TMP/stats-missing" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: несуществующий каталог журнала — exit 0" 0 $?
+if printf '%s' "$stats_out" | grep -qi "пуст"; then
+  echo "PASS: AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек"
+else
+  echo "FAIL: AC-3: adk-stats: несуществующий каталог не даёт понятного сообщения: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# каталог содержит только autopilot-*.jsonl (нет issue-*.jsonl) — журнал НЕ
+# пуст (записи прогонов есть), сообщение не должно врать про "пусто", и
+# агрегаты не должны показываться (агрегирует только issue-*.jsonl)
+STATS_AP_ONLY="$TMP/stats-autopilot-only"
+mkdir -p "$STATS_AP_ONLY"
+cat > "$STATS_AP_ONLY/autopilot-2026-08-03.jsonl" <<'EOF'
+{"event":"run_start","timestamp":"2026-08-03T08:00:00Z"}
+{"event":"run_end","done":"0","stuck":"0","skipped":"0","timestamp":"2026-08-03T08:01:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_AP_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: каталог только с autopilot-файлом — exit 0" 0 $?
+if printf '%s' "$stats_out" | grep -q "Всего задач"; then
+  echo "FAIL: AC-3: adk-stats: каталог только с autopilot-файлом не должен показывать агрегаты по задачам"
+  fails=$((fails + 1))
+else
+  echo "PASS: AC-3: adk-stats: каталог только с autopilot-файлом — без агрегатов по задачам"
+fi
+if printf '%s' "$stats_out" | grep -qi "нет ни одной задачи" && printf '%s' "$stats_out" | grep -qi "autopilot"; then
+  echo "PASS: AC-3: adk-stats: сообщение честно отличает 'нет issue-записей' от 'журнал пуст'"
+else
+  echo "FAIL: AC-3: adk-stats: сообщение для каталога только с autopilot-файлом неинформативно: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# каталог содержит только незавершённую задачу (event=start/review, без
+# outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
+# "Журнал пуст" (это самая частая ситуация свежего проекта — /work только
+# начался), задача должна быть видна как "в работе"
+STATS_INPROGRESS_ONLY="$TMP/stats-inprogress-only"
+mkdir -p "$STATS_INPROGRESS_ONLY"
+cat > "$STATS_INPROGRESS_ONLY/issue-30.jsonl" <<'EOF'
+{"event":"start","issue":"30","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"30","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:30:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_INPROGRESS_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: каталог только с незавершённой задачей — exit 0" 0 $?
+if printf '%s' "$stats_out" | grep -q "Журнал пуст"; then
+  echo "FAIL: AC-3: adk-stats: незавершённая-только задача ошибочно названа 'журнал пуст' — записи есть (start/review): $stats_out"
+  fails=$((fails + 1))
+else
+  echo "PASS: AC-3: adk-stats: незавершённая-только задача не спутана с пустым журналом"
+fi
+if printf '%s' "$stats_out" | grep -q "В работе" && printf '%s' "$stats_out" | grep -q "1"; then
+  echo "PASS: AC-3: adk-stats: незавершённая задача показана как «в работе»"
+else
+  echo "FAIL: AC-3: adk-stats: количество задач в работе не отражено в выводе: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# строка, оборванная посреди multibyte UTF-8 (типичный исход обрыва процесса
+# при записи в журнал) — не должна ронять скрипт UnicodeDecodeError-ом;
+# остальные валидные строки того же файла обязаны отработать как обычно
+STATS_BADUTF8="$TMP/stats-bad-utf8"
+mkdir -p "$STATS_BADUTF8"
+{
+  printf '{"event":"start","issue":"20","timestamp":"2026-08-05T09:00:00Z"}\n'
+  printf '\xE2\x82{"event":"broken"}\n'
+  printf '{"event":"outcome","issue":"20","result":"merged","timestamp":"2026-08-05T09:05:00Z"}\n'
+} > "$STATS_BADUTF8/issue-20.jsonl"
+stats_out=$(ADK_LOGS_DIR="$STATS_BADUTF8" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: оборванная multibyte UTF-8 последовательность не роняет скрипт" 0 $?
+if printf '%s' "$stats_out" | grep -q "Всего задач: 1"; then
+  echo "PASS: AC-3: adk-stats: остальные валидные строки файла с оборванным UTF-8 отработали как обычно"
+else
+  echo "FAIL: AC-3: adk-stats: файл с оборванным UTF-8 не дал ожидаемого результата: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# круги ревью считаются как max(round), а не число строк event=review —
+# append-only журнал не гарантирует отсутствия повторной записи одного и
+# того же круга (ретрай adk-log.sh); дубль не должен завышать метрику
+STATS_DUPROUND="$TMP/stats-dupround"
+mkdir -p "$STATS_DUPROUND"
+cat > "$STATS_DUPROUND/issue-40.jsonl" <<'EOF'
+{"event":"start","issue":"40","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"40","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:10:00Z"}
+{"event":"review","issue":"40","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:11:00Z"}
+{"event":"review","issue":"40","round":"2","verdict":"APPROVE","timestamp":"2026-08-05T09:20:00Z"}
+{"event":"outcome","issue":"40","result":"merged","timestamp":"2026-08-05T09:25:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_DUPROUND" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: дублирующая запись круга ревью — exit 0" 0 $?
+if printf '%s' "$stats_out" | grep -q "Средние круги ревью: 2.0"; then
+  echo "PASS: AC-3: adk-stats: круги считаются как max(round)=2, не как число строк event=review=3 — дубль записи круга не завышает метрику"
+else
+  echo "FAIL: AC-3: adk-stats: дублирующая запись круга исказила метрику кругов ревью: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# reason нестрокового типа (вложенный объект вместо текста) не должен
+# ронять агрегацию TypeError-ом в collections.Counter (объект нехэшируем)
+STATS_BADREASON="$TMP/stats-badreason"
+mkdir -p "$STATS_BADREASON"
+cat > "$STATS_BADREASON/issue-50.jsonl" <<'EOF'
+{"event":"start","issue":"50","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"outcome","issue":"50","result":"stuck","reason":{"nested":"object"},"timestamp":"2026-08-05T09:05:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_BADREASON" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: reason нестрокового типа не роняет скрипт" 0 $?
+if printf '%s' "$stats_out" | grep -q "Всего задач: 1"; then
+  echo "PASS: AC-3: adk-stats: задача с нестроковым reason всё равно посчитана"
+else
+  echo "FAIL: AC-3: adk-stats: задача с нестроковым reason не посчитана: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
+STATS_DIR="$TMP/stats-logs"
+mkdir -p "$STATS_DIR"
+
+cat > "$STATS_DIR/issue-10.jsonl" <<'EOF'
+{"event":"start","issue":"10","timestamp":"2026-07-27T09:00:00Z"}
+{"event":"review","issue":"10","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-07-27T09:30:00Z"}
+{"event":"review","issue":"10","round":"2","verdict":"APPROVE","timestamp":"2026-07-27T10:00:00Z"}
+{"event":"outcome","issue":"10","result":"merged","timestamp":"2026-07-27T10:05:00Z"}
+EOF
+
+cat > "$STATS_DIR/issue-11.jsonl" <<'EOF'
+{"event":"start","issue":"11","timestamp":"2026-07-28T09:00:00Z"}
+{"event":"review","issue":"11","round":"1","verdict":"APPROVE","timestamp":"2026-07-28T09:30:00Z"}
+{"event":"outcome","issue":"11","result":"merged","timestamp":"2026-07-28T09:35:00Z"}
+EOF
+
+# строки 4 и 5 битые: строка 4 — не JSON вовсе, строка 5 — валидный JSON, но
+# не объект (число, а не {..}); обе должны быть пропущены с предупреждением,
+# не ронять скрипт и не учитываться как круг ревью
+cat > "$STATS_DIR/issue-12.jsonl" <<'EOF'
+{"event":"start","issue":"12","timestamp":"2026-08-03T09:00:00Z"}
+{"event":"review","issue":"12","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-03T09:30:00Z"}
+{"event":"review","issue":"12","round":"2","verdict":"REQUEST_CHANGES","timestamp":"2026-08-03T10:00:00Z"}
+это не json, битая строка
+42
+{"event":"outcome","issue":"12","result":"stuck","reason":"ревьюер второй круг подряд REQUEST_CHANGES","timestamp":"2026-08-03T10:05:00Z"}
+EOF
+
+# задача без итога (только start, ревью в процессе) — "в работе", не должна
+# искажать среднее число кругов, долю застреваний и "всего задач" по
+# завершённым задачам
+cat > "$STATS_DIR/issue-13.jsonl" <<'EOF'
+{"event":"start","issue":"13","timestamp":"2026-08-04T09:00:00Z"}
+{"event":"review","issue":"13","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-04T09:30:00Z"}
+EOF
+
+cat > "$STATS_DIR/autopilot-2026-08-03.jsonl" <<'EOF'
+{"event":"run_start","timestamp":"2026-08-03T08:00:00Z"}
+{"event":"task","issue":"10","result":"merged","timestamp":"2026-08-03T08:10:00Z"}
+{"event":"task","issue":"11","result":"merged","timestamp":"2026-08-03T08:20:00Z"}
+{"event":"task","issue":"12","result":"stuck","timestamp":"2026-08-03T08:30:00Z"}
+{"event":"run_end","done":"2","stuck":"1","skipped":"0","timestamp":"2026-08-03T08:31:00Z"}
+EOF
+
+stats_errfile="$TMP/stats-err.$$"
+stats_out=$(ADK_LOGS_DIR="$STATS_DIR" "$HOOKS/adk-stats.sh" 2>"$stats_errfile")
+stats_st=$?
+stats_err=$(cat "$stats_errfile" 2>/dev/null); rm -f "$stats_errfile"
+assert_exit "AC-3: adk-stats: битая строка в одном из файлов не роняет скрипт" 0 "$stats_st"
+
+# два разных вида битой строки в issue-12.jsonl — не JSON и JSON-не-объект —
+# оба должны попасть в предупреждения (два разных lineno)
+warn_lines=$(printf '%s' "$stats_err" | grep -ci "issue-12")
+if [ "$warn_lines" -ge 2 ]; then
+  echo "PASS: AC-3: adk-stats: оба вида битой строки (не-JSON и JSON-не-объект) порождают предупреждения"
+else
+  echo "FAIL: AC-3: adk-stats: ожидали 2+ предупреждения про issue-12, получили $warn_lines: $stats_err"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$stats_out" | grep -q "Всего задач: 3"; then
+  echo "PASS: AC-3: adk-stats: всего задач — 3 завершённые (issue-13 без итога и autopilot-файл не задваивают)"
+else
+  echo "FAIL: AC-3: adk-stats: неверное число задач: $stats_out"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$stats_out" | grep -q "В работе (без итога, в агрегаты ниже не входят): 1"; then
+  echo "PASS: AC-3: adk-stats: незавершённая задача (issue-13, без outcome) показана отдельно, не искажает агрегаты"
+else
+  echo "FAIL: AC-3: adk-stats: незавершённая задача не отражена в выводе: $stats_out"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$stats_out" | grep -Eq "Средние круги ревью: 1\.7"; then
+  echo "PASS: AC-3: adk-stats: средние круги ревью посчитаны верно ((2+1+2)/3 = 1.7, issue-13 не в счёте)"
+else
+  echo "FAIL: AC-3: adk-stats: средние круги ревью не совпадают с ожиданием: $stats_out"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$stats_out" | grep -q "33%" && printf '%s' "$stats_out" | grep -q "1/3"; then
+  echo "PASS: AC-3: adk-stats: доля застреваний — 33% (1/3)"
+else
+  echo "FAIL: AC-3: adk-stats: доля застреваний не совпадает с ожиданием: $stats_out"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$stats_out" | grep -q "ревьюер второй круг подряд REQUEST_CHANGES"; then
+  echo "PASS: AC-3: adk-stats: причина застревания названа в выводе"
+else
+  echo "FAIL: AC-3: adk-stats: причина застревания не найдена в выводе: $stats_out"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$stats_out" | grep -q "2026-W31" && printf '%s' "$stats_out" | grep -q "2026-W32"; then
+  echo "PASS: AC-3: adk-stats: динамика по неделям показывает обе недели фикстуры"
+else
+  echo "FAIL: AC-3: adk-stats: динамика по неделям не найдена: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# команда /stats существует и обращается к скрипту агрегации, интерпретирует
+# пустой журнал явно, не выдумывая цифры
+if [ -f "$KIT/commands/stats.md" ]; then
+  echo "PASS: AC-3: commands/stats.md существует"
+else
+  echo "FAIL: AC-3: commands/stats.md отсутствует"
+  fails=$((fails + 1))
+fi
+if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "hooks/scripts/adk-stats.sh"; then
+  echo "PASS: AC-3: commands/stats.md вызывает hooks/scripts/adk-stats.sh"
+else
+  echo "FAIL: AC-3: commands/stats.md не упоминает hooks/scripts/adk-stats.sh"
+  fails=$((fails + 1))
+fi
+if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "не выдумывай"; then
+  echo "PASS: AC-3: commands/stats.md: пустой журнал — не выдумывать цифры"
+else
+  echo "FAIL: AC-3: commands/stats.md не содержит правило не выдумывать цифры при пустом журнале"
+  fails=$((fails + 1))
+fi
+
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
 step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
