@@ -42,12 +42,6 @@ count_lines() { # count_lines <файл> — обёртка над wc -l для 
   wc -l < "$1" | tr -d ' '
 }
 
-# демонстрация новых хелперов (issue #25) — не заменяет существующие сценарии
-assert_contains "demo: assert_contains находит подстроку" "hello world" "wor"
-assert_not_contains "demo: assert_not_contains не находит отсутствующую подстроку" "hello world" "xyz"
-printf 'a\nb\nc\n' > "$TMP/.count-demo"
-assert_exit "demo: count_lines считает строки файла" 3 "$(count_lines "$TMP/.count-demo")"
-
 # ── Одиночный проект с контрактом ────────────────────────────────────────────
 P="$TMP/proj"
 mkdir -p "$P/scripts" "$P/src"
@@ -142,7 +136,7 @@ echo '{}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
 assert_exit "stop-test: зелёные тесты пропускают" 0 $?
 echo '{}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
 assert_exit "stop-test: повторный Stop без правок проходит" 0 $?
-runs=$(wc -l < "$P/.test-runs" | tr -d ' ')
+runs=$(count_lines "$P/.test-runs")
 assert_exit "stop-test: кэш — тесты реально бежали один раз, не $runs" 1 "$runs"
 touch "$P/.fail-tests"
 echo '{"stop_hook_active":true}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
@@ -209,24 +203,14 @@ else
 fi
 
 printf '{"message":"Нужно разрешение на Bash"}' | ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/notification.sh"
-if grep -q "Нужно разрешение на Bash" "$NFILE" 2>/dev/null; then
-  echo "PASS: notification: запрос ввода порождает уведомление"
-else
-  echo "FAIL: notification: уведомление не отправлено"
-  fails=$((fails + 1))
-fi
+assert_contains "notification: запрос ввода порождает уведомление" "$(cat "$NFILE" 2>/dev/null)" "Нужно разрешение на Bash"
 
 # stop-test: долгий ход (метка старше порога) на чистом дереве → уведомление
 echo $(( $(date +%s) - 100 )) > "$NDIR/sid2"
 rm -f "$NFILE"
 printf '{"session_id":"sid2"}' | TMPDIR="$TMP/tmpdir" ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
 assert_exit "stop-test: уведомление — exit 0 при чистом дереве" 0 $?
-if grep -q "Задача завершена" "$NFILE" 2>/dev/null; then
-  echo "PASS: stop-test: долгий ход завершён — уведомление отправлено"
-else
-  echo "FAIL: stop-test: уведомление о завершении не отправлено"
-  fails=$((fails + 1))
-fi
+assert_contains "stop-test: долгий ход завершён — уведомление отправлено" "$(cat "$NFILE" 2>/dev/null)" "Задача завершена"
 
 # stop-test: короткий ход (метка свежая) → без уведомления
 date +%s > "$NDIR/sid3"
@@ -270,7 +254,7 @@ else
 fi
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=review verdict=APPROVE >/dev/null 2>&1
-lines=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+lines=$(count_lines "$LOGP/.adk/logs/issue-1.jsonl")
 assert_exit "AC-1: adk-log: повторная запись дописывает вторую строку, не трёт первую" 2 "$lines"
 first_event=$(sed -n '1p' "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("event",""))' 2>/dev/null)
 if [ "$first_event" = "start" ]; then
@@ -297,10 +281,10 @@ print("1" if ok else "0")
 ' "$LOGP/.adk/logs/issue-1.jsonl")
 assert_exit "AC-1: adk-log: каждая строка — валидный JSON с timestamp и полями" 1 "$valid"
 
-before_badpair=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+before_badpair=$(count_lines "$LOGP/.adk/logs/issue-1.jsonl")
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event badpair >/dev/null 2>&1
 assert_exit "AC-1: adk-log: аргумент без '=' отклоняется с ошибкой" 1 $?
-after_badpair=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+after_badpair=$(count_lines "$LOGP/.adk/logs/issue-1.jsonl")
 assert_exit "AC-1: adk-log: отклонённый аргумент не пишет строку в журнал" "$before_badpair" "$after_badpair"
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=spoof timestamp=bogus >/dev/null 2>&1
@@ -339,7 +323,7 @@ else
 fi
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=merge >/dev/null 2>&1
-gi_lines_after=$(wc -l < "$LOGP/.adk/.gitignore" | tr -d ' ')
+gi_lines_after=$(count_lines "$LOGP/.adk/.gitignore")
 assert_exit "AC-1: adk-log: повторная запись не дублирует .adk/.gitignore" 1 "$gi_lines_after"
 
 if grep -qx '\.adk/' "$KIT/templates/base/gitignore"; then
@@ -358,28 +342,13 @@ mkdir -p "$STATS_EMPTY"
 stats_out=$(ADK_LOGS_DIR="$STATS_EMPTY" "$HOOKS/adk-stats.sh" 2>&1)
 stats_st=$?
 assert_exit "AC-3: adk-stats: пустой каталог журнала — exit 0" 0 "$stats_st"
-if printf '%s' "$stats_out" | grep -qi "пуст"; then
-  echo "PASS: AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей"
-else
-  echo "FAIL: AC-3: adk-stats: нет сообщения о пустом журнале: $stats_out"
-  fails=$((fails + 1))
-fi
-if printf '%s' "$stats_out" | grep -q "Всего задач"; then
-  echo "FAIL: AC-3: adk-stats: пустой журнал не должен показывать агрегаты"
-  fails=$((fails + 1))
-else
-  echo "PASS: AC-3: adk-stats: пустой журнал не выдумывает агрегаты"
-fi
+assert_contains "AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей" "$stats_out" "пуст"
+assert_not_contains "AC-3: adk-stats: пустой журнал не выдумывает агрегаты" "$stats_out" "Всего задач"
 
 # каталог журнала вовсе не существует — тоже exit 0 с сообщением, не падение
 stats_out=$(ADK_LOGS_DIR="$TMP/stats-missing" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: несуществующий каталог журнала — exit 0" 0 $?
-if printf '%s' "$stats_out" | grep -qi "пуст"; then
-  echo "PASS: AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек"
-else
-  echo "FAIL: AC-3: adk-stats: несуществующий каталог не даёт понятного сообщения: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек" "$stats_out" "пуст"
 
 # каталог содержит только autopilot-*.jsonl (нет issue-*.jsonl) — журнал НЕ
 # пуст (записи прогонов есть), сообщение не должно врать про "пусто", и
@@ -392,12 +361,7 @@ cat > "$STATS_AP_ONLY/autopilot-2026-08-03.jsonl" <<'EOF'
 EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_AP_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: каталог только с autopilot-файлом — exit 0" 0 $?
-if printf '%s' "$stats_out" | grep -q "Всего задач"; then
-  echo "FAIL: AC-3: adk-stats: каталог только с autopilot-файлом не должен показывать агрегаты по задачам"
-  fails=$((fails + 1))
-else
-  echo "PASS: AC-3: adk-stats: каталог только с autopilot-файлом — без агрегатов по задачам"
-fi
+assert_not_contains "AC-3: adk-stats: каталог только с autopilot-файлом — без агрегатов по задачам" "$stats_out" "Всего задач"
 if printf '%s' "$stats_out" | grep -qi "нет ни одной задачи" && printf '%s' "$stats_out" | grep -qi "autopilot"; then
   echo "PASS: AC-3: adk-stats: сообщение честно отличает 'нет issue-записей' от 'журнал пуст'"
 else
@@ -417,12 +381,7 @@ cat > "$STATS_INPROGRESS_ONLY/issue-30.jsonl" <<'EOF'
 EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_INPROGRESS_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: каталог только с незавершённой задачей — exit 0" 0 $?
-if printf '%s' "$stats_out" | grep -q "Журнал пуст"; then
-  echo "FAIL: AC-3: adk-stats: незавершённая-только задача ошибочно названа 'журнал пуст' — записи есть (start/review): $stats_out"
-  fails=$((fails + 1))
-else
-  echo "PASS: AC-3: adk-stats: незавершённая-только задача не спутана с пустым журналом"
-fi
+assert_not_contains "AC-3: adk-stats: незавершённая-только задача не спутана с пустым журналом" "$stats_out" "Журнал пуст"
 if printf '%s' "$stats_out" | grep -q "В работе" && printf '%s' "$stats_out" | grep -q "1"; then
   echo "PASS: AC-3: adk-stats: незавершённая задача показана как «в работе»"
 else
@@ -442,12 +401,7 @@ mkdir -p "$STATS_BADUTF8"
 } > "$STATS_BADUTF8/issue-20.jsonl"
 stats_out=$(ADK_LOGS_DIR="$STATS_BADUTF8" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: оборванная multibyte UTF-8 последовательность не роняет скрипт" 0 $?
-if printf '%s' "$stats_out" | grep -q "Всего задач: 1"; then
-  echo "PASS: AC-3: adk-stats: остальные валидные строки файла с оборванным UTF-8 отработали как обычно"
-else
-  echo "FAIL: AC-3: adk-stats: файл с оборванным UTF-8 не дал ожидаемого результата: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: остальные валидные строки файла с оборванным UTF-8 отработали как обычно" "$stats_out" "Всего задач: 1"
 
 # круги ревью считаются как max(round), а не число строк event=review —
 # append-only журнал не гарантирует отсутствия повторной записи одного и
@@ -463,12 +417,7 @@ cat > "$STATS_DUPROUND/issue-40.jsonl" <<'EOF'
 EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_DUPROUND" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: дублирующая запись круга ревью — exit 0" 0 $?
-if printf '%s' "$stats_out" | grep -q "Средние круги ревью: 2.0"; then
-  echo "PASS: AC-3: adk-stats: круги считаются как max(round)=2, не как число строк event=review=3 — дубль записи круга не завышает метрику"
-else
-  echo "FAIL: AC-3: adk-stats: дублирующая запись круга исказила метрику кругов ревью: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: круги считаются как max(round)=2, не как число строк event=review=3 — дубль записи круга не завышает метрику" "$stats_out" "Средние круги ревью: 2.0"
 
 # reason нестрокового типа (вложенный объект вместо текста) не должен
 # ронять агрегацию TypeError-ом в collections.Counter (объект нехэшируем)
@@ -480,12 +429,7 @@ cat > "$STATS_BADREASON/issue-50.jsonl" <<'EOF'
 EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_BADREASON" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: reason нестрокового типа не роняет скрипт" 0 $?
-if printf '%s' "$stats_out" | grep -q "Всего задач: 1"; then
-  echo "PASS: AC-3: adk-stats: задача с нестроковым reason всё равно посчитана"
-else
-  echo "FAIL: AC-3: adk-stats: задача с нестроковым reason не посчитана: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: задача с нестроковым reason всё равно посчитана" "$stats_out" "Всего задач: 1"
 
 # 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
 STATS_DIR="$TMP/stats-logs"
@@ -548,26 +492,11 @@ else
   fails=$((fails + 1))
 fi
 
-if printf '%s' "$stats_out" | grep -q "Всего задач: 3"; then
-  echo "PASS: AC-3: adk-stats: всего задач — 3 завершённые (issue-13 без итога и autopilot-файл не задваивают)"
-else
-  echo "FAIL: AC-3: adk-stats: неверное число задач: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: всего задач — 3 завершённые (issue-13 без итога и autopilot-файл не задваивают)" "$stats_out" "Всего задач: 3"
 
-if printf '%s' "$stats_out" | grep -q "В работе (без итога, в агрегаты ниже не входят): 1"; then
-  echo "PASS: AC-3: adk-stats: незавершённая задача (issue-13, без outcome) показана отдельно, не искажает агрегаты"
-else
-  echo "FAIL: AC-3: adk-stats: незавершённая задача не отражена в выводе: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: незавершённая задача (issue-13, без outcome) показана отдельно, не искажает агрегаты" "$stats_out" "В работе (без итога, в агрегаты ниже не входят): 1"
 
-if printf '%s' "$stats_out" | grep -Eq "Средние круги ревью: 1\.7"; then
-  echo "PASS: AC-3: adk-stats: средние круги ревью посчитаны верно ((2+1+2)/3 = 1.7, issue-13 не в счёте)"
-else
-  echo "FAIL: AC-3: adk-stats: средние круги ревью не совпадают с ожиданием: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: средние круги ревью посчитаны верно ((2+1+2)/3 = 1.7, issue-13 не в счёте)" "$stats_out" "Средние круги ревью: 1\.7"
 
 if printf '%s' "$stats_out" | grep -q "33%" && printf '%s' "$stats_out" | grep -q "1/3"; then
   echo "PASS: AC-3: adk-stats: доля застреваний — 33% (1/3)"
@@ -576,12 +505,7 @@ else
   fails=$((fails + 1))
 fi
 
-if printf '%s' "$stats_out" | grep -q "ревьюер второй круг подряд REQUEST_CHANGES"; then
-  echo "PASS: AC-3: adk-stats: причина застревания названа в выводе"
-else
-  echo "FAIL: AC-3: adk-stats: причина застревания не найдена в выводе: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: причина застревания названа в выводе" "$stats_out" "ревьюер второй круг подряд REQUEST_CHANGES"
 
 if printf '%s' "$stats_out" | grep -q "2026-W31" && printf '%s' "$stats_out" | grep -q "2026-W32"; then
   echo "PASS: AC-3: adk-stats: динамика по неделям показывает обе недели фикстуры"
@@ -598,18 +522,9 @@ else
   echo "FAIL: AC-3: commands/stats.md отсутствует"
   fails=$((fails + 1))
 fi
-if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "hooks/scripts/adk-stats.sh"; then
-  echo "PASS: AC-3: commands/stats.md вызывает hooks/scripts/adk-stats.sh"
-else
-  echo "FAIL: AC-3: commands/stats.md не упоминает hooks/scripts/adk-stats.sh"
-  fails=$((fails + 1))
-fi
-if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "не выдумывай"; then
-  echo "PASS: AC-3: commands/stats.md: пустой журнал — не выдумывать цифры"
-else
-  echo "FAIL: AC-3: commands/stats.md не содержит правило не выдумывать цифры при пустом журнале"
-  fails=$((fails + 1))
-fi
+stats_md=$(tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ')
+assert_contains "AC-3: commands/stats.md вызывает hooks/scripts/adk-stats.sh" "$stats_md" "hooks/scripts/adk-stats.sh"
+assert_contains "AC-3: commands/stats.md: пустой журнал — не выдумывать цифры" "$stats_md" "не выдумывай"
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
@@ -617,50 +532,20 @@ step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
 step6=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
 step7=$(sed -n '/^7\. \*\*/,$p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
 
-if printf '%s' "$step1" | grep -q 'adk-log\.sh.*event=start'; then
-  echo "PASS: AC-1: work.md шаг 1 логирует event=start"
-else
-  echo "FAIL: AC-1: work.md шаг 1 не логирует event=start"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: work.md шаг 1 логирует event=start" "$step1" 'adk-log\.sh.*event=start'
 
-if printf '%s' "$step6" | grep -q 'adk-log\.sh.*event=review'; then
-  echo "PASS: AC-1: work.md шаг 6 логирует event=review после каждого вердикта"
-else
-  echo "FAIL: AC-1: work.md шаг 6 не логирует event=review"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: work.md шаг 6 логирует event=review после каждого вердикта" "$step6" 'adk-log\.sh.*event=review'
 
-if printf '%s' "$step7" | grep -q 'adk-log\.sh.*event=finish'; then
-  echo "PASS: AC-1: work.md шаг 7 логирует event=finish"
-else
-  echo "FAIL: AC-1: work.md шаг 7 не логирует event=finish"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: work.md шаг 7 логирует event=finish" "$step7" 'adk-log\.sh.*event=finish'
 
-if printf '%s' "$step7" | grep -q 'git diff main\.\.\. --shortstat'; then
-  echo "PASS: AC-1: work.md шаг 7 считает размер диффа git diff main... --shortstat"
-else
-  echo "FAIL: AC-1: work.md шаг 7 не считает размер диффа"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: work.md шаг 7 считает размер диффа git diff main... --shortstat" "$step7" 'git diff main\.\.\. --shortstat'
 
 for step_name in step1 step6 step7; do
   step_text=$(eval "printf '%s' \"\$$step_name\"")
-  if printf '%s' "$step_text" | grep -q 'adk-log\.sh.*|| true'; then
-    echo "PASS: AC-1: work.md $step_name — запись в журнал не блокирует задачу (|| true)"
-  else
-    echo "FAIL: AC-1: work.md $step_name не отмечает журнал как необязательный (не гейт)"
-    fails=$((fails + 1))
-  fi
+  assert_contains "AC-1: work.md $step_name — запись в журнал не блокирует задачу (|| true)" "$step_text" 'adk-log\.sh.*|| true'
 done
 
-if printf '%s' "$step7" | grep -q 'outcome="'; then
-  echo "PASS: AC-1: work.md шаг 7 — outcome закавычен (причина может содержать пробелы)"
-else
-  echo "FAIL: AC-1: work.md шаг 7 не закавычивает outcome — многословная причина сломает вызов"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: work.md шаг 7 — outcome закавычен (причина может содержать пробелы)" "$step7" 'outcome="'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает work.md
 # (start → review → finish), даёт журнал с тремя валидными записями.
@@ -671,7 +556,7 @@ CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=start issue=42 >/
 CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=review round=1 verdict=REQUEST_CHANGES >/dev/null 2>&1
 CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=finish outcome=ready rounds=2 duration=42s diffstat=" 1 file changed, 3 insertions(+)" >/dev/null 2>&1
 
-work_lines=$(wc -l < "$WORKP/.adk/logs/issue-42.jsonl" 2>/dev/null | tr -d ' ')
+work_lines=$(count_lines "$WORKP/.adk/logs/issue-42.jsonl" 2>/dev/null)
 assert_exit "AC-1: work.md-смоук: start → review → finish дают три записи в issue-42.jsonl" 3 "${work_lines:-0}"
 
 work_valid=$(python3 -c '
@@ -699,7 +584,7 @@ WORKP2="$TMP/workproj-stuck"
 mkdir -p "$WORKP2"
 CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=start issue=43 >/dev/null 2>&1
 CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=finish outcome="stuck: тесты не проходят" rounds=2 duration=120s diffstat=" 3 files changed" >/dev/null 2>&1
-stuck_lines=$(wc -l < "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | tr -d ' ')
+stuck_lines=$(count_lines "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null)
 assert_exit "AC-1: work.md-смоук: outcome=stuck с пробелами в причине не роняет запись" 2 "${stuck_lines:-0}"
 
 stuck_outcome=$(tail -n1 "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("outcome",""))' 2>/dev/null)
@@ -715,54 +600,24 @@ AUTOMD="$KIT/commands/autopilot.md"
 step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
 finish_section=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
 
-if printf '%s' "$step3" | grep -q 'adk-log\.sh.*event=task'; then
-  echo "PASS: AC-2: autopilot.md шаг 3 логирует event=task на каждую разобранную задачу"
-else
-  echo "FAIL: AC-2: autopilot.md шаг 3 не логирует event=task"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-2: autopilot.md шаг 3 логирует event=task на каждую разобранную задачу" "$step3" 'adk-log\.sh.*event=task'
 
-if printf '%s' "$finish_section" | grep -q 'adk-log\.sh.*event=run_finish'; then
-  echo "PASS: AC-2: autopilot.md «Завершение» логирует event=run_finish"
-else
-  echo "FAIL: AC-2: autopilot.md «Завершение» не логирует итог прогона"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-2: autopilot.md «Завершение» логирует event=run_finish" "$finish_section" 'adk-log\.sh.*event=run_finish'
 
 for outcome_kind in 'outcome=merged' 'outcome="stuck' 'outcome=skipped'; do
-  if printf '%s' "$step3" | grep -qF "$outcome_kind"; then
-    echo "PASS: AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»"
-  else
-    echo "FAIL: AC-2: autopilot.md шаг 3 не упоминает исход «$outcome_kind»"
-    fails=$((fails + 1))
-  fi
+  assert_contains "AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»" "$step3" "$outcome_kind"
 done
 
 for agg_field in total= merged= stuck= skipped=; do
-  if printf '%s' "$finish_section" | grep -qF "$agg_field"; then
-    echo "PASS: AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»"
-  else
-    echo "FAIL: AC-2: autopilot.md «Завершение» не пишет агрегат «$agg_field»"
-    fails=$((fails + 1))
-  fi
+  assert_contains "AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»" "$finish_section" "$agg_field"
 done
 
 for section_name in step3 finish_section; do
   section_text=$(eval "printf '%s' \"\$$section_name\"")
-  if printf '%s' "$section_text" | grep -q 'adk-log\.sh.*|| true'; then
-    echo "PASS: AC-2: autopilot.md $section_name — запись в журнал не блокирует прогон (|| true)"
-  else
-    echo "FAIL: AC-2: autopilot.md $section_name не отмечает журнал как необязательный (не гейт)"
-    fails=$((fails + 1))
-  fi
+  assert_contains "AC-2: autopilot.md $section_name — запись в журнал не блокирует прогон (|| true)" "$section_text" 'adk-log\.sh.*|| true'
 done
 
-if printf '%s' "$step3" | grep -q 'autopilot-\$(date'; then
-  echo "PASS: AC-2: autopilot.md шаг 3 пишет в единицу autopilot-<дата>"
-else
-  echo "FAIL: AC-2: autopilot.md шаг 3 не адресует единицу журнала autopilot-<дата>"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-2: autopilot.md шаг 3 пишет в единицу autopilot-<дата>" "$step3" 'autopilot-\$(date'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает autopilot.md
 # (task=merged → task=stuck → task=skipped → run_finish), даёт журнал одного
@@ -777,7 +632,7 @@ CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=11
 CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=12 outcome=skipped >/dev/null 2>&1
 CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_finish total=3 merged=1 stuck=1 skipped=1 >/dev/null 2>&1
 
-auto_lines=$(wc -l < "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 2>/dev/null | tr -d ' ')
+auto_lines=$(count_lines "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 2>/dev/null)
 assert_exit "AC-2: autopilot.md-смоук: три task-записи плюс итоговая run_finish дают четыре строки" 4 "${auto_lines:-0}"
 
 auto_valid=$(python3 -c '
@@ -836,7 +691,7 @@ fi
 rm -f "$M/.calls"
 (cd "$M" && ./scripts/check >/dev/null 2>&1)
 assert_exit "монорепа check: без аргументов проходит" 0 $?
-npkgs=$(wc -l < "$M/.calls" | tr -d ' ')
+npkgs=$(count_lines "$M/.calls")
 assert_exit "монорепа check: без аргументов вызваны оба пакета, не $npkgs" 2 "$npkgs"
 
 rm -f "$M/.calls"
@@ -897,12 +752,7 @@ EOF
 ac_out=$("$HOOKS/ac-check.sh" "$ACP" 2>&1)
 ac_st=$?
 assert_exit "AC-4: ac-check: непокрытый AC-2 — exit 1" 1 "$ac_st"
-if printf '%s' "$ac_out" | grep -q "AC-2"; then
-  echo "PASS: AC-4: ac-check: непокрытый AC-2 назван в выводе"
-else
-  echo "FAIL: AC-4: ac-check: AC-2 не найден в выводе: $ac_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-4: ac-check: непокрытый AC-2 назван в выводе" "$ac_out" "AC-2"
 
 # draft-спека не проверяется — её AC-токены не требуют покрытия.
 # tests/run.sh фикстуры на этот момент всё ещё не содержит тега AC-2
@@ -912,12 +762,7 @@ ac_out=$("$HOOKS/ac-check.sh" "$ACP" 2>&1)
 ac_st=$?
 rm "$ACP/docs/specs/002-y.md"
 assert_exit "AC-4: ac-check: draft-спека не мешает результату (exit по-прежнему из-за AC-2)" 1 "$ac_st"
-if printf '%s' "$ac_out" | grep -q "AC-9"; then
-  echo "FAIL: AC-4: ac-check: draft-спека попала в проверку (AC-9 в выводе)"
-  fails=$((fails + 1))
-else
-  echo "PASS: AC-4: ac-check: AC-токены draft-спеки не требуют покрытия"
-fi
+assert_not_contains "AC-4: ac-check: AC-токены draft-спеки не требуют покрытия" "$ac_out" "AC-9"
 
 # вернули тег AC-2 — approved-спека снова полностью покрыта
 cat > "$ACP/tests/run.sh" <<'EOF'
@@ -1005,12 +850,7 @@ EOF
 ac_out=$("$HOOKS/ac-check.sh" "$SELFM" 2>&1)
 ac_st=$?
 assert_exit "AC-4: ac-check: спека не засчитывает сама себя как тест (docs/specs исключён)" 1 "$ac_st"
-if printf '%s' "$ac_out" | grep -q "AC-1"; then
-  echo "PASS: AC-4: ac-check: AC-1 назван непокрытым при самопокрытии спекой"
-else
-  echo "FAIL: AC-4: ac-check: AC-1 не назван непокрытым: $ac_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-4: ac-check: AC-1 назван непокрытым при самопокрытии спекой" "$ac_out" "AC-1"
 
 # node_modules/vendor не считаются тестовым корпусом — токен в зависимости
 # не должен ложно засчитываться как покрытие
@@ -1070,20 +910,12 @@ assert_exit "AC-4: contract check: без scripts/ac-check — прежнее п
 
 # ── Шаблоны и project-init.md подключают ac-check (issue #7) ────────────────
 for t in nextjs nestjs python-service monorepo; do
-  if grep -q 'scripts/ac-check' "$KIT/templates/$t/scripts/check"; then
-    echo "PASS: AC-4: templates/$t/scripts/check содержит вызов ac-check в полном прогоне"
-  else
-    echo "FAIL: AC-4: templates/$t/scripts/check не содержит вызов ac-check"
-    fails=$((fails + 1))
-  fi
+  check_content=$(cat "$KIT/templates/$t/scripts/check")
+  assert_contains "AC-4: templates/$t/scripts/check содержит вызов ac-check в полном прогоне" "$check_content" 'scripts/ac-check'
 done
 
-if grep -q 'scripts/ac-check' "$KIT/commands/project-init.md"; then
-  echo "PASS: AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check"
-else
-  echo "FAIL: AC-4: project-init.md не содержит шаг копирования ac-check.sh"
-  fails=$((fails + 1))
-fi
+project_init_content=$(cat "$KIT/commands/project-init.md")
+assert_contains "AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check" "$project_init_content" 'scripts/ac-check'
 
 # ── Конвенция AC-тегирования зафиксирована в промптах и скилле tdd (issue #6) ─
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
@@ -1222,15 +1054,7 @@ fi
 
 # Эквивалентность: adk-stats.sh читает тот же git-toplevel/.adk/logs
 stats_fb=$(cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-stats.sh" 2>&1)
-case "$stats_fb" in
-  *"Завершённых задач ещё нет"*)
-    echo "PASS: AC-3: adk-stats.sh: git-фолбэк для корня по-прежнему читает toplevel/.adk/logs"
-    ;;
-  *)
-    echo "FAIL: AC-3: adk-stats.sh: git-фолбэк не нашёл журнал, вывод: $stats_fb"
-    fails=$((fails + 1))
-    ;;
-esac
+assert_contains "AC-3: adk-stats.sh: git-фолбэк для корня по-прежнему читает toplevel/.adk/logs" "$stats_fb" "Завершённых задач ещё нет"
 
 # Сознательное решение НЕ унифицировано: stop-test.sh/notification.sh
 # по-прежнему используют ${CLAUDE_PROJECT_DIR:-$PWD} без git-фолбэка
@@ -1238,18 +1062,10 @@ esac
 # так как поведенческий тест «без CLAUDE_PROJECT_DIR» для stop-test.sh
 # требует cwd = корень проекта с исполняемым scripts/test, что здесь не
 # создаётся отдельно.
-if grep -q '\${CLAUDE_PROJECT_DIR:-\$PWD}' "$HOOKS/stop-test.sh"; then
-  echo "PASS: stop-test.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)"
-else
-  echo "FAIL: stop-test.sh: правило корня изменилось — ожидали \${CLAUDE_PROJECT_DIR:-\$PWD}"
-  fails=$((fails + 1))
-fi
-if grep -q '\${CLAUDE_PROJECT_DIR:-\$PWD}' "$HOOKS/notification.sh"; then
-  echo "PASS: notification.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)"
-else
-  echo "FAIL: notification.sh: правило корня изменилось — ожидали \${CLAUDE_PROJECT_DIR:-\$PWD}"
-  fails=$((fails + 1))
-fi
+stop_test_content=$(cat "$HOOKS/stop-test.sh")
+assert_contains "stop-test.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)" "$stop_test_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
+notification_content=$(cat "$HOOKS/notification.sh")
+assert_contains "notification.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)" "$notification_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
 
 # Дублирующийся резолв notify-send.sh убран из обоих мест — обе точки
 # вызова используют общий adk_notify_send из lib/paths.sh.
