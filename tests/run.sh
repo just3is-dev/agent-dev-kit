@@ -1112,6 +1112,126 @@ check_ac_doc AC-6 "consolidate.md агрегирует распределени�
 check_ac_doc AC-6 "consolidate.md вызывает adk-stats.sh" \
   "$KIT/commands/consolidate.md" "hooks/scripts/adk-stats.sh"
 
+# ── Общий хелпер hooks/scripts/lib/paths.sh (issue #23) ─────────────────────
+# Кандидат K3 из /consolidate: adk-log.sh и adk-stats.sh дублировали
+# построчно правило определения корня проекта и каталога журнала;
+# stop-test.sh/notification.sh дублировали резолв пути к notify-send.sh.
+# Ниже — проверки самого хелпера и сквозная (end-to-end) эквивалентность
+# поведения adk-log.sh/adk-stats.sh (в т.ч. git-фолбэк) до и после переноса
+# логики в lib/paths.sh, плюс подтверждение, что root-правило
+# stop-test.sh/notification.sh сознательно НЕ унифицировано (см. ADR).
+
+PATHS_LIB="$HOOKS/lib/paths.sh"
+
+# adk_project_root: CLAUDE_PROJECT_DIR задан — используется как есть
+out=$(CLAUDE_PROJECT_DIR="/explicit/root" bash -c ". '$PATHS_LIB'; adk_project_root")
+assert_exit "AC-1: paths.sh: adk_project_root уважает CLAUDE_PROJECT_DIR" 0 $?
+if [ "$out" = "/explicit/root" ]; then
+  echo "PASS: AC-1: paths.sh: adk_project_root вернул явно заданный CLAUDE_PROJECT_DIR"
+else
+  echo "FAIL: AC-1: paths.sh: adk_project_root вернул '$out' вместо /explicit/root"
+  fails=$((fails + 1))
+fi
+
+# adk_project_root: CLAUDE_PROJECT_DIR не задан, cwd внутри git-репо — git-фолбэк
+GITROOT="$TMP/paths-gitroot"
+mkdir -p "$GITROOT/sub"
+(cd "$GITROOT" && git_c init -q -b main)
+out=$(cd "$GITROOT/sub" && env -u CLAUDE_PROJECT_DIR bash -c ". '$PATHS_LIB'; adk_project_root")
+GITROOT_REAL=$(cd "$GITROOT" && pwd -P)
+if [ "$out" = "$GITROOT_REAL" ]; then
+  echo "PASS: AC-1: paths.sh: adk_project_root — git-фолбэк находит toplevel из подкаталога"
+else
+  echo "FAIL: AC-1: paths.sh: adk_project_root git-фолбэк вернул '$out', ожидали '$GITROOT_REAL'"
+  fails=$((fails + 1))
+fi
+
+# adk_project_root: ни CLAUDE_PROJECT_DIR, ни git — $PWD
+NOTGIT="$TMP/paths-notgit"
+mkdir -p "$NOTGIT"
+out=$(cd "$NOTGIT" && env -u CLAUDE_PROJECT_DIR bash -c ". '$PATHS_LIB'; adk_project_root")
+# логический $PWD (без -P): скрипт использует голый "$PWD" как последний
+# фолбэк, не резолвя симлинки, поэтому и здесь сравниваем без резолва.
+NOTGIT_REAL=$(cd "$NOTGIT" && pwd)
+if [ "$out" = "$NOTGIT_REAL" ]; then
+  echo "PASS: AC-1: paths.sh: adk_project_root — без git и без CLAUDE_PROJECT_DIR отдаёт \$PWD"
+else
+  echo "FAIL: AC-1: paths.sh: adk_project_root вне git вернул '$out', ожидали '$NOTGIT_REAL'"
+  fails=$((fails + 1))
+fi
+
+# adk_logs_dir: ADK_LOGS_DIR переопределяет, иначе <root>/.adk/logs
+out=$(ADK_LOGS_DIR="/custom/logs" bash -c ". '$PATHS_LIB'; adk_logs_dir /some/root")
+if [ "$out" = "/custom/logs" ]; then
+  echo "PASS: AC-1: paths.sh: adk_logs_dir уважает ADK_LOGS_DIR"
+else
+  echo "FAIL: AC-1: paths.sh: adk_logs_dir вернул '$out' вместо /custom/logs"
+  fails=$((fails + 1))
+fi
+out=$(env -u ADK_LOGS_DIR bash -c ". '$PATHS_LIB'; adk_logs_dir /some/root")
+if [ "$out" = "/some/root/.adk/logs" ]; then
+  echo "PASS: AC-1: paths.sh: adk_logs_dir по умолчанию — <root>/.adk/logs"
+else
+  echo "FAIL: AC-1: paths.sh: adk_logs_dir без ADK_LOGS_DIR вернул '$out'"
+  fails=$((fails + 1))
+fi
+
+# Эквивалентность: adk-log.sh пишет в git-toplevel/.adk/logs, если
+# CLAUDE_PROJECT_DIR не задан, а cwd — вложенный подкаталог git-репо
+# (до переноса в lib/paths.sh это поведение обеспечивалось инлайновым
+# блоком; сейчас — общей adk_project_root()).
+LOGFB="$TMP/paths-logfallback"
+mkdir -p "$LOGFB/nested/deeper"
+(cd "$LOGFB" && git_c init -q -b main)
+(cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-log.sh" issue-fb event=start issue=1 >/dev/null 2>&1)
+LOGFB_REAL=$(cd "$LOGFB" && pwd -P)
+if [ -f "$LOGFB_REAL/.adk/logs/issue-fb.jsonl" ]; then
+  echo "PASS: AC-1: adk-log.sh: git-фолбэк для корня по-прежнему пишет в toplevel/.adk/logs"
+else
+  echo "FAIL: AC-1: adk-log.sh: git-фолбэк не сработал — файл не найден в $LOGFB_REAL/.adk/logs"
+  fails=$((fails + 1))
+fi
+
+# Эквивалентность: adk-stats.sh читает тот же git-toplevel/.adk/logs
+stats_fb=$(cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-stats.sh" 2>&1)
+case "$stats_fb" in
+  *"Завершённых задач ещё нет"*)
+    echo "PASS: AC-3: adk-stats.sh: git-фолбэк для корня по-прежнему читает toplevel/.adk/logs"
+    ;;
+  *)
+    echo "FAIL: AC-3: adk-stats.sh: git-фолбэк не нашёл журнал, вывод: $stats_fb"
+    fails=$((fails + 1))
+    ;;
+esac
+
+# Сознательное решение НЕ унифицировано: stop-test.sh/notification.sh
+# по-прежнему используют ${CLAUDE_PROJECT_DIR:-$PWD} без git-фолбэка
+# (docs/adr/002-shared-hook-lib-paths.md) — проверяем исходники напрямую,
+# так как поведенческий тест «без CLAUDE_PROJECT_DIR» для stop-test.sh
+# требует cwd = корень проекта с исполняемым scripts/test, что здесь не
+# создаётся отдельно.
+if grep -q '\${CLAUDE_PROJECT_DIR:-\$PWD}' "$HOOKS/stop-test.sh"; then
+  echo "PASS: stop-test.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)"
+else
+  echo "FAIL: stop-test.sh: правило корня изменилось — ожидали \${CLAUDE_PROJECT_DIR:-\$PWD}"
+  fails=$((fails + 1))
+fi
+if grep -q '\${CLAUDE_PROJECT_DIR:-\$PWD}' "$HOOKS/notification.sh"; then
+  echo "PASS: notification.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)"
+else
+  echo "FAIL: notification.sh: правило корня изменилось — ожидали \${CLAUDE_PROJECT_DIR:-\$PWD}"
+  fails=$((fails + 1))
+fi
+
+# Дублирующийся резолв notify-send.sh убран из обоих мест — обе точки
+# вызова используют общий adk_notify_send из lib/paths.sh.
+if grep -q 'adk_notify_send' "$HOOKS/stop-test.sh" && grep -q 'adk_notify_send' "$HOOKS/notification.sh"; then
+  echo "PASS: stop-test.sh/notification.sh: используют общий adk_notify_send вместо дублирующегося резолва пути"
+else
+  echo "FAIL: stop-test.sh/notification.sh: не используют общий adk_notify_send"
+  fails=$((fails + 1))
+fi
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
