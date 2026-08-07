@@ -52,10 +52,13 @@ argument-hint: "[номер issue; по умолчанию следующий н
    /review, она авторизует дополнительный круг).
 7. **Итог.** Перед отчётом залогируй финиш: итог (`ready` или
    `stuck:<краткая причина>`), число кругов ревью, длительность от старта
-   (разница между текущим временем и `timestamp` первой строки журнала
-   `issue-<N>`) и размер диффа (`git diff main... --shortstat`):
+   (разница между текущим временем и `timestamp` **последней** строки с
+   `event=start` в журнале `issue-<N>` — если `/work` по этой задаче
+   запускался повторно, самая ранняя строка не годится) и размер диффа
+   (`git diff main... --shortstat`). Причина после `stuck:` обычно содержит
+   пробелы — заключай `outcome` в кавычки, как `diffstat`:
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N> event=finish
-   outcome=<ready|stuck:причина> rounds=<число кругов> duration=<Ns или Nm>
+   outcome="<ready|stuck:причина>" rounds=<число кругов> duration=<N>s
    diffstat="<вывод git diff main... --shortstat>" || true`.
    **Отчёт пользователю:** ссылка на PR, вердикт ревьюера, что осталось
    до merge (merge — человек или /autopilot, в обоих случаях только

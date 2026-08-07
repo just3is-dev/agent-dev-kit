@@ -270,9 +270,9 @@ fi
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
-step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ')
-step6=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$WORKMD" | tr '\n' ' ')
-step7=$(sed -n '/^7\. \*\*/,$p' "$WORKMD" | tr '\n' ' ')
+step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+step6=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+step7=$(sed -n '/^7\. \*\*/,$p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
 
 if printf '%s' "$step1" | grep -q 'adk-log\.sh.*event=start'; then
   echo "PASS: AC-1: work.md шаг 1 логирует event=start"
@@ -302,10 +302,20 @@ else
   fails=$((fails + 1))
 fi
 
-if printf '%s\n%s\n%s' "$step1" "$step6" "$step7" | grep -q '|| true'; then
-  echo "PASS: AC-1: work.md — провал записи в журнал не блокирует задачу"
+for step_name in step1 step6 step7; do
+  step_text=$(eval "printf '%s' \"\$$step_name\"")
+  if printf '%s' "$step_text" | grep -q 'adk-log\.sh.*|| true'; then
+    echo "PASS: AC-1: work.md $step_name — запись в журнал не блокирует задачу (|| true)"
+  else
+    echo "FAIL: AC-1: work.md $step_name не отмечает журнал как необязательный (не гейт)"
+    fails=$((fails + 1))
+  fi
+done
+
+if printf '%s' "$step7" | grep -q 'outcome="'; then
+  echo "PASS: AC-1: work.md шаг 7 — outcome закавычен (причина может содержать пробелы)"
 else
-  echo "FAIL: AC-1: work.md не отмечает журнал как необязательный (не гейт)"
+  echo "FAIL: AC-1: work.md шаг 7 не закавычивает outcome — многословная причина сломает вызов"
   fails=$((fails + 1))
 fi
 
@@ -313,7 +323,6 @@ fi
 # (start → review → finish), даёт журнал с тремя валидными записями.
 WORKP="$TMP/workproj"
 mkdir -p "$WORKP"
-(cd "$WORKP" && git init -q -b main)
 
 CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=start issue=42 >/dev/null 2>&1
 CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=review round=1 verdict=REQUEST_CHANGES >/dev/null 2>&1
@@ -340,6 +349,23 @@ if ok:
 print("1" if ok else "0")
 ' "$WORKP/.adk/logs/issue-42.jsonl")
 assert_exit "AC-1: work.md-смоук: записи содержат issue/круг/вердикт/итог/длительность" 1 "$work_valid"
+
+# Смоук: outcome=stuck:<причина> с пробелами — ровно случай застревания,
+# ради которого журнал и заводится (issue #4 агрегирует причины).
+WORKP2="$TMP/workproj-stuck"
+mkdir -p "$WORKP2"
+CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=start issue=43 >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=finish outcome="stuck: тесты не проходят" rounds=2 duration=120s diffstat=" 3 files changed" >/dev/null 2>&1
+stuck_lines=$(wc -l < "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | tr -d ' ')
+assert_exit "AC-1: work.md-смоук: outcome=stuck с пробелами в причине не роняет запись" 2 "${stuck_lines:-0}"
+
+stuck_outcome=$(tail -n1 "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("outcome",""))' 2>/dev/null)
+if [ "$stuck_outcome" = "stuck: тесты не проходят" ]; then
+  echo "PASS: AC-1: work.md-смоук: причина застревания сохраняется целиком, с пробелами"
+else
+  echo "FAIL: AC-1: work.md-смоук: причина застревания искажена или потеряна (outcome=$stuck_outcome)"
+  fails=$((fails + 1))
+fi
 
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
