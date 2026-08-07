@@ -51,15 +51,15 @@ assert_exit "post-edit-check: чистый файл проходит" 0 $?
 printf '{"tool_input":{"file_path":"%s"}}' "$TMP/outside.txt" | "$HOOKS/post-edit-check.sh" >/dev/null 2>&1
 assert_exit "post-edit-check: файл вне проекта с контрактом пропускается" 0 $?
 
-# post-edit-check: правка templates/*/scripts/check не должна ложно фейлить
-# (issue #14). Поиск корня останавливался на самом каталоге шаблона — там
-# уже лежит исполняемый scripts/check, — и исключение "$root"/templates/*
-# после этого не срабатывало, т.к. рассчитано на root = корень кита.
-# Кит-подобная структура: свой scripts/check в корне (проходит) и
-# templates/demo/scripts/check (падает, если его реально прогнать —
-# имитирует контракт шаблона, нерелевантный правке самого файла шаблона).
+# post-edit-check: правка templates/*/scripts/check в корне кита не должна
+# ложно фейлить (issue #14) — см. комментарий у in_kit_templates() в
+# post-edit-check.sh. Кит-подобная структура: маркер .claude-plugin/plugin.json,
+# свой scripts/check в корне (проходит) и templates/demo/scripts/check
+# (падает, если его реально прогнать — имитирует контракт шаблона,
+# нерелевантный правке самого файла шаблона).
 KITSIM="$TMP/kitsim"
-mkdir -p "$KITSIM/scripts" "$KITSIM/templates/demo/scripts"
+mkdir -p "$KITSIM/.claude-plugin" "$KITSIM/scripts" "$KITSIM/templates/demo/scripts"
+echo '{}' > "$KITSIM/.claude-plugin/plugin.json"
 cat > "$KITSIM/scripts/check" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -70,7 +70,39 @@ exit 1
 EOF
 chmod +x "$KITSIM/scripts/check" "$KITSIM/templates/demo/scripts/check"
 printf '{"tool_input":{"file_path":"%s"}}' "$KITSIM/templates/demo/scripts/check" | "$HOOKS/post-edit-check.sh" >/dev/null 2>&1
-assert_exit "post-edit-check: правка шаблонного templates/*/scripts/check не запускает контракт кита (issue #14)" 0 $?
+assert_exit "post-edit-check: правка шаблонного templates/*/scripts/check в корне кита не запускает контракт кита (issue #14)" 0 $?
+
+# post-edit-check: сторонний проект, у которого в пути случайно есть каталог
+# "templates" (нет маркера кита .claude-plugin/plugin.json рядом) — не кит,
+# его контракт должен по-прежнему отрабатывать как обычно (регрессия фикса
+# issue #14: пропуск каталогов templates/ не должен быть шире, чем "templates/
+# именно у корня кита").
+NOKIT="$TMP/no-kit-marker/templates/myapp"
+mkdir -p "$NOKIT/scripts" "$NOKIT/src"
+cat > "$NOKIT/scripts/check" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in *bad*) exit 1;; esac; done
+exit 0
+EOF
+chmod +x "$NOKIT/scripts/check"
+echo x > "$NOKIT/src/bad.ts"
+printf '{"tool_input":{"file_path":"%s"}}' "$NOKIT/src/bad.ts" | "$HOOKS/post-edit-check.sh" >/dev/null 2>&1
+assert_exit "post-edit-check: проект с 'templates' в пути без маркера кита проверяется как обычно" 2 $?
+
+# post-edit-check: пакет со своим контрактом внутри templates/ монорепы, у
+# которой нет маркера кита — контракт пакета должен по-прежнему отрабатывать
+# (та же регрессия: не спутать любой каталог templates/ с templates/ кита).
+MONOPKG="$TMP/mono-no-kit/templates/mail"
+mkdir -p "$MONOPKG/scripts" "$MONOPKG/src"
+cat > "$MONOPKG/scripts/check" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in *bad*) exit 1;; esac; done
+exit 0
+EOF
+chmod +x "$MONOPKG/scripts/check"
+echo x > "$MONOPKG/src/bad.ts"
+printf '{"tool_input":{"file_path":"%s"}}' "$MONOPKG/src/bad.ts" | "$HOOKS/post-edit-check.sh" >/dev/null 2>&1
+assert_exit "post-edit-check: пакет со своим контрактом внутри templates/ монорепы без маркера кита проверяется как обычно" 2 $?
 
 # stop-test
 touch "$P/.fail-tests"
