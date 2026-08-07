@@ -51,6 +51,27 @@ assert_exit "post-edit-check: чистый файл проходит" 0 $?
 printf '{"tool_input":{"file_path":"%s"}}' "$TMP/outside.txt" | "$HOOKS/post-edit-check.sh" >/dev/null 2>&1
 assert_exit "post-edit-check: файл вне проекта с контрактом пропускается" 0 $?
 
+# post-edit-check: правка templates/*/scripts/check не должна ложно фейлить
+# (issue #14). Поиск корня останавливался на самом каталоге шаблона — там
+# уже лежит исполняемый scripts/check, — и исключение "$root"/templates/*
+# после этого не срабатывало, т.к. рассчитано на root = корень кита.
+# Кит-подобная структура: свой scripts/check в корне (проходит) и
+# templates/demo/scripts/check (падает, если его реально прогнать —
+# имитирует контракт шаблона, нерелевантный правке самого файла шаблона).
+KITSIM="$TMP/kitsim"
+mkdir -p "$KITSIM/scripts" "$KITSIM/templates/demo/scripts"
+cat > "$KITSIM/scripts/check" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$KITSIM/templates/demo/scripts/check" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$KITSIM/scripts/check" "$KITSIM/templates/demo/scripts/check"
+printf '{"tool_input":{"file_path":"%s"}}' "$KITSIM/templates/demo/scripts/check" | "$HOOKS/post-edit-check.sh" >/dev/null 2>&1
+assert_exit "post-edit-check: правка шаблонного templates/*/scripts/check не запускает контракт кита (issue #14)" 0 $?
+
 # stop-test
 touch "$P/.fail-tests"
 echo '{}' | CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
