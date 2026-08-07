@@ -11,16 +11,9 @@
 # stderr, не роняют скрипт.
 set -u
 
-root="${CLAUDE_PROJECT_DIR:-}"
-if [ -z "$root" ]; then
-  root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$PWD"
-fi
-
-if [ -n "${ADK_LOGS_DIR:-}" ]; then
-  logs_dir="$ADK_LOGS_DIR"
-else
-  logs_dir="$root/.adk/logs"
-fi
+. "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
+root=$(adk_project_root)
+logs_dir=$(adk_logs_dir "$root")
 
 shopt -s nullglob
 issue_files=("$logs_dir"/issue-*.jsonl)

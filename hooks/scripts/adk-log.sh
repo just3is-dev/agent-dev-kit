@@ -25,15 +25,11 @@ for pair in "$@"; do
   esac
 done
 
-root="${CLAUDE_PROJECT_DIR:-}"
-if [ -z "$root" ]; then
-  root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$PWD"
-fi
+. "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
+root=$(adk_project_root)
+logs_dir=$(adk_logs_dir "$root")
 
-if [ -n "${ADK_LOGS_DIR:-}" ]; then
-  logs_dir="$ADK_LOGS_DIR"
-else
-  logs_dir="$root/.adk/logs"
+if [ -z "${ADK_LOGS_DIR:-}" ]; then
   gi="$root/.adk/.gitignore"
   [ -f "$gi" ] || { mkdir -p "$root/.adk" && printf '*\n' > "$gi"; }
 fi
