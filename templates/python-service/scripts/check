@@ -16,8 +16,7 @@ if [ $# -gt 0 ]; then
 else
   uv run ruff check .
   uv run mypy .
-  # AC-трассируемость: только в полном прогоне, только если хелпер скопирован
-  # project-init'ом (см. scripts/ac-check); отсутствие ничего не ломает.
+  # scripts/ac-check копируется project-init'ом; см. docs/contract.md.
   if [ -x scripts/ac-check ]; then
     scripts/ac-check .
   fi
