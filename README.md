@@ -91,6 +91,10 @@ issue → ветка issue-N-слаг → падающие тесты из DoD �
 `/review` (она авторизует дополнительный круг: доработка по прошлым
 вердиктам → свежий круг → при APPROVE PR переводится в ready).
 
+Побочный эффект: `/work` попутно ведёт журнал прогона в
+`.adk/logs/issue-<N>.jsonl` (старт, каждый круг ревью, финальный итог) —
+на нём строится сводка `/stats`.
+
 **Политика merge: только после APPROVE.** Draft-PR смержить нельзя
 (GitHub), ready PR становится единственным путём — через вердикт APPROVE,
 а хук разрешает `gh pr merge` только для ready. Мержите вы — читая спеку,
@@ -233,10 +237,13 @@ merge в main только через PR с зелёным CI, прямые пу
 
 ```
 .claude-plugin/   манифест плагина и marketplace для локальной установки
-hooks/            гейты: PostToolUse → check, Stop → test, PreToolUse → запреты
-commands/         /project-init, /spec, /plan, /work
+hooks/            гейты: PostToolUse → check, Stop → test, PreToolUse →
+                  запреты; плюс журналирование прогонов и агрегация
+                  (adk-log.sh, adk-stats.sh) и AC-трассируемость (ac-check.sh)
+commands/         /project-init, /spec, /plan, /work, /review, /autopilot,
+                  /stats, /consolidate
 agents/           planner, reviewer
-skills/           decompose, tdd, adr, stack-choice
+skills/           decompose, tdd, adr, stack-choice, consolidate
 templates/
   base/           CLAUDE.md, gitignore
   process/        шаблоны SPEC и ADR
@@ -245,6 +252,9 @@ templates/
   python-service/ ruff, mypy, pytest (окружение uv) + ci.yml
   monorepo/       корневые скрипты-диспетчеры по пакетам + ci.yml
 docs/contract.md  контракт команд проекта
+docs/adr/         архитектурные решения (ADR), создаются по скиллу adr
+docs/specs/       спеки фич, создаются `/spec`
+docs/plans/       планы задач без GitHub-issues, создаются `/plan`
 scripts/, tests/  собственный контракт кита: смоук-тесты всех хуков и диспетчера
 ```
 
@@ -263,4 +273,8 @@ scripts/, tests/  собственный контракт кита: смоук-�
 - [x] Фаза 5: монорепа — корневой контракт-диспетчер (`templates/monorepo/`), ветка `monorepo` в `/project-init`; проверено на фейковой монорепе: маршрутизация по пакетам, падения пробрасываются, хуки работают без изменений
 - [x] Фаза 6: герметизация — секрет-гейт перед коммитом, branch protection в `/project-init`, правила новых зависимостей (skill + reviewer), собственный контракт кита с 27 тестами хуков
 - [x] Фаза 7: жизнь после релиза — багфиксы через падающий тест-воспроизведение, правила миграций БД в шаблоне CLAUDE.md, перепланирование (стоп при расхождении с планом, дельта-режим `/plan`)
+- [x] Фаза 8 (SPEC-001): наблюдаемость — журнал прогонов (`adk-log.sh`,
+      схема событий в ADR-001), агрегация `/stats`, консолидация
+      межзадачного мусора на границе вехи (`/consolidate`, skill
+      consolidate), очередь issues автономно (`/autopilot`)
 - [ ] Обкатка на реальных проектах: прогнать `/project-init` → `/spec` → `/plan` → `/work` на настоящей задаче, вернуть найденное в плагин

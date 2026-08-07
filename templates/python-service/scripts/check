@@ -16,7 +16,9 @@ if [ $# -gt 0 ]; then
 else
   uv run ruff check .
   uv run mypy .
-  # scripts/ac-check копируется project-init'ом; см. docs/contract.md.
+  # scripts/ac-check копируется project-init'ом из agent-dev-kit
+  # (hooks/scripts/ac-check.sh); контракт — в документации кита agent-dev-kit,
+  # не в этом репозитории.
   if [ -x scripts/ac-check ]; then
     scripts/ac-check .
   fi

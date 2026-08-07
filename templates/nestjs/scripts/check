@@ -18,7 +18,9 @@ if [ $# -gt 0 ]; then
   npx eslint --max-warnings 0 --no-error-on-unmatched-pattern "${lint_targets[@]}"
 else
   npx eslint --max-warnings 0 .
-  # scripts/ac-check копируется project-init'ом; см. docs/contract.md.
+  # scripts/ac-check копируется project-init'ом из agent-dev-kit
+  # (hooks/scripts/ac-check.sh); контракт — в документации кита agent-dev-kit,
+  # не в этом репозитории.
   if [ -x scripts/ac-check ]; then
     scripts/ac-check .
   fi
