@@ -268,6 +268,105 @@ else
   fails=$((fails + 1))
 fi
 
+# ── /work: события журнала (AC-1) ────────────────────────────────────────────
+WORKMD="$KIT/commands/work.md"
+step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+step6=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+step7=$(sed -n '/^7\. \*\*/,$p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+
+if printf '%s' "$step1" | grep -q 'adk-log\.sh.*event=start'; then
+  echo "PASS: AC-1: work.md шаг 1 логирует event=start"
+else
+  echo "FAIL: AC-1: work.md шаг 1 не логирует event=start"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$step6" | grep -q 'adk-log\.sh.*event=review'; then
+  echo "PASS: AC-1: work.md шаг 6 логирует event=review после каждого вердикта"
+else
+  echo "FAIL: AC-1: work.md шаг 6 не логирует event=review"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$step7" | grep -q 'adk-log\.sh.*event=finish'; then
+  echo "PASS: AC-1: work.md шаг 7 логирует event=finish"
+else
+  echo "FAIL: AC-1: work.md шаг 7 не логирует event=finish"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$step7" | grep -q 'git diff main\.\.\. --shortstat'; then
+  echo "PASS: AC-1: work.md шаг 7 считает размер диффа git diff main... --shortstat"
+else
+  echo "FAIL: AC-1: work.md шаг 7 не считает размер диффа"
+  fails=$((fails + 1))
+fi
+
+for step_name in step1 step6 step7; do
+  step_text=$(eval "printf '%s' \"\$$step_name\"")
+  if printf '%s' "$step_text" | grep -q 'adk-log\.sh.*|| true'; then
+    echo "PASS: AC-1: work.md $step_name — запись в журнал не блокирует задачу (|| true)"
+  else
+    echo "FAIL: AC-1: work.md $step_name не отмечает журнал как необязательный (не гейт)"
+    fails=$((fails + 1))
+  fi
+done
+
+if printf '%s' "$step7" | grep -q 'outcome="'; then
+  echo "PASS: AC-1: work.md шаг 7 — outcome закавычен (причина может содержать пробелы)"
+else
+  echo "FAIL: AC-1: work.md шаг 7 не закавычивает outcome — многословная причина сломает вызов"
+  fails=$((fails + 1))
+fi
+
+# Смоук: последовательность вызовов adk-log.sh, которую описывает work.md
+# (start → review → finish), даёт журнал с тремя валидными записями.
+WORKP="$TMP/workproj"
+mkdir -p "$WORKP"
+
+CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=start issue=42 >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=review round=1 verdict=REQUEST_CHANGES >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=finish outcome=ready rounds=2 duration=42s diffstat=" 1 file changed, 3 insertions(+)" >/dev/null 2>&1
+
+work_lines=$(wc -l < "$WORKP/.adk/logs/issue-42.jsonl" 2>/dev/null | tr -d ' ')
+assert_exit "AC-1: work.md-смоук: start → review → finish дают три записи в issue-42.jsonl" 3 "${work_lines:-0}"
+
+work_valid=$(python3 -c '
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        lines = [json.loads(l) for l in f]
+except Exception:
+    print("0")
+    sys.exit(0)
+ok = len(lines) == 3
+if ok:
+    ok = ok and lines[0].get("event") == "start" and lines[0].get("issue") == "42"
+    ok = ok and lines[1].get("event") == "review" and lines[1].get("round") == "1" and lines[1].get("verdict") == "REQUEST_CHANGES"
+    ok = ok and lines[2].get("event") == "finish" and lines[2].get("outcome") == "ready" and lines[2].get("rounds") == "2" and "duration" in lines[2] and "diffstat" in lines[2]
+    ok = ok and all("timestamp" in l for l in lines)
+print("1" if ok else "0")
+' "$WORKP/.adk/logs/issue-42.jsonl")
+assert_exit "AC-1: work.md-смоук: записи содержат issue/круг/вердикт/итог/длительность" 1 "$work_valid"
+
+# Смоук: outcome=stuck:<причина> с пробелами — ровно случай застревания,
+# ради которого журнал и заводится (issue #4 агрегирует причины).
+WORKP2="$TMP/workproj-stuck"
+mkdir -p "$WORKP2"
+CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=start issue=43 >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=finish outcome="stuck: тесты не проходят" rounds=2 duration=120s diffstat=" 3 files changed" >/dev/null 2>&1
+stuck_lines=$(wc -l < "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | tr -d ' ')
+assert_exit "AC-1: work.md-смоук: outcome=stuck с пробелами в причине не роняет запись" 2 "${stuck_lines:-0}"
+
+stuck_outcome=$(tail -n1 "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("outcome",""))' 2>/dev/null)
+if [ "$stuck_outcome" = "stuck: тесты не проходят" ]; then
+  echo "PASS: AC-1: work.md-смоук: причина застревания сохраняется целиком, с пробелами"
+else
+  echo "FAIL: AC-1: work.md-смоук: причина застревания искажена или потеряна (outcome=$stuck_outcome)"
+  fails=$((fails + 1))
+fi
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
