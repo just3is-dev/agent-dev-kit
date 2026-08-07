@@ -3,11 +3,21 @@
 # спеки должен быть хотя бы один помеченный тест. Использование:
 #   ac-check.sh <корень проекта> [тестовый путь ...]
 # AC-токены собираются из раздела "## Критерии приёмки" approved-спек
-# (docs/specs/*.md, строка "Статус: approved" — draft и прочие статусы не
-# проверяются). Тестовый корпус — переданные пути (файлы или папки), либо
-# при их отсутствии дефолт: tests/, **/*.test.*, **/*.spec.*, test_*.py.
+# (docs/specs/*.md). Статус читается как первое слово после "Статус:" —
+# так строка шаблона "Статус: draft <!-- draft | approved | ... -->"
+# (templates/process/spec-template.md) не принимается за approved.
+# Только draft/in-progress/etc. пропускаются; approved — проверяется.
+# Тестовый корпус — переданные пути (файлы или папки), либо при их
+# отсутствии дефолт: tests/, **/*.test.*, **/*.spec.*, test_*.py, за
+# вычетом docs/specs/ (сами спеки не должны "покрывать" сами себя) и
+# служебных папок (node_modules, vendor, .git, dist, build).
 # exit 1 со списком непокрытых AC, exit 0 при полном покрытии или
 # отсутствии спек с конвенцией AC. Только проверка, ничего не правит.
+#
+# Известное ограничение: токен AC-<n> не привязан к конкретной спеке —
+# если у двух approved-спек совпадает номер критерия, покрытие одной
+# засчитывается и для другой. Глобальная схема именования AC вне рамок
+# этой задачи (issue #5) — уточняется конвенцией тегирования (issue #6).
 set -u
 
 root="${1:-}"
@@ -25,27 +35,37 @@ declare -a acs=()
 for spec in "$specs_dir"/*.md; do
   [ -f "$spec" ] || continue
   status_line=$(grep -m1 -E '^Статус:' "$spec" || true)
-  case "$status_line" in
-    *approved*) ;;
-    *) continue ;;
-  esac
+  status=$(printf '%s' "$status_line" | sed -E 's/^Статус:[[:space:]]*//' | awk '{print $1}')
+  [ "$status" = "approved" ] || continue
   # только токены из секции "## Критерии приёмки" (до следующего "## ")
   section=$(awk '/^## Критерии приёмки/{flag=1; next} /^## /{flag=0} flag' "$spec")
   while IFS= read -r ac; do
     [ -n "$ac" ] && acs+=("$ac")
-  done < <(printf '%s' "$section" | grep -oE 'AC-[0-9]+' | sort -u)
+  done < <(printf '%s' "$section" | grep -oE 'AC-[0-9]+')
 done
 
 if [ "${#acs[@]}" -eq 0 ]; then
   exit 0
 fi
-declare -a dedup=()
+declare -a uniq_acs=()
 while IFS= read -r ac; do
-  [ -n "$ac" ] && dedup+=("$ac")
+  [ -n "$ac" ] && uniq_acs+=("$ac")
 done < <(printf '%s\n' "${acs[@]}" | sort -u)
-acs=("${dedup[@]}")
+acs=("${uniq_acs[@]}")
 
 # ── Собрать тестовый корпус (список файлов) ──────────────────────────────────
+# служебные папки и сами спеки — не тестовый корпус
+prune_default() {
+  find "$1" -type f \
+    -not -path "$specs_dir/*" \
+    -not -path '*/node_modules/*' \
+    -not -path '*/vendor/*' \
+    -not -path '*/.git/*' \
+    -not -path '*/dist/*' \
+    -not -path '*/build/*' \
+    "${@:2}"
+}
+
 declare -a test_files=()
 if [ "$#" -gt 0 ]; then
   for p in "$@"; do
@@ -57,10 +77,10 @@ if [ "$#" -gt 0 ]; then
   done
 else
   if [ -d "$root/tests" ]; then
-    while IFS= read -r f; do test_files+=("$f"); done < <(find "$root/tests" -type f)
+    while IFS= read -r f; do test_files+=("$f"); done < <(prune_default "$root/tests")
   fi
   while IFS= read -r f; do test_files+=("$f"); done < <(
-    find "$root" -type f \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' \) 2>/dev/null
+    prune_default "$root" \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' \)
   )
 fi
 

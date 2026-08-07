@@ -411,6 +411,84 @@ EOF
 assert_exit "AC-4: ac-check: явно переданный путь тестов используется вместо дефолтного tests/" 0 $?
 rm -rf "$ACP/alt-tests"
 
+# без аргументов — usage-ошибка, не падение с трейсбеком
+"$HOOKS/ac-check.sh" >/dev/null 2>&1
+assert_exit "AC-4: ac-check: без аргументов — usage, exit 1" 1 $?
+
+# регрессия: строка статуса в реальном шаблоне спеки содержит HTML-комментарий-
+# подсказку — "Статус: draft <!-- draft | approved | in-progress | done -->"
+# (templates/process/spec-template.md). Подстрокой "approved" внутри этого
+# комментария черновик не должен приниматься за approved.
+TPL="$TMP/ac-template-proj"
+mkdir -p "$TPL/docs/specs" "$TPL/tests"
+cat > "$TPL/docs/specs/001-draft.md" <<'EOF'
+# SPEC-001: черновик
+
+Статус: draft <!-- draft | approved | in-progress | done -->
+
+## Критерии приёмки
+
+- [ ] AC-1: критерий без единого теста
+EOF
+"$HOOKS/ac-check.sh" "$TPL" >/dev/null 2>&1
+assert_exit "AC-4: ac-check: строка статуса шаблона (с HTML-комментарием-подсказкой) не считается approved" 0 $?
+
+# AC-токен вне секции "## Критерии приёмки" (например, упомянутый в прозе
+# раздела "## Что делаем") не требует отдельного теста
+SEC="$TMP/ac-section-proj"
+mkdir -p "$SEC/docs/specs" "$SEC/tests"
+cat > "$SEC/docs/specs/001-x.md" <<'EOF'
+# SPEC
+
+Статус: approved
+
+## Что делаем
+
+Упоминание AC-7 здесь — прозаическая отсылка, не критерий приёмки.
+
+## Критерии приёмки
+
+- [ ] AC-1: единственный формальный критерий
+EOF
+cat > "$SEC/tests/run.sh" <<'EOF'
+echo "AC-1: критерий покрыт"
+EOF
+"$HOOKS/ac-check.sh" "$SEC" >/dev/null 2>&1
+assert_exit "AC-4: ac-check: AC-токен вне секции «Критерии приёмки» не требует покрытия" 0 $?
+
+# сама спека (даже с именем вида *.spec.md, совпадающим с дефолтным
+# паттерном тестового корпуса) не может покрыть сама себя — docs/specs/
+# исключены из тестового корпуса
+SELFM="$TMP/ac-selfmatch-proj"
+mkdir -p "$SELFM/docs/specs"
+cat > "$SELFM/docs/specs/001-feature.spec.md" <<'EOF'
+# SPEC
+
+Статус: approved
+
+## Критерии приёмки
+
+- [ ] AC-1: критерий без отдельного теста
+EOF
+ac_out=$("$HOOKS/ac-check.sh" "$SELFM" 2>&1)
+ac_st=$?
+assert_exit "AC-4: ac-check: спека не засчитывает сама себя как тест (docs/specs исключён)" 1 "$ac_st"
+if printf '%s' "$ac_out" | grep -q "AC-1"; then
+  echo "PASS: AC-4: ac-check: AC-1 назван непокрытым при самопокрытии спекой"
+else
+  echo "FAIL: AC-4: ac-check: AC-1 не назван непокрытым: $ac_out"
+  fails=$((fails + 1))
+fi
+
+# node_modules/vendor не считаются тестовым корпусом — токен в зависимости
+# не должен ложно засчитываться как покрытие
+VEND="$TMP/ac-vendor-proj"
+mkdir -p "$VEND/docs/specs" "$VEND/tests" "$VEND/node_modules/pkg"
+write_ac_spec "$VEND/docs/specs/001-x.md" "approved" "- [ ] AC-1: критерий без реального теста"
+echo "AC-1" > "$VEND/node_modules/pkg/index.spec.js"
+"$HOOKS/ac-check.sh" "$VEND" >/dev/null 2>&1
+assert_exit "AC-4: ac-check: node_modules не считается тестовым корпусом" 1 $?
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
