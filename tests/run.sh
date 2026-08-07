@@ -20,6 +20,34 @@ assert_exit() { # assert_exit <описание> <ожидаемый_код> <ф
 
 git_c() { git -c user.email=t@t -c user.name=t "$@"; }
 
+assert_contains() { # assert_contains <описание> <текст> <подстрока>
+  if printf '%s' "$2" | grep -q -- "$3"; then
+    echo "PASS: $1"
+  else
+    echo "FAIL: $1 (не найдено: $3)"
+    fails=$((fails + 1))
+  fi
+}
+
+assert_not_contains() { # assert_not_contains <описание> <текст> <подстрока>
+  if printf '%s' "$2" | grep -q -- "$3"; then
+    echo "FAIL: $1 (неожиданно найдено: $3)"
+    fails=$((fails + 1))
+  else
+    echo "PASS: $1"
+  fi
+}
+
+count_lines() { # count_lines <файл> — обёртка над wc -l для сравнения через assert_exit
+  wc -l < "$1" | tr -d ' '
+}
+
+# демонстрация новых хелперов (issue #25) — не заменяет существующие сценарии
+assert_contains "demo: assert_contains находит подстроку" "hello world" "wor"
+assert_not_contains "demo: assert_not_contains не находит отсутствующую подстроку" "hello world" "xyz"
+printf 'a\nb\nc\n' > "$TMP/.count-demo"
+assert_exit "demo: count_lines считает строки файла" 3 "$(count_lines "$TMP/.count-demo")"
+
 # ── Одиночный проект с контрактом ────────────────────────────────────────────
 P="$TMP/proj"
 mkdir -p "$P/scripts" "$P/src"
