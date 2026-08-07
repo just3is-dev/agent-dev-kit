@@ -2,6 +2,9 @@
 # Контракт agent-dev-kit для самого кита: синтаксис bash, валидность JSON,
 # валидация плагина. Полный прогон занимает секунды, поэтому аргументы
 # (изменённые файлы) не сужают область — проверяем всё всегда.
+# С аргументами — без AC-трассируемости (см. docs/contract.md, issue #24):
+# частичный прогон зовёт post-edit-check после каждого Edit, а AC-check —
+# только хвост полного прогона, как и в templates/*/scripts/check.
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,8 +21,10 @@ if command -v claude >/dev/null 2>&1; then
   claude plugin validate . >/dev/null 2>&1
 fi
 
-# трассируемость AC → тест: кит применяет свою же конвенцию к себе
-# (dogfood, issue #9); тестовая область — tests/run.sh.
-hooks/scripts/ac-check.sh . tests/run.sh
+if [ $# -eq 0 ]; then
+  # трассируемость AC → тест: кит применяет свою же конвенцию к себе
+  # (dogfood, issue #9); тестовая область — tests/run.sh.
+  hooks/scripts/ac-check.sh . tests/run.sh
+fi
 
 echo "check: OK"

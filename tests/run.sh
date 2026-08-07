@@ -946,6 +946,45 @@ done
 project_init_content=$(cat "$KIT/commands/project-init.md")
 assert_contains "AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check" "$project_init_content" 'scripts/ac-check'
 
+# ── scripts/check самого кита применяет $#-guard к ac-check (issue #24) ──────
+# Реальный scripts/check кита копируется в изолированную фикстуру-кита:
+# hooks/scripts/ac-check.sh — стаб, печатающий маркер (отличить вызов от
+# невызова), claude-CLI на PATH — тоже стаб (реальный "claude plugin validate"
+# не должен зависеть от того, установлен ли claude в окружении, где гоняются
+# тесты кита).
+KCHK="$TMP/kitcheck"
+mkdir -p "$KCHK/.claude-plugin" "$KCHK/hooks/scripts" "$KCHK/scripts" "$KCHK/tests" "$KCHK/bin"
+echo '{}' > "$KCHK/.claude-plugin/plugin.json"
+echo '{}' > "$KCHK/.claude-plugin/marketplace.json"
+echo '{}' > "$KCHK/hooks/hooks.json"
+cp "$KIT/scripts/check" "$KCHK/scripts/check"
+chmod +x "$KCHK/scripts/check"
+cat > "$KCHK/hooks/scripts/ac-check.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "AC_CHECK_CALLED"
+exit 0
+EOF
+chmod +x "$KCHK/hooks/scripts/ac-check.sh"
+cat > "$KCHK/tests/run.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$KCHK/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$KCHK/bin/claude"
+
+kchk_out=$(cd "$KCHK" && PATH="$KCHK/bin:$PATH" ./scripts/check some/file.ts 2>&1)
+kchk_st=$?
+assert_exit "кит: scripts/check <файл> — частичный прогон завершается успешно" 0 "$kchk_st"
+assert_not_contains "кит: scripts/check <файл> не запускает ac-check.sh (issue #24)" "$kchk_out" "AC_CHECK_CALLED"
+
+kchk_out=$(cd "$KCHK" && PATH="$KCHK/bin:$PATH" ./scripts/check 2>&1)
+kchk_st=$?
+assert_exit "кит: scripts/check без аргументов — полный прогон завершается успешно" 0 "$kchk_st"
+assert_contains "кит: scripts/check без аргументов запускает ac-check.sh (issue #24)" "$kchk_out" "AC_CHECK_CALLED"
+
 # ── Конвенция AC-тегирования зафиксирована в промптах и скилле tdd (issue #6) ─
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
 # правильном месте каждого из семи файлов, а не просто что "AC-" где-то
