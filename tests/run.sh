@@ -986,45 +986,66 @@ assert_exit "кит: scripts/check без аргументов — полный 
 assert_contains "кит: scripts/check без аргументов запускает ac-check.sh (issue #24)" "$kchk_out" "AC_CHECK_CALLED"
 
 # ── тест-страж: фикстуры блока ac-check.sh не самопокрывают AC-N кита (issue #27) ─
-# Раньше строки-фикстуры внутри тестов ac-check.sh (блок «AC-трассируемость»
-# выше — сам он легитимно несёт реальный тег AC-4, это тестирует ac-check
+# Раньше строки-фикстуры внутри тестов ac-check.sh (весь диапазон AC-4-тестов
+# от заголовка «AC-трассируемость» до заголовка «Конвенция AC-тегирования» —
+# сам этот диапазон легитимно несёт реальный тег AC-4, он тестирует ac-check
 # как фичу) физически лежали в этом файле и совпадали с grep-корпусом
 # догфуда AC-N самого кита (docs/specs/001-process-observability.md),
 # поэтому ./scripts/check давал ложный exit 0, даже если реальные теги
-# были убраны из журнал-тестов вне этого блока.
-# Здесь копия этого файла: реальные теги AC-N вне блока «AC-трассируемость»
-# вычищаются (имитируя ручное удаление из журнал-тестов), а сам блок и его
-# фикстуры остаются как есть — если фикстуры снова станут номерами реальных
-# критериев (текущая нумерация фикстур в сотнях, см. блок выше), ac-check
-# честно этого не заметит и тест упадёт. Тег каждого AC-N собирается
-# динамически из спеки (а не как строковый литерал), чтобы сам тест-страж не
-# плодил новую самопокрывающуюся строку.
-GUARD="$TMP/ac-guard-proj"
-mkdir -p "$GUARD/docs/specs" "$GUARD/tests"
-cp "$KIT/docs/specs/001-process-observability.md" "$GUARD/docs/specs/001-process-observability.md"
+# были убраны из журнал-тестов вне этого диапазона.
+# Здесь копия этого файла: реальные теги AC-N вне диапазона AC-4-тестов
+# вычищаются (имитируя ручное удаление из журнал-тестов), а сам диапазон и
+# его фикстуры остаются как есть — если фикстуры снова станут номерами
+# реальных критериев (текущая нумерация фикстур в сотнях, см. диапазон
+# выше), ac-check честно этого не заметит и тест упадёт. Тег каждого AC-N
+# собирается динамически из секции «## Критерии приёмки» спеки (тем же
+# способом, что и сам ac-check.sh) — а не как строковый литерал, чтобы сам
+# тест-страж не плодил новую самопокрывающуюся строку.
+guard_ac_check() {
+  local block_start block_end guard_out guard_st GUARD
+  block_start=$(grep -n '^# ── AC-трассируемость' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
+  block_end=$(grep -n '^# ── Конвенция AC-тегирования' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
+  if [ -z "${block_start:-}" ] || [ -z "${block_end:-}" ] || [ "$block_end" -le "$block_start" ]; then
+    echo "FAIL: AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены (block_start=$block_start block_end=$block_end)"
+    fails=$((fails + 1))
+    return
+  fi
+  echo "PASS: AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены"
+  block_end=$((block_end - 1))
 
-block_start=$(grep -n '^# ── AC-трассируемость' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
-block_end=$(grep -n '^# ── Конвенция AC-тегирования' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
-block_end=$((block_end - 1))
+  GUARD="$TMP/ac-guard-proj"
+  mkdir -p "$GUARD/docs/specs" "$GUARD/tests"
+  cp "$KIT/docs/specs/001-process-observability.md" "$GUARD/docs/specs/001-process-observability.md"
 
-declare -a guard_sed_args=()
-declare -a guard_tags=()
-while IFS= read -r tag; do
-  guard_tags+=("$tag")
-  guard_sed_args+=(-e "1,$((block_start - 1)) s/${tag}([^0-9]|\$)/ZZ\\1/g")
-  guard_sed_args+=(-e "$((block_end + 1)),\$ s/${tag}([^0-9]|\$)/ZZ\\1/g")
-done < <(grep -oE 'AC-[0-9]+' "$GUARD/docs/specs/001-process-observability.md" | sort -u)
-sed -E "${guard_sed_args[@]}" "$KIT/tests/run.sh" > "$GUARD/tests/run.sh"
+  declare -a guard_sed_args=()
+  declare -a guard_tags=()
+  while IFS= read -r tag; do
+    guard_tags+=("$tag")
+    guard_sed_args+=(-e "1,$((block_start - 1)) s/${tag}([^0-9]|\$)/ZZ\\1/g")
+    guard_sed_args+=(-e "$((block_end + 1)),\$ s/${tag}([^0-9]|\$)/ZZ\\1/g")
+  done < <(awk '/^## Критерии приёмки/{flag=1; next} /^## /{flag=0} flag' \
+             "$GUARD/docs/specs/001-process-observability.md" | grep -oE 'AC-[0-9]+' | sort -u)
+  sed -E "${guard_sed_args[@]}" "$KIT/tests/run.sh" > "$GUARD/tests/run.sh"
 
-guard_out=$("$HOOKS/ac-check.sh" "$GUARD" 2>&1)
-guard_st=$?
-assert_exit "AC-4: тест-страж: реальные теги AC-N вне блока ac-check.sh убраны — ac-check честно падает" 1 "$guard_st"
-for tag in "${guard_tags[@]}"; do
-  # свой собственный реальный тег блока (AC-4) остаётся покрытым — он не
-  # тронут (живёт внутри исключённого блока), это не баг issue #27
-  [ "$tag" = "AC-4" ] && continue
-  assert_contains "AC-4: тест-страж: непокрытый $tag назван в выводе — фикстуры блока ac-check не самопокрывают его" "$guard_out" "$tag"
-done
+  # sanity: sed только подставляет текст, не удаляет строки — число строк копии
+  # обязано совпасть с оригиналом. Если адреса sed сломались (пустой или
+  # перевёрнутый диапазон), копия могла бы получиться усечённой/пустой, и
+  # проверка ac-check ниже была бы вакуумным "все AC непокрыты" не по факту
+  # вычищенных тегов, а из-за пустого корпуса — тест-страж прошёл бы вхолостую.
+  assert_exit "AC-4: тест-страж: копия tests/run.sh для проверки не усечена (совпадает по числу строк с оригиналом)" \
+    "$(count_lines "$KIT/tests/run.sh")" "$(count_lines "$GUARD/tests/run.sh")"
+
+  guard_out=$("$HOOKS/ac-check.sh" "$GUARD" 2>&1)
+  guard_st=$?
+  assert_exit "AC-4: тест-страж: реальные теги AC-N вне диапазона AC-4-тестов убраны — ac-check честно падает" 1 "$guard_st"
+  for tag in "${guard_tags[@]}"; do
+    # свой собственный реальный тег диапазона (AC-4) остаётся покрытым — он
+    # не тронут (живёт внутри исключённого диапазона), это не баг issue #27
+    [ "$tag" = "AC-4" ] && continue
+    assert_contains "AC-4: тест-страж: непокрытый $tag назван в выводе — фикстуры диапазона AC-4-тестов не самопокрывают его" "$guard_out" "$tag"
+  done
+}
+guard_ac_check
 
 # ── Конвенция AC-тегирования зафиксирована в промптах и скилле tdd (issue #6) ─
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
