@@ -18,4 +18,8 @@ if command -v claude >/dev/null 2>&1; then
   claude plugin validate . >/dev/null 2>&1
 fi
 
+# трассируемость AC → тест: кит применяет свою же конвенцию к себе
+# (dogfood, issue #9); тестовая область — tests/run.sh.
+hooks/scripts/ac-check.sh . tests/run.sh
+
 echo "check: OK"
