@@ -5,7 +5,7 @@
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
-for f in hooks/scripts/* templates/*/scripts/* scripts/* tests/*.sh; do
+for f in hooks/scripts/* hooks/scripts/lib/* templates/*/scripts/* scripts/* tests/*.sh; do
   [ -f "$f" ] || continue
   bash -n "$f"
 done
