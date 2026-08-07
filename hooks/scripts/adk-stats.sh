@@ -6,8 +6,9 @@
 # result/reason/timestamp) — docs/adr/001-journal-event-schema.md; её же
 # обязаны писать /work и /autopilot.
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
-# агрегатов. Битые (невалидный JSON) строки пропускаются с предупреждением
-# в stderr, не роняют скрипт.
+# агрегатов. Битые строки (невалидный JSON, JSON не-объект, оборванная
+# multibyte UTF-8 последовательность) пропускаются с предупреждением в
+# stderr, не роняют скрипт.
 set -u
 
 root="${CLAUDE_PROJECT_DIR:-}"
@@ -60,7 +61,11 @@ for path in paths:
     outcome = None
     last_ts = None
     valid_any = False
-    with open(path, encoding="utf-8") as f:
+    # errors="replace": строка, оборванная посреди multibyte UTF-8 (типичный
+    # исход обрыва процесса при записи в журнал), не должна ронять скрипт
+    # UnicodeDecodeError-ом — она станет невалидным JSON и будет пропущена
+    # ниже как битая строка, как и любой другой мусор в журнале.
+    with open(path, encoding="utf-8", errors="replace") as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.strip()
             if not line:
@@ -123,10 +128,21 @@ for path in paths:
     )
 
 if not tasks:
-    msg = "Журнал пуст: ни одна из записей issue-*.jsonl не содержит завершённой задачи (событие outcome)."
     if in_progress:
-        msg += f" В работе (без итога): {in_progress}."
-    print(msg)
+        # журнал НЕ пуст — есть start/review, просто ни одна задача ещё не
+        # получила event=outcome. Говорить "журнал пуст" здесь вводит в
+        # заблуждение (самый частый случай — только что начатый /work) и
+        # подталкивает /stats к неверному выводу "записей ещё нет, сводить
+        # нечего" (commands/stats.md, п.3).
+        print(
+            "Завершённых задач ещё нет: событие outcome не записано ни для "
+            f"одной задачи. В работе (без итога): {in_progress}."
+        )
+    else:
+        print(
+            "Журнал пуст: ни одна из записей issue-*.jsonl не содержит "
+            "завершённой задачи (событие outcome)."
+        )
     sys.exit(0)
 
 total = len(tasks)
@@ -135,7 +151,8 @@ stuck = [t for t in tasks if t["result"] == "stuck"]
 stuck_rate = (len(stuck) / total) * 100
 
 reasons = collections.Counter(
-    (t["reason"] or "причина не указана") for t in stuck
+    (t["reason"] if isinstance(t["reason"], str) and t["reason"] else "причина не указана")
+    for t in stuck
 )
 
 weekly = collections.defaultdict(lambda: {"tasks": 0, "rounds": 0})

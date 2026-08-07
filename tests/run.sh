@@ -324,6 +324,88 @@ else
   fails=$((fails + 1))
 fi
 
+# каталог содержит только незавершённую задачу (event=start/review, без
+# outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
+# "Журнал пуст" (это самая частая ситуация свежего проекта — /work только
+# начался), задача должна быть видна как "в работе"
+STATS_INPROGRESS_ONLY="$TMP/stats-inprogress-only"
+mkdir -p "$STATS_INPROGRESS_ONLY"
+cat > "$STATS_INPROGRESS_ONLY/issue-30.jsonl" <<'EOF'
+{"event":"start","issue":"30","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"30","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:30:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_INPROGRESS_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: каталог только с незавершённой задачей — exit 0" 0 $?
+if printf '%s' "$stats_out" | grep -q "Журнал пуст"; then
+  echo "FAIL: AC-3: adk-stats: незавершённая-только задача ошибочно названа 'журнал пуст' — записи есть (start/review): $stats_out"
+  fails=$((fails + 1))
+else
+  echo "PASS: AC-3: adk-stats: незавершённая-только задача не спутана с пустым журналом"
+fi
+if printf '%s' "$stats_out" | grep -q "В работе" && printf '%s' "$stats_out" | grep -q "1"; then
+  echo "PASS: AC-3: adk-stats: незавершённая задача показана как «в работе»"
+else
+  echo "FAIL: AC-3: adk-stats: количество задач в работе не отражено в выводе: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# строка, оборванная посреди multibyte UTF-8 (типичный исход обрыва процесса
+# при записи в журнал) — не должна ронять скрипт UnicodeDecodeError-ом;
+# остальные валидные строки того же файла обязаны отработать как обычно
+STATS_BADUTF8="$TMP/stats-bad-utf8"
+mkdir -p "$STATS_BADUTF8"
+{
+  printf '{"event":"start","issue":"20","timestamp":"2026-08-05T09:00:00Z"}\n'
+  printf '\xE2\x82{"event":"broken"}\n'
+  printf '{"event":"outcome","issue":"20","result":"merged","timestamp":"2026-08-05T09:05:00Z"}\n'
+} > "$STATS_BADUTF8/issue-20.jsonl"
+stats_out=$(ADK_LOGS_DIR="$STATS_BADUTF8" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: оборванная multibyte UTF-8 последовательность не роняет скрипт" 0 $?
+if printf '%s' "$stats_out" | grep -q "Всего задач: 1"; then
+  echo "PASS: AC-3: adk-stats: остальные валидные строки файла с оборванным UTF-8 отработали как обычно"
+else
+  echo "FAIL: AC-3: adk-stats: файл с оборванным UTF-8 не дал ожидаемого результата: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# круги ревью считаются как max(round), а не число строк event=review —
+# append-only журнал не гарантирует отсутствия повторной записи одного и
+# того же круга (ретрай adk-log.sh); дубль не должен завышать метрику
+STATS_DUPROUND="$TMP/stats-dupround"
+mkdir -p "$STATS_DUPROUND"
+cat > "$STATS_DUPROUND/issue-40.jsonl" <<'EOF'
+{"event":"start","issue":"40","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"40","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:10:00Z"}
+{"event":"review","issue":"40","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:11:00Z"}
+{"event":"review","issue":"40","round":"2","verdict":"APPROVE","timestamp":"2026-08-05T09:20:00Z"}
+{"event":"outcome","issue":"40","result":"merged","timestamp":"2026-08-05T09:25:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_DUPROUND" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: дублирующая запись круга ревью — exit 0" 0 $?
+if printf '%s' "$stats_out" | grep -q "Средние круги ревью: 2.0"; then
+  echo "PASS: AC-3: adk-stats: круги считаются как max(round)=2, не как число строк event=review=3 — дубль записи круга не завышает метрику"
+else
+  echo "FAIL: AC-3: adk-stats: дублирующая запись круга исказила метрику кругов ревью: $stats_out"
+  fails=$((fails + 1))
+fi
+
+# reason нестрокового типа (вложенный объект вместо текста) не должен
+# ронять агрегацию TypeError-ом в collections.Counter (объект нехэшируем)
+STATS_BADREASON="$TMP/stats-badreason"
+mkdir -p "$STATS_BADREASON"
+cat > "$STATS_BADREASON/issue-50.jsonl" <<'EOF'
+{"event":"start","issue":"50","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"outcome","issue":"50","result":"stuck","reason":{"nested":"object"},"timestamp":"2026-08-05T09:05:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_BADREASON" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: reason нестрокового типа не роняет скрипт" 0 $?
+if printf '%s' "$stats_out" | grep -q "Всего задач: 1"; then
+  echo "PASS: AC-3: adk-stats: задача с нестроковым reason всё равно посчитана"
+else
+  echo "FAIL: AC-3: adk-stats: задача с нестроковым reason не посчитана: $stats_out"
+  fails=$((fails + 1))
+fi
+
 # 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
 STATS_DIR="$TMP/stats-logs"
 mkdir -p "$STATS_DIR"
