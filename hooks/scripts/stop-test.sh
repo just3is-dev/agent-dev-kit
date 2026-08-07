@@ -6,6 +6,7 @@ set -u
 
 payload=$(cat)
 . "$(cd "$(dirname "$0")" && pwd)/lib/json-field.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
 # stop_hook_active — JSON-булево; json_field возвращает python-строковое
 # представление ("True"/"False") или default при отсутствии поля/ошибке
 # разбора. Нормализуем к прежнему "1"/"0", чтобы проверка ниже не менялась.
@@ -28,8 +29,7 @@ notify_done() {
   threshold="${ADK_NOTIFY_MIN_SECONDS:-45}"
   [ "$elapsed" -ge "$threshold" ] || return 0
   proj_name=$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")
-  "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" \
-    "Claude — $proj_name" "Задача завершена (${elapsed} c), гейты зелёные"
+  adk_notify_send "Claude — $proj_name" "Задача завершена (${elapsed} c), гейты зелёные"
 }
 on_exit() {
   status=$?
