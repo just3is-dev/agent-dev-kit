@@ -18,6 +18,13 @@ case "$unit" in
 esac
 shift
 
+for pair in "$@"; do
+  case "$pair" in
+    *=*) ;;
+    *) echo "adk-log.sh: аргумент без '=' проигнорирован бы молча: $pair" >&2; exit 1 ;;
+  esac
+done
+
 root="${CLAUDE_PROJECT_DIR:-}"
 if [ -z "$root" ]; then
   root=$(git rev-parse --show-toplevel 2>/dev/null) || root="$PWD"
@@ -36,13 +43,18 @@ line=$(python3 -c '
 import json, sys, datetime
 
 pairs = sys.argv[1:]
-event = {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+event = {}
 for p in pairs:
-    if "=" not in p:
-        continue
     k, v = p.split("=", 1)
     event[k] = v
+# timestamp — служебное поле скрипта, неподменяемое переданными парами
+event["timestamp"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 print(json.dumps(event, ensure_ascii=False))
 ' "$@")
+status=$?
+if [ "$status" -ne 0 ] || [ -z "$line" ]; then
+  echo "adk-log.sh: не удалось собрать JSON-строку события" >&2
+  exit 1
+fi
 
 printf '%s\n' "$line" >> "$logs_dir/$unit.jsonl"

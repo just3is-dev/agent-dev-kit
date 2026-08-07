@@ -203,7 +203,7 @@ valid=$(python3 -c '
 import json, sys
 path = sys.argv[1]
 with open(path) as f:
-    lines = [l for l in f if l.strip()]
+    lines = f.readlines()
 ok = len(lines) == 2
 for l in lines:
     try:
@@ -215,6 +215,21 @@ for l in lines:
 print("1" if ok else "0")
 ' "$LOGP/.adk/logs/issue-1.jsonl")
 assert_exit "AC-1: adk-log: каждая строка — валидный JSON с timestamp и полями" 1 "$valid"
+
+before_badpair=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event badpair >/dev/null 2>&1
+assert_exit "AC-1: adk-log: аргумент без '=' отклоняется с ошибкой" 1 $?
+after_badpair=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+assert_exit "AC-1: adk-log: отклонённый аргумент не пишет строку в журнал" "$before_badpair" "$after_badpair"
+
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=spoof timestamp=bogus >/dev/null 2>&1
+last_ts=$(tail -n1 "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("timestamp",""))')
+if [ "$last_ts" = "bogus" ]; then
+  echo "FAIL: AC-1: adk-log: переданное поле timestamp затёрло служебное"
+  fails=$((fails + 1))
+else
+  echo "PASS: AC-1: adk-log: служебный timestamp не подменяется переданным полем"
+fi
 
 CUSTOM="$TMP/customlogs"
 rm -rf "$CUSTOM"
