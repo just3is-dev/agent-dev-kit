@@ -553,6 +553,53 @@ else
   fails=$((fails + 1))
 fi
 
+# ── Конвенция AC-тегирования зафиксирована в промптах и скилле tdd (issue #6) ─
+# Только markdown: проверяем, что нужный текст конвенции присутствует в
+# правильном месте каждого из семи файлов, а не просто что "AC-" где-то
+# встречается в файле.
+check_ac_doc() { # check_ac_doc <описание> <файл> <искомая подстрока>
+  # Markdown-прозу переносит по словам — схлопываем переводы строк и
+  # повторяющиеся пробелы, чтобы искомая фраза не ломалась о жёсткий
+  # перенос строки, случайно совпавший с серединой фразы.
+  if tr '\n' ' ' < "$2" | tr -s ' ' | grep -qF -- "$3"; then
+    echo "PASS: AC-5: $1"
+  else
+    echo "FAIL: AC-5: $1 — не найдена подстрока «$3» в $2"
+    fails=$((fails + 1))
+  fi
+}
+
+check_ac_doc "spec-template: критерий приёмки — пронумерованный checkbox AC-1" \
+  "$KIT/templates/process/spec-template.md" "- [ ] AC-1:"
+check_ac_doc "spec-template: пример второго критерия пронумерован" \
+  "$KIT/templates/process/spec-template.md" "- [ ] AC-2:"
+
+check_ac_doc "/spec: правило нумерации критериев AC-1, AC-2, …" \
+  "$KIT/commands/spec.md" "AC-1, AC-2"
+
+check_ac_doc "planner: план показывает покрытие «AC-N → задачи»" \
+  "$KIT/agents/planner.md" "AC-N → задачи"
+check_ac_doc "planner: DoD задачи ссылается на номер AC" \
+  "$KIT/agents/planner.md" "номер AC, который она закрывает"
+
+check_ac_doc "/plan: покрытие показывается в формате «AC-N → задачи»" \
+  "$KIT/commands/plan.md" "AC-N → задачи"
+check_ac_doc "/plan: DoD в чате показывается со ссылкой на номер AC" \
+  "$KIT/commands/plan.md" "номер AC"
+
+check_ac_doc "/work: тесты по DoD помечаются номером AC" \
+  "$KIT/commands/work.md" "тем же номером AC"
+
+check_ac_doc "reviewer: тег AC-N должен соответствовать сути критерия" \
+  "$KIT/agents/reviewer.md" "соответствует сути критерия"
+
+check_ac_doc "skills/tdd: тег в имени describe/it" \
+  "$KIT/skills/tdd/SKILL.md" 'it("AC-'
+check_ac_doc "skills/tdd: для bash-тестов тег в строке описания" \
+  "$KIT/skills/tdd/SKILL.md" "в строке описания для bash-тестов"
+check_ac_doc "skills/tdd: ссылка на ac-check" \
+  "$KIT/skills/tdd/SKILL.md" "hooks/scripts/ac-check.sh"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
