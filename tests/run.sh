@@ -1051,6 +1051,28 @@ check_ac_doc "skills/tdd: для bash-тестов тег в строке опи
 check_ac_doc "skills/tdd: ссылка на ac-check" \
   "$KIT/skills/tdd/SKILL.md" "hooks/scripts/ac-check.sh"
 
+# ── Петля сбежавших дефектов зафиксирована в процессе (issue #8, AC-6) ──────
+if tr '\n' ' ' < "$KIT/README.md" | tr -s ' ' | grep -qF "Сбежал от:"; then
+  echo "PASS: AC-6: README содержит правило «Сбежал от: <гейт>»"
+else
+  echo "FAIL: AC-6: README не содержит «Сбежал от:»"
+  fails=$((fails + 1))
+fi
+
+CONSOLIDATE_MD="$KIT/commands/consolidate.md"
+if tr '\n' ' ' < "$CONSOLIDATE_MD" | tr -s ' ' | grep -qF "агрегацию по гейтам"; then
+  echo "PASS: AC-6: consolidate.md агрегирует распределение «Сбежал от» по гейтам"
+else
+  echo "FAIL: AC-6: consolidate.md не упоминает агрегацию по гейтам"
+  fails=$((fails + 1))
+fi
+if tr '\n' ' ' < "$CONSOLIDATE_MD" | tr -s ' ' | grep -qF "hooks/scripts/adk-stats.sh"; then
+  echo "PASS: AC-6: consolidate.md вызывает hooks/scripts/adk-stats.sh"
+else
+  echo "FAIL: AC-6: consolidate.md не вызывает adk-stats.sh"
+  fails=$((fails + 1))
+fi
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
