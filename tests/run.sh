@@ -342,13 +342,23 @@ mkdir -p "$STATS_EMPTY"
 stats_out=$(ADK_LOGS_DIR="$STATS_EMPTY" "$HOOKS/adk-stats.sh" 2>&1)
 stats_st=$?
 assert_exit "AC-3: adk-stats: пустой каталог журнала — exit 0" 0 "$stats_st"
-assert_contains "AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей" "$stats_out" "пуст"
+if printf '%s' "$stats_out" | grep -qi "пуст"; then
+  echo "PASS: AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей"
+else
+  echo "FAIL: AC-3: adk-stats: нет сообщения о пустом журнале: $stats_out"
+  fails=$((fails + 1))
+fi
 assert_not_contains "AC-3: adk-stats: пустой журнал не выдумывает агрегаты" "$stats_out" "Всего задач"
 
 # каталог журнала вовсе не существует — тоже exit 0 с сообщением, не падение
 stats_out=$(ADK_LOGS_DIR="$TMP/stats-missing" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: несуществующий каталог журнала — exit 0" 0 $?
-assert_contains "AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек" "$stats_out" "пуст"
+if printf '%s' "$stats_out" | grep -qi "пуст"; then
+  echo "PASS: AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек"
+else
+  echo "FAIL: AC-3: adk-stats: несуществующий каталог не даёт понятного сообщения: $stats_out"
+  fails=$((fails + 1))
+fi
 
 # каталог содержит только autopilot-*.jsonl (нет issue-*.jsonl) — журнал НЕ
 # пуст (записи прогонов есть), сообщение не должно врать про "пусто", и
@@ -522,9 +532,18 @@ else
   echo "FAIL: AC-3: commands/stats.md отсутствует"
   fails=$((fails + 1))
 fi
-stats_md=$(tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ')
-assert_contains "AC-3: commands/stats.md вызывает hooks/scripts/adk-stats.sh" "$stats_md" "hooks/scripts/adk-stats.sh"
-assert_contains "AC-3: commands/stats.md: пустой журнал — не выдумывать цифры" "$stats_md" "не выдумывай"
+if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "hooks/scripts/adk-stats.sh"; then
+  echo "PASS: AC-3: commands/stats.md вызывает hooks/scripts/adk-stats.sh"
+else
+  echo "FAIL: AC-3: commands/stats.md не упоминает hooks/scripts/adk-stats.sh"
+  fails=$((fails + 1))
+fi
+if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "не выдумывай"; then
+  echo "PASS: AC-3: commands/stats.md: пустой журнал — не выдумывать цифры"
+else
+  echo "FAIL: AC-3: commands/stats.md не содержит правило не выдумывать цифры при пустом журнале"
+  fails=$((fails + 1))
+fi
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
@@ -605,11 +624,21 @@ assert_contains "AC-2: autopilot.md шаг 3 логирует event=task на к
 assert_contains "AC-2: autopilot.md «Завершение» логирует event=run_finish" "$finish_section" 'adk-log\.sh.*event=run_finish'
 
 for outcome_kind in 'outcome=merged' 'outcome="stuck' 'outcome=skipped'; do
-  assert_contains "AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»" "$step3" "$outcome_kind"
+  if printf '%s' "$step3" | grep -qF "$outcome_kind"; then
+    echo "PASS: AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»"
+  else
+    echo "FAIL: AC-2: autopilot.md шаг 3 не упоминает исход «$outcome_kind»"
+    fails=$((fails + 1))
+  fi
 done
 
 for agg_field in total= merged= stuck= skipped=; do
-  assert_contains "AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»" "$finish_section" "$agg_field"
+  if printf '%s' "$finish_section" | grep -qF "$agg_field"; then
+    echo "PASS: AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»"
+  else
+    echo "FAIL: AC-2: autopilot.md «Завершение» не пишет агрегат «$agg_field»"
+    fails=$((fails + 1))
+  fi
 done
 
 for section_name in step3 finish_section; do
