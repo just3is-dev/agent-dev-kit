@@ -489,6 +489,70 @@ echo "AC-1" > "$VEND/node_modules/pkg/index.spec.js"
 "$HOOKS/ac-check.sh" "$VEND" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: node_modules не считается тестовым корпусом" 1 $?
 
+# ── AC-проверка подключена к контракту проекта (issue #7) ───────────────────
+# Используем реальный отгружаемый templates/monorepo/scripts/check (а не его
+# пересказ) — без пакетов у него нет внешних зависимостей (npx/uv), поэтому
+# он хермитично гоняется в тестах кита. Пакет pkg/ — хендкрафченный (внешние
+# тулинги не нужны кит-тестам), он проверяет, что оригинальная маршрутизация
+# по файлам не тронута: ac-check добавлен только хвостом полного прогона.
+WIRE="$TMP/wireproj"
+mkdir -p "$WIRE/docs/specs" "$WIRE/tests" "$WIRE/scripts" "$WIRE/pkg/scripts" "$WIRE/pkg/src"
+cp "$KIT/templates/monorepo/scripts/check" "$WIRE/scripts/check"
+chmod +x "$WIRE/scripts/check"
+cp "$KIT/hooks/scripts/ac-check.sh" "$WIRE/scripts/ac-check"
+chmod +x "$WIRE/scripts/ac-check"
+cat > "$WIRE/pkg/scripts/check" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in *bad*) echo "type error in $a"; exit 1;; esac; done
+exit 0
+EOF
+chmod +x "$WIRE/pkg/scripts/check"
+echo x > "$WIRE/pkg/src/good.ts"
+echo x > "$WIRE/pkg/src/bad.ts"
+
+(cd "$WIRE" && ./scripts/check pkg/src/bad.ts >/dev/null 2>&1)
+assert_exit "AC-4: contract check (реальный templates/monorepo/scripts/check): частичный прогон по-прежнему ловит bad-файл пакета" 1 $?
+(cd "$WIRE" && ./scripts/check pkg/src/good.ts >/dev/null 2>&1)
+assert_exit "AC-4: contract check: частичный прогон по чистому файлу проходит" 0 $?
+
+# непокрытый AC уже есть в docs/specs — частичный прогон (аргументы-файлы)
+# всё равно не должен звать ac-check, иначе любая точечная правка файла
+# (её гоняет post-edit-check после каждого Edit) блокировалась бы AC-гейтом
+write_ac_spec "$WIRE/docs/specs/001-x.md" "approved" "- [ ] AC-1: критерий"
+(cd "$WIRE" && ./scripts/check pkg/src/good.ts >/dev/null 2>&1)
+assert_exit "AC-4: contract check: частичный прогон игнорирует непокрытый AC — граница \$#-guard'а" 0 $?
+
+(cd "$WIRE" && ./scripts/check >/dev/null 2>&1)
+assert_exit "AC-4: contract check: полный прогон падает при непокрытом AC" 1 $?
+
+cat > "$WIRE/tests/run.sh" <<'EOF'
+echo "AC-1: критерий покрыт"
+EOF
+(cd "$WIRE" && ./scripts/check >/dev/null 2>&1)
+assert_exit "AC-4: contract check: полный прогон проходит при полном покрытии AC" 0 $?
+
+rm "$WIRE/tests/run.sh"
+rm "$WIRE/scripts/ac-check"
+(cd "$WIRE" && ./scripts/check >/dev/null 2>&1)
+assert_exit "AC-4: contract check: без scripts/ac-check — прежнее поведение, непокрытый AC не блокирует" 0 $?
+
+# ── Шаблоны и project-init.md подключают ac-check (issue #7) ────────────────
+for t in nextjs nestjs python-service monorepo; do
+  if grep -q 'scripts/ac-check' "$KIT/templates/$t/scripts/check"; then
+    echo "PASS: AC-4: templates/$t/scripts/check содержит вызов ac-check в полном прогоне"
+  else
+    echo "FAIL: AC-4: templates/$t/scripts/check не содержит вызов ac-check"
+    fails=$((fails + 1))
+  fi
+done
+
+if grep -q 'scripts/ac-check' "$KIT/commands/project-init.md"; then
+  echo "PASS: AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check"
+else
+  echo "FAIL: AC-4: project-init.md не содержит шаг копирования ac-check.sh"
+  fails=$((fails + 1))
+fi
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then

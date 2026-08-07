@@ -16,4 +16,8 @@ if [ $# -gt 0 ]; then
 else
   uv run ruff check .
   uv run mypy .
+  # scripts/ac-check копируется project-init'ом; см. docs/contract.md.
+  if [ -x scripts/ac-check ]; then
+    scripts/ac-check .
+  fi
 fi

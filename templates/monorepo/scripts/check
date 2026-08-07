@@ -17,6 +17,10 @@ run_pkg() {
 
 if [ $# -eq 0 ]; then
   for p in $packages; do run_pkg "$p"; done
+  # scripts/ac-check копируется project-init'ом; см. docs/contract.md.
+  if [ -x scripts/ac-check ]; then
+    scripts/ac-check .
+  fi
   exit 0
 fi
 
