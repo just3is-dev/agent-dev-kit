@@ -629,6 +629,96 @@ else
   fails=$((fails + 1))
 fi
 
+# ── /autopilot: события журнала (AC-2) ───────────────────────────────────────
+AUTOMD="$KIT/commands/autopilot.md"
+step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+finish_section=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+
+if printf '%s' "$step3" | grep -q 'adk-log\.sh.*event=task'; then
+  echo "PASS: AC-2: autopilot.md шаг 3 логирует event=task на каждую разобранную задачу"
+else
+  echo "FAIL: AC-2: autopilot.md шаг 3 не логирует event=task"
+  fails=$((fails + 1))
+fi
+
+if printf '%s' "$finish_section" | grep -q 'adk-log\.sh.*event=run_finish'; then
+  echo "PASS: AC-2: autopilot.md «Завершение» логирует event=run_finish"
+else
+  echo "FAIL: AC-2: autopilot.md «Завершение» не логирует итог прогона"
+  fails=$((fails + 1))
+fi
+
+for outcome_kind in 'outcome=merged' 'outcome="stuck' 'outcome=skipped'; do
+  if printf '%s' "$step3" | grep -qF "$outcome_kind"; then
+    echo "PASS: AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»"
+  else
+    echo "FAIL: AC-2: autopilot.md шаг 3 не упоминает исход «$outcome_kind»"
+    fails=$((fails + 1))
+  fi
+done
+
+for agg_field in total= merged= stuck= skipped=; do
+  if printf '%s' "$finish_section" | grep -qF "$agg_field"; then
+    echo "PASS: AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»"
+  else
+    echo "FAIL: AC-2: autopilot.md «Завершение» не пишет агрегат «$agg_field»"
+    fails=$((fails + 1))
+  fi
+done
+
+for section_name in step3 finish_section; do
+  section_text=$(eval "printf '%s' \"\$$section_name\"")
+  if printf '%s' "$section_text" | grep -q 'adk-log\.sh.*|| true'; then
+    echo "PASS: AC-2: autopilot.md $section_name — запись в журнал не блокирует прогон (|| true)"
+  else
+    echo "FAIL: AC-2: autopilot.md $section_name не отмечает журнал как необязательный (не гейт)"
+    fails=$((fails + 1))
+  fi
+done
+
+if printf '%s' "$step3" | grep -q 'autopilot-\$(date'; then
+  echo "PASS: AC-2: autopilot.md шаг 3 пишет в единицу autopilot-<дата>"
+else
+  echo "FAIL: AC-2: autopilot.md шаг 3 не адресует единицу журнала autopilot-<дата>"
+  fails=$((fails + 1))
+fi
+
+# Смоук: последовательность вызовов adk-log.sh, которую описывает autopilot.md
+# (task=merged → task=stuck → task=skipped → run_finish), даёт журнал одного
+# прогона с записью на каждую задачу и итоговой записью (сделано/застряло/
+# пропущено), в файле autopilot-<дата>.jsonl.
+AUTOP="$TMP/autopproj"
+mkdir -p "$AUTOP"
+DATE_UNIT="autopilot-$(date +%Y-%m-%d)"
+
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=10 outcome=merged >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=11 outcome="stuck: тесты падают" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=12 outcome=skipped >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_finish total=3 merged=1 stuck=1 skipped=1 >/dev/null 2>&1
+
+auto_lines=$(wc -l < "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 2>/dev/null | tr -d ' ')
+assert_exit "AC-2: autopilot.md-смоук: три task-записи плюс итоговая run_finish дают четыре строки" 4 "${auto_lines:-0}"
+
+auto_valid=$(python3 -c '
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        lines = [json.loads(l) for l in f]
+except Exception:
+    print("0")
+    sys.exit(0)
+ok = len(lines) == 4
+if ok:
+    ok = ok and lines[0].get("event") == "task" and lines[0].get("issue") == "10" and lines[0].get("outcome") == "merged"
+    ok = ok and lines[1].get("event") == "task" and lines[1].get("issue") == "11" and lines[1].get("outcome") == "stuck: тесты падают"
+    ok = ok and lines[2].get("event") == "task" and lines[2].get("issue") == "12" and lines[2].get("outcome") == "skipped"
+    ok = ok and lines[3].get("event") == "run_finish" and lines[3].get("total") == "3" and lines[3].get("merged") == "1" and lines[3].get("stuck") == "1" and lines[3].get("skipped") == "1"
+    ok = ok and all("timestamp" in l for l in lines)
+print("1" if ok else "0")
+' "$AUTOP/.adk/logs/$DATE_UNIT.jsonl")
+assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
