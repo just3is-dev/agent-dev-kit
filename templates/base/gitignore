@@ -5,6 +5,7 @@
 .env
 .env.*
 !.env.example
+.adk/
 node_modules/
 dist/
 build/

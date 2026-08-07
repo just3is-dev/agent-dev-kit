@@ -174,6 +174,100 @@ else
   fails=$((fails + 1))
 fi
 
+# ── Журнал (adk-log.sh) ──────────────────────────────────────────────────────
+LOGP="$TMP/logproj"
+mkdir -p "$LOGP"
+(cd "$LOGP" && git init -q -b main)
+
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=start issue=1 >/dev/null 2>&1
+assert_exit "AC-1: adk-log: запись под дефолтным путём завершается успешно" 0 $?
+if [ -f "$LOGP/.adk/logs/issue-1.jsonl" ]; then
+  echo "PASS: AC-1: adk-log: запись создаёт файл в .adk/logs/"
+else
+  echo "FAIL: AC-1: adk-log: файл .adk/logs/issue-1.jsonl не создан"
+  fails=$((fails + 1))
+fi
+
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=review verdict=APPROVE >/dev/null 2>&1
+lines=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+assert_exit "AC-1: adk-log: повторная запись дописывает вторую строку, не трёт первую" 2 "$lines"
+first_event=$(sed -n '1p' "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("event",""))' 2>/dev/null)
+if [ "$first_event" = "start" ]; then
+  echo "PASS: AC-1: adk-log: первая строка не перезаписана вторым событием"
+else
+  echo "FAIL: AC-1: adk-log: первая строка изменилась (event=$first_event)"
+  fails=$((fails + 1))
+fi
+
+valid=$(python3 -c '
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+ok = len(lines) == 2
+for l in lines:
+    try:
+        d = json.loads(l)
+        if "timestamp" not in d or "event" not in d:
+            ok = False
+    except Exception:
+        ok = False
+print("1" if ok else "0")
+' "$LOGP/.adk/logs/issue-1.jsonl")
+assert_exit "AC-1: adk-log: каждая строка — валидный JSON с timestamp и полями" 1 "$valid"
+
+before_badpair=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event badpair >/dev/null 2>&1
+assert_exit "AC-1: adk-log: аргумент без '=' отклоняется с ошибкой" 1 $?
+after_badpair=$(wc -l < "$LOGP/.adk/logs/issue-1.jsonl" | tr -d ' ')
+assert_exit "AC-1: adk-log: отклонённый аргумент не пишет строку в журнал" "$before_badpair" "$after_badpair"
+
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=spoof timestamp=bogus >/dev/null 2>&1
+last_ts=$(tail -n1 "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("timestamp",""))')
+if [ "$last_ts" = "bogus" ]; then
+  echo "FAIL: AC-1: adk-log: переданное поле timestamp затёрло служебное"
+  fails=$((fails + 1))
+else
+  echo "PASS: AC-1: adk-log: служебный timestamp не подменяется переданным полем"
+fi
+
+CUSTOM="$TMP/customlogs"
+rm -rf "$CUSTOM"
+ADK_LOGS_DIR="$CUSTOM" CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" autopilot-2026-08-07 event=run_start >/dev/null 2>&1
+if [ -f "$CUSTOM/autopilot-2026-08-07.jsonl" ] && [ ! -f "$LOGP/.adk/logs/autopilot-2026-08-07.jsonl" ]; then
+  echo "PASS: AC-1: adk-log: ADK_LOGS_DIR переопределяет путь"
+else
+  echo "FAIL: AC-1: adk-log: ADK_LOGS_DIR не переопределил путь"
+  fails=$((fails + 1))
+fi
+
+gi_content=$(cat "$LOGP/.adk/.gitignore" 2>/dev/null)
+if [ "$gi_content" = "*" ]; then
+  echo "PASS: AC-1: adk-log: .adk/.gitignore создан с содержимым *"
+else
+  echo "FAIL: AC-1: adk-log: .adk/.gitignore отсутствует или содержит не *"
+  fails=$((fails + 1))
+fi
+
+adk_status=$(cd "$LOGP" && git status --porcelain -- .adk 2>/dev/null)
+if [ -z "$adk_status" ]; then
+  echo "PASS: AC-1: adk-log: git status пуст для .adk/ (самоигнорирующаяся папка)"
+else
+  echo "FAIL: AC-1: adk-log: .adk/ виден git status: $adk_status"
+  fails=$((fails + 1))
+fi
+
+CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=merge >/dev/null 2>&1
+gi_lines_after=$(wc -l < "$LOGP/.adk/.gitignore" | tr -d ' ')
+assert_exit "AC-1: adk-log: повторная запись не дублирует .adk/.gitignore" 1 "$gi_lines_after"
+
+if grep -qx '\.adk/' "$KIT/templates/base/gitignore"; then
+  echo "PASS: AC-1: adk-log: templates/base/gitignore содержит .adk/"
+else
+  echo "FAIL: AC-1: adk-log: templates/base/gitignore не содержит .adk/"
+  fails=$((fails + 1))
+fi
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
