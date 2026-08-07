@@ -4,14 +4,8 @@
 set -u
 
 payload=$(cat)
-cmd=$(printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d.get("tool_input", {}).get("command", ""))
-except Exception:
-    pass
-')
+. "$(cd "$(dirname "$0")" && pwd)/lib/json-field.sh"
+cmd=$(json_field "$payload" "tool_input.command" "")
 [ -n "$cmd" ] || exit 0
 
 deny() {
@@ -23,13 +17,7 @@ deny() {
 # репозиторием (сессия открыта выше, проект подключён дополнительной
 # директорией), поэтому кандидаты в порядке достоверности: явный `cd` в самой
 # команде → cwd сессии из payload хука → корень сессии → PWD хука.
-hook_cwd=$(printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    print(json.load(sys.stdin).get("cwd", ""))
-except Exception:
-    pass
-')
+hook_cwd=$(json_field "$payload" "cwd" "")
 cd_prefix=""
 case "$cmd" in
   cd\ *) cd_prefix=$(printf '%s' "$cmd" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'') ;;

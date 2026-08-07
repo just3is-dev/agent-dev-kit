@@ -5,21 +5,15 @@
 set -u
 
 payload=$(cat)
-stop_active=$(printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print("1" if d.get("stop_hook_active") else "0")
-except Exception:
-    print("0")
-')
-session_id=$(printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    print(json.load(sys.stdin).get("session_id", ""))
-except Exception:
-    pass
-')
+. "$(cd "$(dirname "$0")" && pwd)/lib/json-field.sh"
+# stop_hook_active — JSON-булево; json_field возвращает python-строковое
+# представление ("True"/"False") или default при отсутствии поля/ошибке
+# разбора. Нормализуем к прежнему "1"/"0", чтобы проверка ниже не менялась.
+case "$(json_field "$payload" "stop_hook_active" "False")" in
+  True) stop_active=1 ;;
+  *) stop_active=0 ;;
+esac
+session_id=$(json_field "$payload" "session_id" "")
 
 # Уведомление «задача завершена» при успешном выходе (exit 0), если ход
 # длился дольше порога (ADK_NOTIFY_MIN_SECONDS, по умолчанию 45 с) —

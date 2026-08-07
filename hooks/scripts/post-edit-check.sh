@@ -4,14 +4,8 @@
 set -u
 
 payload=$(cat)
-file_path=$(printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d.get("tool_input", {}).get("file_path", ""))
-except Exception:
-    pass
-')
+. "$(cd "$(dirname "$0")" && pwd)/lib/json-field.sh"
+file_path=$(json_field "$payload" "tool_input.file_path" "")
 [ -n "$file_path" ] || exit 0
 [ -f "$file_path" ] || exit 0
 
