@@ -29,9 +29,10 @@ argument-hint: "[лимит задач за прогон, по умолчани�
    В свой контекст не тащи детали его работы — только итог.
 
 3. **Разбор результата** (по фактам из gh, не со слов субагента):
-   - **PR ready** → `gh pr merge <PR> --merge --delete-branch`; если
-     настроен CI — дождись зелёного перед merge (`gh pr checks --watch`);
-     после merge — следующая итерация;
+   - **PR ready** → `gh pr merge <PR> --squash --delete-branch` (squash:
+     один issue = один коммит в main, заголовок PR становится сообщением
+     коммита); если настроен CI — дождись зелёного перед merge
+     (`gh pr checks --watch`); после merge — следующая итерация;
    - **PR остался draft или PR нет** → задача застряла: поставь метку
      (`gh label create needs-human 2>/dev/null; gh issue edit <N> --add-label
      needs-human`), отправь уведомление
