@@ -25,8 +25,21 @@ shopt -s nullglob
 issue_files=("$logs_dir"/issue-*.jsonl)
 shopt -u nullglob
 
-if [ ! -d "$logs_dir" ] || [ "${#issue_files[@]}" -eq 0 ]; then
-  echo "Журнал пуст: в $logs_dir нет ни одной завершённой задачи (issue-*.jsonl)."
+if [ ! -d "$logs_dir" ]; then
+  echo "Журнал пуст: каталог $logs_dir не найден, записей ещё нет."
+  exit 0
+fi
+
+if [ "${#issue_files[@]}" -eq 0 ]; then
+  shopt -s nullglob
+  autopilot_files=("$logs_dir"/autopilot-*.jsonl)
+  shopt -u nullglob
+  if [ "${#autopilot_files[@]}" -eq 0 ]; then
+    echo "Журнал пуст: в $logs_dir нет ни одной записи."
+  else
+    echo "В журнале нет ни одной задачи (issue-*.jsonl) — только записи" \
+      "прогонов autopilot (autopilot-*.jsonl), которые /stats пока не агрегирует."
+  fi
   exit 0
 fi
 
@@ -40,8 +53,10 @@ import datetime
 paths = sys.argv[1:]
 
 tasks = []
+in_progress = 0
 for path in paths:
     rounds = 0
+    max_round = 0
     outcome = None
     last_ts = None
     valid_any = False
@@ -52,10 +67,12 @@ for path in paths:
                 continue
             try:
                 ev = json.loads(line)
+                if not isinstance(ev, dict):
+                    raise ValueError("строка не JSON-объект")
             except Exception:
                 print(
                     f"adk-stats: {os.path.basename(path)}:{lineno}: "
-                    "битая строка пропущена (не JSON)",
+                    "битая строка пропущена (не JSON-объект)",
                     file=sys.stderr,
                 )
                 continue
@@ -63,6 +80,10 @@ for path in paths:
             event = ev.get("event")
             if event == "review":
                 rounds += 1
+                try:
+                    max_round = max(max_round, int(ev.get("round", 0)))
+                except (TypeError, ValueError):
+                    pass
             elif event == "outcome":
                 outcome = ev
             ts = ev.get("timestamp")
@@ -71,9 +92,18 @@ for path in paths:
     if not valid_any:
         # файл целиком без единой валидной строки — не считается задачей
         continue
-    result = outcome.get("result") if outcome else "unknown"
-    reason = outcome.get("reason") if outcome else None
-    ts_for_week = (outcome.get("timestamp") if outcome else None) or last_ts
+    if outcome is None:
+        # задача ещё в работе (есть start/review, но нет итога) — не
+        # завершена, поэтому не участвует в агрегатах по завершённым задачам
+        in_progress += 1
+        continue
+    # число кругов ревью — максимум поля round, если оно проставлено (устойчиво
+    # к дублирующей записи одного круга в append-only журнале), иначе — число
+    # строк event=review
+    round_count = max_round if max_round > 0 else rounds
+    result = outcome.get("result") or "unknown"
+    reason = outcome.get("reason")
+    ts_for_week = outcome.get("timestamp") or last_ts
     week = None
     if ts_for_week:
         try:
@@ -85,7 +115,7 @@ for path in paths:
     tasks.append(
         {
             "file": os.path.basename(path),
-            "rounds": rounds,
+            "rounds": round_count,
             "result": result,
             "reason": reason,
             "week": week,
@@ -93,7 +123,10 @@ for path in paths:
     )
 
 if not tasks:
-    print("Журнал пуст: ни одна из записей issue-*.jsonl не содержит валидных событий.")
+    msg = "Журнал пуст: ни одна из записей issue-*.jsonl не содержит завершённой задачи (событие outcome)."
+    if in_progress:
+        msg += f" В работе (без итога): {in_progress}."
+    print(msg)
     sys.exit(0)
 
 total = len(tasks)
@@ -112,6 +145,8 @@ for t in tasks:
     weekly[key]["rounds"] += t["rounds"]
 
 print(f"Всего задач: {total}")
+if in_progress:
+    print(f"В работе (без итога, в агрегаты ниже не входят): {in_progress}")
 print(f"Средние круги ревью: {avg_rounds:.1f}")
 print(f"Доля застреваний: {stuck_rate:.0f}% ({len(stuck)}/{total})")
 if reasons:
