@@ -881,6 +881,14 @@ ac_st=$?
 assert_exit "AC-4: ac-check: спека не засчитывает сама себя как тест (docs/specs исключён)" 1 "$ac_st"
 assert_contains "AC-4: ac-check: AC-101 назван непокрытым при самопокрытии спекой" "$ac_out" "AC-101"
 
+# issue #28 K6: корень с trailing slash не должен молча отключать защиту
+# от самопокрытия спекой (root не нормализовался → specs_dir перестаёт
+# матчиться в -not -path → спека сама себя "покрывает" → ложный exit 0)
+ac_out=$("$HOOKS/ac-check.sh" "$SELFM/" 2>&1)
+ac_st=$?
+assert_exit "AC-4: ac-check: trailing slash в корне не отключает защиту от самопокрытия спекой (issue #28 K6)" 1 "$ac_st"
+assert_contains "AC-4: ac-check: AC-101 назван непокрытым при самопокрытии спекой (root с trailing slash)" "$ac_out" "AC-101"
+
 # node_modules/vendor не считаются тестовым корпусом — токен в зависимости
 # не должен ложно засчитываться как покрытие
 VEND="$TMP/ac-vendor-proj"
@@ -889,6 +897,17 @@ write_ac_spec "$VEND/docs/specs/001-x.md" "approved" "- [ ] AC-101: критер
 echo "AC-101" > "$VEND/node_modules/pkg/index.spec.js"
 "$HOOKS/ac-check.sh" "$VEND" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: node_modules не считается тестовым корпусом" 1 $?
+
+# issue #28 K6: недоступная поддиректория не должна течь "Permission denied"
+# в stderr гейта (2>/dev/null был потерян при переходе на prune_default)
+PERMP="$TMP/ac-permdenied-proj"
+mkdir -p "$PERMP/docs/specs" "$PERMP/tests" "$PERMP/secret"
+write_ac_spec "$PERMP/docs/specs/001-x.md" "approved" "- [ ] AC-101: критерий"
+echo "AC-101: покрыт" > "$PERMP/tests/run.sh"
+chmod 000 "$PERMP/secret"
+ac_err=$("$HOOKS/ac-check.sh" "$PERMP" 2>&1 >/dev/null)
+assert_not_contains "AC-4: ac-check: недоступная директория не течёт 'Permission denied' в stderr (issue #28 K6)" "$ac_err" "ermission denied"
+chmod 755 "$PERMP/secret"
 
 # ── AC-проверка подключена к контракту проекта (issue #7) ───────────────────
 # Используем реальный отгружаемый templates/monorepo/scripts/check (а не его
