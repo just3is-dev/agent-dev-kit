@@ -763,40 +763,40 @@ $3
 EOF
 }
 
-write_ac_spec "$ACP/docs/specs/001-x.md" "approved" "- [ ] AC-1: первый критерий
-- [ ] AC-2: второй критерий"
+write_ac_spec "$ACP/docs/specs/001-x.md" "approved" "- [ ] AC-101: первый критерий
+- [ ] AC-102: второй критерий"
 cat > "$ACP/tests/run.sh" <<'EOF'
-echo "AC-1: первый критерий покрыт"
-echo "AC-2: второй критерий покрыт"
+echo "AC-101: первый критерий покрыт"
+echo "AC-102: второй критерий покрыт"
 EOF
 
 "$HOOKS/ac-check.sh" "$ACP" >/dev/null 2>&1
-assert_exit "AC-4: ac-check: approved-спека AC-1..AC-2 с помеченными тестами — покрытие полное" 0 $?
+assert_exit "AC-4: ac-check: approved-спека AC-101..AC-102 с помеченными тестами — покрытие полное" 0 $?
 
-# убрали тег AC-2 из тестов — непокрытый критерий должен провалить проверку
+# убрали тег AC-102 из тестов — непокрытый критерий должен провалить проверку
 # и быть назван в выводе
 cat > "$ACP/tests/run.sh" <<'EOF'
-echo "AC-1: первый критерий покрыт"
+echo "AC-101: первый критерий покрыт"
 EOF
 ac_out=$("$HOOKS/ac-check.sh" "$ACP" 2>&1)
 ac_st=$?
-assert_exit "AC-4: ac-check: непокрытый AC-2 — exit 1" 1 "$ac_st"
-assert_contains "AC-4: ac-check: непокрытый AC-2 назван в выводе" "$ac_out" "AC-2"
+assert_exit "AC-4: ac-check: непокрытый AC-102 — exit 1" 1 "$ac_st"
+assert_contains "AC-4: ac-check: непокрытый AC-102 назван в выводе" "$ac_out" "AC-102"
 
 # draft-спека не проверяется — её AC-токены не требуют покрытия.
-# tests/run.sh фикстуры на этот момент всё ещё не содержит тега AC-2
-# (предыдущий блок), поэтому exit по-прежнему 1 — из-за AC-2, а не AC-9.
+# tests/run.sh фикстуры на этот момент всё ещё не содержит тега AC-102
+# (предыдущий блок), поэтому exit по-прежнему 1 — из-за AC-102, а не AC-9.
 write_ac_spec "$ACP/docs/specs/002-y.md" "draft" "- [ ] AC-9: черновой критерий без теста"
 ac_out=$("$HOOKS/ac-check.sh" "$ACP" 2>&1)
 ac_st=$?
 rm "$ACP/docs/specs/002-y.md"
-assert_exit "AC-4: ac-check: draft-спека не мешает результату (exit по-прежнему из-за AC-2)" 1 "$ac_st"
+assert_exit "AC-4: ac-check: draft-спека не мешает результату (exit по-прежнему из-за AC-102)" 1 "$ac_st"
 assert_not_contains "AC-4: ac-check: AC-токены draft-спеки не требуют покрытия" "$ac_out" "AC-9"
 
-# вернули тег AC-2 — approved-спека снова полностью покрыта
+# вернули тег AC-102 — approved-спека снова полностью покрыта
 cat > "$ACP/tests/run.sh" <<'EOF'
-echo "AC-1: первый критерий покрыт"
-echo "AC-2: второй критерий покрыт"
+echo "AC-101: первый критерий покрыт"
+echo "AC-102: второй критерий покрыт"
 EOF
 "$HOOKS/ac-check.sh" "$ACP" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: покрытие восстановлено — exit 0" 0 $?
@@ -810,8 +810,8 @@ rm "$ACP/docs/specs/003-z.md"
 # переданные явные пути тестов используются вместо дефолтных
 mkdir -p "$ACP/alt-tests"
 cat > "$ACP/alt-tests/custom.sh" <<'EOF'
-echo "AC-1: покрыт в альтернативном месте"
-echo "AC-2: покрыт в альтернативном месте"
+echo "AC-101: покрыт в альтернативном месте"
+echo "AC-102: покрыт в альтернативном месте"
 EOF
 "$HOOKS/ac-check.sh" "$ACP" "$ACP/alt-tests" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: явно переданный путь тестов используется вместо дефолтного tests/" 0 $?
@@ -834,7 +834,7 @@ cat > "$TPL/docs/specs/001-draft.md" <<'EOF'
 
 ## Критерии приёмки
 
-- [ ] AC-1: критерий без единого теста
+- [ ] AC-101: критерий без единого теста
 EOF
 "$HOOKS/ac-check.sh" "$TPL" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: строка статуса шаблона (с HTML-комментарием-подсказкой) не считается approved" 0 $?
@@ -854,10 +854,10 @@ cat > "$SEC/docs/specs/001-x.md" <<'EOF'
 
 ## Критерии приёмки
 
-- [ ] AC-1: единственный формальный критерий
+- [ ] AC-101: единственный формальный критерий
 EOF
 cat > "$SEC/tests/run.sh" <<'EOF'
-echo "AC-1: критерий покрыт"
+echo "AC-101: критерий покрыт"
 EOF
 "$HOOKS/ac-check.sh" "$SEC" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: AC-токен вне секции «Критерии приёмки» не требует покрытия" 0 $?
@@ -874,19 +874,19 @@ cat > "$SELFM/docs/specs/001-feature.spec.md" <<'EOF'
 
 ## Критерии приёмки
 
-- [ ] AC-1: критерий без отдельного теста
+- [ ] AC-101: критерий без отдельного теста
 EOF
 ac_out=$("$HOOKS/ac-check.sh" "$SELFM" 2>&1)
 ac_st=$?
 assert_exit "AC-4: ac-check: спека не засчитывает сама себя как тест (docs/specs исключён)" 1 "$ac_st"
-assert_contains "AC-4: ac-check: AC-1 назван непокрытым при самопокрытии спекой" "$ac_out" "AC-1"
+assert_contains "AC-4: ac-check: AC-101 назван непокрытым при самопокрытии спекой" "$ac_out" "AC-101"
 
 # node_modules/vendor не считаются тестовым корпусом — токен в зависимости
 # не должен ложно засчитываться как покрытие
 VEND="$TMP/ac-vendor-proj"
 mkdir -p "$VEND/docs/specs" "$VEND/tests" "$VEND/node_modules/pkg"
-write_ac_spec "$VEND/docs/specs/001-x.md" "approved" "- [ ] AC-1: критерий без реального теста"
-echo "AC-1" > "$VEND/node_modules/pkg/index.spec.js"
+write_ac_spec "$VEND/docs/specs/001-x.md" "approved" "- [ ] AC-101: критерий без реального теста"
+echo "AC-101" > "$VEND/node_modules/pkg/index.spec.js"
 "$HOOKS/ac-check.sh" "$VEND" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: node_modules не считается тестовым корпусом" 1 $?
 
@@ -919,7 +919,7 @@ assert_exit "AC-4: contract check: частичный прогон по чист
 # непокрытый AC уже есть в docs/specs — частичный прогон (аргументы-файлы)
 # всё равно не должен звать ac-check, иначе любая точечная правка файла
 # (её гоняет post-edit-check после каждого Edit) блокировалась бы AC-гейтом
-write_ac_spec "$WIRE/docs/specs/001-x.md" "approved" "- [ ] AC-1: критерий"
+write_ac_spec "$WIRE/docs/specs/001-x.md" "approved" "- [ ] AC-101: критерий"
 (cd "$WIRE" && ./scripts/check pkg/src/good.ts >/dev/null 2>&1)
 assert_exit "AC-4: contract check: частичный прогон игнорирует непокрытый AC — граница \$#-guard'а" 0 $?
 
@@ -927,7 +927,7 @@ assert_exit "AC-4: contract check: частичный прогон игнори�
 assert_exit "AC-4: contract check: полный прогон падает при непокрытом AC" 1 $?
 
 cat > "$WIRE/tests/run.sh" <<'EOF'
-echo "AC-1: критерий покрыт"
+echo "AC-101: критерий покрыт"
 EOF
 (cd "$WIRE" && ./scripts/check >/dev/null 2>&1)
 assert_exit "AC-4: contract check: полный прогон проходит при полном покрытии AC" 0 $?
@@ -984,6 +984,68 @@ kchk_out=$(cd "$KCHK" && PATH="$KCHK/bin:$PATH" ./scripts/check 2>&1)
 kchk_st=$?
 assert_exit "кит: scripts/check без аргументов — полный прогон завершается успешно" 0 "$kchk_st"
 assert_contains "кит: scripts/check без аргументов запускает ac-check.sh (issue #24)" "$kchk_out" "AC_CHECK_CALLED"
+
+# ── тест-страж: фикстуры блока ac-check.sh не самопокрывают AC-N кита (issue #27) ─
+# Раньше строки-фикстуры внутри тестов ac-check.sh (весь диапазон AC-4-тестов
+# от заголовка «AC-трассируемость» до заголовка «Конвенция AC-тегирования» —
+# сам этот диапазон легитимно несёт реальный тег AC-4, он тестирует ac-check
+# как фичу) физически лежали в этом файле и совпадали с grep-корпусом
+# догфуда AC-N самого кита (docs/specs/001-process-observability.md),
+# поэтому ./scripts/check давал ложный exit 0, даже если реальные теги
+# были убраны из журнал-тестов вне этого диапазона.
+# Здесь копия этого файла: реальные теги AC-N вне диапазона AC-4-тестов
+# вычищаются (имитируя ручное удаление из журнал-тестов), а сам диапазон и
+# его фикстуры остаются как есть — если фикстуры снова станут номерами
+# реальных критериев (текущая нумерация фикстур в сотнях, см. диапазон
+# выше), ac-check честно этого не заметит и тест упадёт. Тег каждого AC-N
+# собирается динамически из секции «## Критерии приёмки» спеки (тем же
+# способом, что и сам ac-check.sh) — а не как строковый литерал, чтобы сам
+# тест-страж не плодил новую самопокрывающуюся строку.
+guard_ac_check() {
+  local block_start block_end guard_out guard_st GUARD
+  block_start=$(grep -n '^# ── AC-трассируемость' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
+  block_end=$(grep -n '^# ── Конвенция AC-тегирования' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
+  if [ -z "${block_start:-}" ] || [ -z "${block_end:-}" ] || [ "$block_end" -le "$block_start" ]; then
+    echo "FAIL: AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены (block_start=$block_start block_end=$block_end)"
+    fails=$((fails + 1))
+    return
+  fi
+  echo "PASS: AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены"
+  block_end=$((block_end - 1))
+
+  GUARD="$TMP/ac-guard-proj"
+  mkdir -p "$GUARD/docs/specs" "$GUARD/tests"
+  cp "$KIT/docs/specs/001-process-observability.md" "$GUARD/docs/specs/001-process-observability.md"
+
+  declare -a guard_sed_args=()
+  declare -a guard_tags=()
+  while IFS= read -r tag; do
+    guard_tags+=("$tag")
+    guard_sed_args+=(-e "1,$((block_start - 1)) s/${tag}([^0-9]|\$)/ZZ\\1/g")
+    guard_sed_args+=(-e "$((block_end + 1)),\$ s/${tag}([^0-9]|\$)/ZZ\\1/g")
+  done < <(awk '/^## Критерии приёмки/{flag=1; next} /^## /{flag=0} flag' \
+             "$GUARD/docs/specs/001-process-observability.md" | grep -oE 'AC-[0-9]+' | sort -u)
+  sed -E "${guard_sed_args[@]}" "$KIT/tests/run.sh" > "$GUARD/tests/run.sh"
+
+  # sanity: sed только подставляет текст, не удаляет строки — число строк копии
+  # обязано совпасть с оригиналом. Если адреса sed сломались (пустой или
+  # перевёрнутый диапазон), копия могла бы получиться усечённой/пустой, и
+  # проверка ac-check ниже была бы вакуумным "все AC непокрыты" не по факту
+  # вычищенных тегов, а из-за пустого корпуса — тест-страж прошёл бы вхолостую.
+  assert_exit "AC-4: тест-страж: копия tests/run.sh для проверки не усечена (совпадает по числу строк с оригиналом)" \
+    "$(count_lines "$KIT/tests/run.sh")" "$(count_lines "$GUARD/tests/run.sh")"
+
+  guard_out=$("$HOOKS/ac-check.sh" "$GUARD" 2>&1)
+  guard_st=$?
+  assert_exit "AC-4: тест-страж: реальные теги AC-N вне диапазона AC-4-тестов убраны — ac-check честно падает" 1 "$guard_st"
+  for tag in "${guard_tags[@]}"; do
+    # свой собственный реальный тег диапазона (AC-4) остаётся покрытым — он
+    # не тронут (живёт внутри исключённого диапазона), это не баг issue #27
+    [ "$tag" = "AC-4" ] && continue
+    assert_contains "AC-4: тест-страж: непокрытый $tag назван в выводе — фикстуры диапазона AC-4-тестов не самопокрывают его" "$guard_out" "$tag"
+  done
+}
+guard_ac_check
 
 # ── Конвенция AC-тегирования зафиксирована в промптах и скилле tdd (issue #6) ─
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
