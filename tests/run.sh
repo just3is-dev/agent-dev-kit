@@ -42,6 +42,52 @@ count_lines() { # count_lines <файл> — обёртка над wc -l для 
   wc -l < "$1" | tr -d ' '
 }
 
+jsonl_check() { # jsonl_check <файл> <ожидаемое_число_строк> <спека_полей>
+  # Общий валидатор JSONL-смоуков (issue #28 K4, было 3 копии): проверяет,
+  # что файл — ровно <ожидаемое_число_строк> валидных JSON-объектов, что
+  # у каждой строки есть непустой "timestamp", и сверяет поля по <спеке>.
+  # <спека> — одна запись на строку файла (в том же порядке), поля внутри
+  # записи разделены '|': "ключ=значение" — точное совпадение,
+  # "ключ?" — просто непустое присутствие (пустая спека или пустая запись —
+  # без дополнительных проверок полей, только количество строк + timestamp).
+  # Печатает "1"/"0" — совместимо с assert_exit.
+  python3 -c '
+import json, sys
+path, expected_n, spec = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    with open(path) as f:
+        lines = [json.loads(l) for l in f]
+except Exception:
+    print("0")
+    sys.exit(0)
+ok = len(lines) == expected_n
+spec_lines = spec.split("\n") if spec else []
+if ok and spec_lines and len(spec_lines) != len(lines):
+    ok = False
+if ok:
+    for rec, sl in zip(lines, spec_lines):
+        if "timestamp" not in rec or not rec["timestamp"]:
+            ok = False
+            break
+        for tok in sl.split("|"):
+            if not tok:
+                continue
+            if tok.endswith("?"):
+                k = tok[:-1]
+                if k not in rec or rec[k] in ("", None):
+                    ok = False
+                    break
+            else:
+                k, _, v = tok.partition("=")
+                if rec.get(k) != v:
+                    ok = False
+                    break
+        if not ok:
+            break
+print("1" if ok else "0")
+' "$1" "$2" "$3"
+}
+
 # ── Одиночный проект с контрактом ────────────────────────────────────────────
 P="$TMP/proj"
 mkdir -p "$P/scripts" "$P/src"
@@ -264,21 +310,7 @@ else
   fails=$((fails + 1))
 fi
 
-valid=$(python3 -c '
-import json, sys
-path = sys.argv[1]
-with open(path) as f:
-    lines = f.readlines()
-ok = len(lines) == 2
-for l in lines:
-    try:
-        d = json.loads(l)
-        if "timestamp" not in d or "event" not in d:
-            ok = False
-    except Exception:
-        ok = False
-print("1" if ok else "0")
-' "$LOGP/.adk/logs/issue-1.jsonl")
+valid=$(jsonl_check "$LOGP/.adk/logs/issue-1.jsonl" 2 "$(printf 'event?\nevent?')")
 assert_exit "AC-1: adk-log: каждая строка — валидный JSON с timestamp и полями" 1 "$valid"
 
 before_badpair=$(count_lines "$LOGP/.adk/logs/issue-1.jsonl")
@@ -606,23 +638,11 @@ CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=finish outcome=re
 work_lines=$(count_lines "$WORKP/.adk/logs/issue-42.jsonl" 2>/dev/null)
 assert_exit "AC-1: work.md-смоук: start → review → finish дают три записи в issue-42.jsonl" 3 "${work_lines:-0}"
 
-work_valid=$(python3 -c '
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        lines = [json.loads(l) for l in f]
-except Exception:
-    print("0")
-    sys.exit(0)
-ok = len(lines) == 3
-if ok:
-    ok = ok and lines[0].get("event") == "start" and lines[0].get("issue") == "42"
-    ok = ok and lines[1].get("event") == "review" and lines[1].get("round") == "1" and lines[1].get("verdict") == "REQUEST_CHANGES"
-    ok = ok and lines[2].get("event") == "finish" and lines[2].get("outcome") == "ready" and lines[2].get("rounds") == "2" and "duration" in lines[2] and "diffstat" in lines[2]
-    ok = ok and all("timestamp" in l for l in lines)
-print("1" if ok else "0")
-' "$WORKP/.adk/logs/issue-42.jsonl")
+work_spec=$(printf '%s\n%s\n%s' \
+  'event=start|issue=42' \
+  'event=review|round=1|verdict=REQUEST_CHANGES' \
+  'event=finish|outcome=ready|rounds=2|duration?|diffstat?')
+work_valid=$(jsonl_check "$WORKP/.adk/logs/issue-42.jsonl" 3 "$work_spec")
 assert_exit "AC-1: work.md-смоук: записи содержат issue/круг/вердикт/итог/длительность" 1 "$work_valid"
 
 # Смоук: outcome=stuck:<причина> с пробелами — ровно случай застревания,
@@ -692,24 +712,12 @@ CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_finish to
 auto_lines=$(count_lines "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 2>/dev/null)
 assert_exit "AC-2: autopilot.md-смоук: три task-записи плюс итоговая run_finish дают четыре строки" 4 "${auto_lines:-0}"
 
-auto_valid=$(python3 -c '
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        lines = [json.loads(l) for l in f]
-except Exception:
-    print("0")
-    sys.exit(0)
-ok = len(lines) == 4
-if ok:
-    ok = ok and lines[0].get("event") == "task" and lines[0].get("issue") == "10" and lines[0].get("outcome") == "merged"
-    ok = ok and lines[1].get("event") == "task" and lines[1].get("issue") == "11" and lines[1].get("outcome") == "stuck: тесты падают"
-    ok = ok and lines[2].get("event") == "task" and lines[2].get("issue") == "12" and lines[2].get("outcome") == "skipped"
-    ok = ok and lines[3].get("event") == "run_finish" and lines[3].get("total") == "3" and lines[3].get("merged") == "1" and lines[3].get("stuck") == "1" and lines[3].get("skipped") == "1"
-    ok = ok and all("timestamp" in l for l in lines)
-print("1" if ok else "0")
-' "$AUTOP/.adk/logs/$DATE_UNIT.jsonl")
+auto_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=task|issue=10|outcome=merged' \
+  'event=task|issue=11|outcome=stuck: тесты падают' \
+  'event=task|issue=12|outcome=skipped' \
+  'event=run_finish|total=3|merged=1|stuck=1|skipped=1')
+auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 4 "$auto_spec")
 assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
 
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
