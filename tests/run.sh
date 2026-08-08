@@ -441,6 +441,34 @@ stats_out=$(ADK_LOGS_DIR="$STATS_BADREASON" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: reason нестрокового типа не роняет скрипт" 0 $?
 assert_contains "AC-3: adk-stats: задача с нестроковым reason всё равно посчитана" "$stats_out" "Всего задач: 1"
 
+# issue #28 K9: issue-*.jsonl физически есть, но целиком из битых строк
+# (valid_any=False для каждой) — сообщение должно честно называть это
+# "файлы есть, валидных записей нет", а не путать с реально пустым журналом
+STATS_ALLBROKEN="$TMP/stats-allbroken"
+mkdir -p "$STATS_ALLBROKEN"
+cat > "$STATS_ALLBROKEN/issue-99.jsonl" <<'EOF'
+это не json, битая строка
+42
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_ALLBROKEN" "$HOOKS/adk-stats.sh" 2>/dev/null)
+assert_exit "AC-3: adk-stats: файл целиком из битых строк — exit 0" 0 $?
+assert_contains "AC-3: adk-stats: файл есть, но валидных записей нет — отдельное сообщение (issue #28 K9)" "$stats_out" "валидных записей нет"
+assert_not_contains "AC-3: adk-stats: файл целиком из битых строк не выдаётся за реально пустой журнал (issue #28 K9)" "$stats_out" "Журнал пуст"
+
+# issue #28 K9: event=review без поля round (фолбэк round_count = число
+# строк event=review, а не max(round)) — раньше не был покрыт фикстурой
+STATS_NOROUND="$TMP/stats-noround"
+mkdir -p "$STATS_NOROUND"
+cat > "$STATS_NOROUND/issue-60.jsonl" <<'EOF'
+{"event":"start","issue":"60","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"60","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:10:00Z"}
+{"event":"review","issue":"60","verdict":"APPROVE","timestamp":"2026-08-05T09:20:00Z"}
+{"event":"outcome","issue":"60","result":"merged","timestamp":"2026-08-05T09:25:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_NOROUND" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: event=review без поля round — exit 0" 0 $?
+assert_contains "AC-3: adk-stats: без поля round круги считаются по числу строк event=review=2 (issue #28 K9)" "$stats_out" "Средние круги ревью: 2.0"
+
 # 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
 STATS_DIR="$TMP/stats-logs"
 mkdir -p "$STATS_DIR"
