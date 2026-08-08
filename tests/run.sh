@@ -615,63 +615,80 @@ assert_contains "AC-1: work.md шаг 1 логирует event=start" "$step1" '
 
 assert_contains "AC-1: work.md шаг 6 логирует event=review после каждого вердикта" "$step6" 'adk-log\.sh.*event=review'
 
-assert_contains "AC-1: work.md шаг 7 логирует event=finish" "$step7" 'adk-log\.sh.*event=finish'
+assert_contains "AC-1: work.md шаг 7 логирует event=outcome (схема ADR-001)" "$step7" 'adk-log\.sh.*event=outcome'
+
+assert_contains "AC-1: work.md шаг 7 пишет result=merged|stuck (не outcome=ready, issue #21)" "$step7" 'result=<merged|stuck>'
 
 assert_contains "AC-1: work.md шаг 7 считает размер диффа git diff main... --shortstat" "$step7" 'git diff main\.\.\. --shortstat'
+
+assert_contains "AC-1: work.md шаг 7 пишет diff= (не diffstat=, issue #21)" "$step7" 'diff='
 
 for step_name in step1 step6 step7; do
   step_text=$(eval "printf '%s' \"\$$step_name\"")
   assert_contains "AC-1: work.md $step_name — запись в журнал не блокирует задачу (|| true)" "$step_text" 'adk-log\.sh.*|| true'
 done
 
-assert_contains "AC-1: work.md шаг 7 — outcome закавычен (причина может содержать пробелы)" "$step7" 'outcome="'
+assert_contains "AC-1: work.md шаг 7 — reason закавычен (причина может содержать пробелы)" "$step7" 'reason="'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает work.md
-# (start → review → finish), даёт журнал с тремя валидными записями.
+# (start → review → outcome, схема ADR-001), даёт журнал с тремя валидными
+# записями, и adk-stats.sh на этом журнале агрегирует задачу как завершённую
+# (issue #21: раньше event=finish/outcome= не совпадал с тем, что читает
+# adk-stats.sh, и реально завершённая задача показывалась как "в работе").
 WORKP="$TMP/workproj"
 mkdir -p "$WORKP"
 
 CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=start issue=42 >/dev/null 2>&1
-CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=review round=1 verdict=REQUEST_CHANGES >/dev/null 2>&1
-CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=finish outcome=ready rounds=2 duration=42s diffstat=" 1 file changed, 3 insertions(+)" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=review round=1 verdict=APPROVE >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=outcome result=merged duration=42s diff=" 1 file changed, 3 insertions(+)" >/dev/null 2>&1
 
 work_lines=$(count_lines "$WORKP/.adk/logs/issue-42.jsonl" 2>/dev/null)
-assert_exit "AC-1: work.md-смоук: start → review → finish дают три записи в issue-42.jsonl" 3 "${work_lines:-0}"
+assert_exit "AC-1: work.md-смоук: start → review → outcome дают три записи в issue-42.jsonl" 3 "${work_lines:-0}"
 
 work_spec=$(printf '%s\n%s\n%s' \
   'event=start|issue=42' \
-  'event=review|round=1|verdict=REQUEST_CHANGES' \
-  'event=finish|outcome=ready|rounds=2|duration?|diffstat?')
+  'event=review|round=1|verdict=APPROVE' \
+  'event=outcome|result=merged|duration?|diff?')
 work_valid=$(jsonl_check "$WORKP/.adk/logs/issue-42.jsonl" 3 "$work_spec")
 assert_exit "AC-1: work.md-смоук: записи содержат issue/круг/вердикт/итог/длительность" 1 "$work_valid"
 
-# Смоук: outcome=stuck:<причина> с пробелами — ровно случай застревания,
+work_stats_out=$(ADK_LOGS_DIR="$WORKP/.adk/logs" "$HOOKS/adk-stats.sh" 2>&1)
+assert_contains "AC-1: work.md-смоук: adk-stats.sh на журнале /work агрегирует задачу как завершённую, не 'в работе' (issue #21)" "$work_stats_out" "Всего задач: 1"
+assert_not_contains "AC-1: work.md-смоук: adk-stats.sh не показывает завершённую задачу как 'в работе' (issue #21)" "$work_stats_out" "В работе"
+
+# Смоук: result=stuck с reason, содержащим пробелы — ровно случай застревания,
 # ради которого журнал и заводится (issue #4 агрегирует причины).
 WORKP2="$TMP/workproj-stuck"
 mkdir -p "$WORKP2"
 CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=start issue=43 >/dev/null 2>&1
-CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=finish outcome="stuck: тесты не проходят" rounds=2 duration=120s diffstat=" 3 files changed" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$WORKP2" "$HOOKS/adk-log.sh" issue-43 event=outcome result=stuck reason="тесты не проходят" duration=120s diff=" 3 files changed" >/dev/null 2>&1
 stuck_lines=$(count_lines "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null)
-assert_exit "AC-1: work.md-смоук: outcome=stuck с пробелами в причине не роняет запись" 2 "${stuck_lines:-0}"
+assert_exit "AC-1: work.md-смоук: result=stuck с пробелами в reason не роняет запись" 2 "${stuck_lines:-0}"
 
-stuck_outcome=$(tail -n1 "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("outcome",""))' 2>/dev/null)
-if [ "$stuck_outcome" = "stuck: тесты не проходят" ]; then
+stuck_reason=$(tail -n1 "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("reason",""))' 2>/dev/null)
+if [ "$stuck_reason" = "тесты не проходят" ]; then
   echo "PASS: AC-1: work.md-смоук: причина застревания сохраняется целиком, с пробелами"
 else
-  echo "FAIL: AC-1: work.md-смоук: причина застревания искажена или потеряна (outcome=$stuck_outcome)"
+  echo "FAIL: AC-1: work.md-смоук: причина застревания искажена или потеряна (reason=$stuck_reason)"
   fails=$((fails + 1))
 fi
 
+stuck_stats_out=$(ADK_LOGS_DIR="$WORKP2/.adk/logs" "$HOOKS/adk-stats.sh" 2>&1)
+assert_contains "AC-1: work.md-смоук: adk-stats.sh на журнале с result=stuck считает застревание и называет причину (issue #21)" "$stuck_stats_out" "тесты не проходят"
+
 # ── /autopilot: события журнала (AC-2) ───────────────────────────────────────
 AUTOMD="$KIT/commands/autopilot.md"
+cycle_preamble=$(sed -n '/^## Цикл/,/^1\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
 step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
 finish_section=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
 
+assert_contains "AC-2: autopilot.md логирует event=run_start перед циклом (issue #21: раньше не логировался вовсе)" "$cycle_preamble" 'adk-log\.sh.*event=run_start'
+
 assert_contains "AC-2: autopilot.md шаг 3 логирует event=task на каждую разобранную задачу" "$step3" 'adk-log\.sh.*event=task'
 
-assert_contains "AC-2: autopilot.md «Завершение» логирует event=run_finish" "$finish_section" 'adk-log\.sh.*event=run_finish'
+assert_contains "AC-2: autopilot.md «Завершение» логирует event=run_end (не run_finish, issue #21)" "$finish_section" 'adk-log\.sh.*event=run_end'
 
-for outcome_kind in 'outcome=merged' 'outcome="stuck' 'outcome=skipped'; do
+for outcome_kind in 'result=merged' 'result=stuck' 'result=skipped'; do
   if printf '%s' "$step3" | grep -qF "$outcome_kind"; then
     echo "PASS: AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»"
   else
@@ -680,7 +697,7 @@ for outcome_kind in 'outcome=merged' 'outcome="stuck' 'outcome=skipped'; do
   fi
 done
 
-for agg_field in total= merged= stuck= skipped=; do
+for agg_field in done= stuck= skipped=; do
   if printf '%s' "$finish_section" | grep -qF "$agg_field"; then
     echo "PASS: AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»"
   else
@@ -689,7 +706,7 @@ for agg_field in total= merged= stuck= skipped=; do
   fi
 done
 
-for section_name in step3 finish_section; do
+for section_name in cycle_preamble step3 finish_section; do
   section_text=$(eval "printf '%s' \"\$$section_name\"")
   assert_contains "AC-2: autopilot.md $section_name — запись в журнал не блокирует прогон (|| true)" "$section_text" 'adk-log\.sh.*|| true'
 done
@@ -697,28 +714,37 @@ done
 assert_contains "AC-2: autopilot.md шаг 3 пишет в единицу autopilot-<дата>" "$step3" 'autopilot-\$(date'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает autopilot.md
-# (task=merged → task=stuck → task=skipped → run_finish), даёт журнал одного
-# прогона с записью на каждую задачу и итоговой записью (сделано/застряло/
-# пропущено), в файле autopilot-<дата>.jsonl.
+# (run_start → task=merged → task=stuck → task=skipped → run_end, схема
+# ADR-001), даёт журнал одного прогона с записью на каждую задачу и итоговой
+# записью (сделано/застряло/пропущено), в файле autopilot-<дата>.jsonl.
 AUTOP="$TMP/autopproj"
 mkdir -p "$AUTOP"
 DATE_UNIT="autopilot-$(date +%Y-%m-%d)"
 
-CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=10 outcome=merged >/dev/null 2>&1
-CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=11 outcome="stuck: тесты падают" >/dev/null 2>&1
-CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=12 outcome=skipped >/dev/null 2>&1
-CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_finish total=3 merged=1 stuck=1 skipped=1 >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_start >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=10 result=merged >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=11 result=stuck reason="тесты падают" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=task issue=12 result=skipped >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_end done=1 stuck=1 skipped=1 >/dev/null 2>&1
 
 auto_lines=$(count_lines "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 2>/dev/null)
-assert_exit "AC-2: autopilot.md-смоук: три task-записи плюс итоговая run_finish дают четыре строки" 4 "${auto_lines:-0}"
+assert_exit "AC-2: autopilot.md-смоук: run_start + три task-записи плюс итоговая run_end дают пять строк" 5 "${auto_lines:-0}"
 
-auto_spec=$(printf '%s\n%s\n%s\n%s' \
-  'event=task|issue=10|outcome=merged' \
-  'event=task|issue=11|outcome=stuck: тесты падают' \
-  'event=task|issue=12|outcome=skipped' \
-  'event=run_finish|total=3|merged=1|stuck=1|skipped=1')
-auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 4 "$auto_spec")
+auto_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=10|result=merged' \
+  'event=task|issue=11|result=stuck|reason=тесты падают' \
+  'event=task|issue=12|result=skipped' \
+  'event=run_end|done=1|stuck=1|skipped=1')
+auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 5 "$auto_spec")
 assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
+
+# adk-stats.sh пока не агрегирует autopilot-*.jsonl напрямую (ADR-001: только
+# issue-*.jsonl), но должен честно отличать «есть autopilot-записи» от
+# «журнал пуст» — сквозная проверка, что новая схема run_start/task/run_end
+# не роняет и не путает адрегатор (issue #21).
+auto_only_stats_out=$(ADK_LOGS_DIR="$AUTOP/.adk/logs" "$HOOKS/adk-stats.sh" 2>&1)
+assert_contains "AC-2: autopilot.md-смоук: adk-stats.sh на журнале только с autopilot-файлом не выдаёт трейсбек" "$auto_only_stats_out" "нет ни одной задачи"
 
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
