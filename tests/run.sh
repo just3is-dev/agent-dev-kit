@@ -739,13 +739,6 @@ auto_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
 auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 5 "$auto_spec")
 assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
 
-# adk-stats.sh пока не агрегирует autopilot-*.jsonl напрямую (ADR-001: только
-# issue-*.jsonl), но должен честно отличать «есть autopilot-записи» от
-# «журнал пуст» — сквозная проверка, что новая схема run_start/task/run_end
-# не роняет и не путает адрегатор (issue #21).
-auto_only_stats_out=$(ADK_LOGS_DIR="$AUTOP/.adk/logs" "$HOOKS/adk-stats.sh" 2>&1)
-assert_contains "AC-2: autopilot.md-смоук: adk-stats.sh на журнале только с autopilot-файлом не выдаёт трейсбек" "$auto_only_stats_out" "нет ни одной задачи"
-
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"

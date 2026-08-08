@@ -62,7 +62,7 @@ argument-hint: "[номер issue; по умолчанию следующий н
    строка не годится) и размер диффа (`git diff main... --shortstat`).
    `reason` обычно содержит пробелы — заключай в кавычки, как `diff`:
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N> event=outcome
-   result=<merged|stuck> reason="<причина, только при result=stuck>"
+   result=<merged|stuck> [reason="<причина, только при result=stuck>"]
    duration=<N>s diff="<вывод git diff main... --shortstat>" || true`.
    **Отчёт пользователю:** ссылка на PR, вердикт ревьюера, что осталось
    до merge (merge — человек или /autopilot, в обоих случаях только
