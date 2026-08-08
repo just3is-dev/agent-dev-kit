@@ -25,33 +25,35 @@ if [ -z "$root" ]; then
   echo "usage: ac-check.sh <project_root> [test_path ...]" >&2
   exit 1
 fi
+root="${root%/}"
 shift
 
 specs_dir="$root/docs/specs"
 [ -d "$specs_dir" ] || exit 0
 
 # ── Собрать AC-токены из approved-спек ───────────────────────────────────────
+# Секции "Критерии приёмки" всех approved-спек копятся в одну строку, а
+# извлечение токенов + дедуп идёт одним проходом grep -oE | sort -u —
+# вместо сырого сбора в массив и отдельного дедуп-прохода по нему.
 declare -a acs=()
+sections=""
 for spec in "$specs_dir"/*.md; do
   [ -f "$spec" ] || continue
   status_line=$(grep -m1 -E '^Статус:' "$spec" || true)
   status=$(printf '%s' "$status_line" | sed -E 's/^Статус:[[:space:]]*//' | awk '{print $1}')
   [ "$status" = "approved" ] || continue
   # только токены из секции "## Критерии приёмки" (до следующего "## ")
-  section=$(awk '/^## Критерии приёмки/{flag=1; next} /^## /{flag=0} flag' "$spec")
-  while IFS= read -r ac; do
-    [ -n "$ac" ] && acs+=("$ac")
-  done < <(printf '%s' "$section" | grep -oE 'AC-[0-9]+')
+  sections="$sections
+$(awk '/^## Критерии приёмки/{flag=1; next} /^## /{flag=0} flag' "$spec")"
 done
+
+while IFS= read -r ac; do
+  [ -n "$ac" ] && acs+=("$ac")
+done < <(printf '%s' "$sections" | grep -oE 'AC-[0-9]+' | sort -u)
 
 if [ "${#acs[@]}" -eq 0 ]; then
   exit 0
 fi
-declare -a uniq_acs=()
-while IFS= read -r ac; do
-  [ -n "$ac" ] && uniq_acs+=("$ac")
-done < <(printf '%s\n' "${acs[@]}" | sort -u)
-acs=("${uniq_acs[@]}")
 
 # ── Собрать тестовый корпус (список файлов) ──────────────────────────────────
 # служебные папки и сами спеки — не тестовый корпус
@@ -63,7 +65,7 @@ prune_default() {
     -not -path '*/.git/*' \
     -not -path '*/dist/*' \
     -not -path '*/build/*' \
-    "${@:2}"
+    "${@:2}" 2>/dev/null
 }
 
 declare -a test_files=()
@@ -80,20 +82,21 @@ else
     while IFS= read -r f; do test_files+=("$f"); done < <(prune_default "$root/tests")
   fi
   while IFS= read -r f; do test_files+=("$f"); done < <(
-    prune_default "$root" \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' \)
+    prune_default "$root" -not -path "$root/tests/*" \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' \)
   )
 fi
 
-corpus=""
+# ── Проверить покрытие ────────────────────────────────────────────────────────
+# Один проход grep -rhoE по корпусу файлов вместо повторного regex-поиска
+# на каждый AC-токен по конкатенации содержимого файлов.
+covered=""
 if [ "${#test_files[@]}" -gt 0 ]; then
-  corpus=$(cat "${test_files[@]}" 2>/dev/null)
+  covered=$(grep -rhoE 'AC-[0-9]+' "${test_files[@]}" 2>/dev/null | sort -u)
 fi
 
-# ── Проверить покрытие ────────────────────────────────────────────────────────
 declare -a missing=()
 for ac in "${acs[@]}"; do
-  n="${ac#AC-}"
-  if ! printf '%s\n' "$corpus" | grep -qE "AC-${n}([^0-9]|\$)"; then
+  if ! printf '%s\n' "$covered" | grep -qxF "$ac"; then
     missing+=("$ac")
   fi
 done

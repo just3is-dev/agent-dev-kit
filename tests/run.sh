@@ -42,6 +42,52 @@ count_lines() { # count_lines <файл> — обёртка над wc -l для 
   wc -l < "$1" | tr -d ' '
 }
 
+jsonl_check() { # jsonl_check <файл> <ожидаемое_число_строк> <спека_полей>
+  # Общий валидатор JSONL-смоуков (issue #28 K4, было 3 копии): проверяет,
+  # что файл — ровно <ожидаемое_число_строк> валидных JSON-объектов, что
+  # у каждой строки есть непустой "timestamp", и сверяет поля по <спеке>.
+  # <спека> — одна запись на строку файла (в том же порядке), поля внутри
+  # записи разделены '|': "ключ=значение" — точное совпадение,
+  # "ключ?" — просто непустое присутствие (пустая спека или пустая запись —
+  # без дополнительных проверок полей, только количество строк + timestamp).
+  # Печатает "1"/"0" — совместимо с assert_exit.
+  python3 -c '
+import json, sys
+path, expected_n, spec = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    with open(path) as f:
+        lines = [json.loads(l) for l in f]
+except Exception:
+    print("0")
+    sys.exit(0)
+ok = len(lines) == expected_n
+spec_lines = spec.split("\n") if spec else []
+if ok and spec_lines and len(spec_lines) != len(lines):
+    ok = False
+if ok:
+    for rec, sl in zip(lines, spec_lines):
+        if "timestamp" not in rec or not rec["timestamp"]:
+            ok = False
+            break
+        for tok in sl.split("|"):
+            if not tok:
+                continue
+            if tok.endswith("?"):
+                k = tok[:-1]
+                if k not in rec or rec[k] in ("", None):
+                    ok = False
+                    break
+            else:
+                k, _, v = tok.partition("=")
+                if rec.get(k) != v:
+                    ok = False
+                    break
+        if not ok:
+            break
+print("1" if ok else "0")
+' "$1" "$2" "$3"
+}
+
 # ── Одиночный проект с контрактом ────────────────────────────────────────────
 P="$TMP/proj"
 mkdir -p "$P/scripts" "$P/src"
@@ -264,21 +310,7 @@ else
   fails=$((fails + 1))
 fi
 
-valid=$(python3 -c '
-import json, sys
-path = sys.argv[1]
-with open(path) as f:
-    lines = f.readlines()
-ok = len(lines) == 2
-for l in lines:
-    try:
-        d = json.loads(l)
-        if "timestamp" not in d or "event" not in d:
-            ok = False
-    except Exception:
-        ok = False
-print("1" if ok else "0")
-' "$LOGP/.adk/logs/issue-1.jsonl")
+valid=$(jsonl_check "$LOGP/.adk/logs/issue-1.jsonl" 2 "$(printf 'event?\nevent?')")
 assert_exit "AC-1: adk-log: каждая строка — валидный JSON с timestamp и полями" 1 "$valid"
 
 before_badpair=$(count_lines "$LOGP/.adk/logs/issue-1.jsonl")
@@ -441,6 +473,34 @@ stats_out=$(ADK_LOGS_DIR="$STATS_BADREASON" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: reason нестрокового типа не роняет скрипт" 0 $?
 assert_contains "AC-3: adk-stats: задача с нестроковым reason всё равно посчитана" "$stats_out" "Всего задач: 1"
 
+# issue #28 K9: issue-*.jsonl физически есть, но целиком из битых строк
+# (valid_any=False для каждой) — сообщение должно честно называть это
+# "файлы есть, валидных записей нет", а не путать с реально пустым журналом
+STATS_ALLBROKEN="$TMP/stats-allbroken"
+mkdir -p "$STATS_ALLBROKEN"
+cat > "$STATS_ALLBROKEN/issue-99.jsonl" <<'EOF'
+это не json, битая строка
+42
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_ALLBROKEN" "$HOOKS/adk-stats.sh" 2>/dev/null)
+assert_exit "AC-3: adk-stats: файл целиком из битых строк — exit 0" 0 $?
+assert_contains "AC-3: adk-stats: файл есть, но валидных записей нет — отдельное сообщение (issue #28 K9)" "$stats_out" "валидных записей нет"
+assert_not_contains "AC-3: adk-stats: файл целиком из битых строк не выдаётся за реально пустой журнал (issue #28 K9)" "$stats_out" "Журнал пуст"
+
+# issue #28 K9: event=review без поля round (фолбэк round_count = число
+# строк event=review, а не max(round)) — раньше не был покрыт фикстурой
+STATS_NOROUND="$TMP/stats-noround"
+mkdir -p "$STATS_NOROUND"
+cat > "$STATS_NOROUND/issue-60.jsonl" <<'EOF'
+{"event":"start","issue":"60","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"60","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:10:00Z"}
+{"event":"review","issue":"60","verdict":"APPROVE","timestamp":"2026-08-05T09:20:00Z"}
+{"event":"outcome","issue":"60","result":"merged","timestamp":"2026-08-05T09:25:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_NOROUND" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-3: adk-stats: event=review без поля round — exit 0" 0 $?
+assert_contains "AC-3: adk-stats: без поля round круги считаются по числу строк event=review=2 (issue #28 K9)" "$stats_out" "Средние круги ревью: 2.0"
+
 # 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
 STATS_DIR="$TMP/stats-logs"
 mkdir -p "$STATS_DIR"
@@ -578,23 +638,11 @@ CLAUDE_PROJECT_DIR="$WORKP" "$HOOKS/adk-log.sh" issue-42 event=finish outcome=re
 work_lines=$(count_lines "$WORKP/.adk/logs/issue-42.jsonl" 2>/dev/null)
 assert_exit "AC-1: work.md-смоук: start → review → finish дают три записи в issue-42.jsonl" 3 "${work_lines:-0}"
 
-work_valid=$(python3 -c '
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        lines = [json.loads(l) for l in f]
-except Exception:
-    print("0")
-    sys.exit(0)
-ok = len(lines) == 3
-if ok:
-    ok = ok and lines[0].get("event") == "start" and lines[0].get("issue") == "42"
-    ok = ok and lines[1].get("event") == "review" and lines[1].get("round") == "1" and lines[1].get("verdict") == "REQUEST_CHANGES"
-    ok = ok and lines[2].get("event") == "finish" and lines[2].get("outcome") == "ready" and lines[2].get("rounds") == "2" and "duration" in lines[2] and "diffstat" in lines[2]
-    ok = ok and all("timestamp" in l for l in lines)
-print("1" if ok else "0")
-' "$WORKP/.adk/logs/issue-42.jsonl")
+work_spec=$(printf '%s\n%s\n%s' \
+  'event=start|issue=42' \
+  'event=review|round=1|verdict=REQUEST_CHANGES' \
+  'event=finish|outcome=ready|rounds=2|duration?|diffstat?')
+work_valid=$(jsonl_check "$WORKP/.adk/logs/issue-42.jsonl" 3 "$work_spec")
 assert_exit "AC-1: work.md-смоук: записи содержат issue/круг/вердикт/итог/длительность" 1 "$work_valid"
 
 # Смоук: outcome=stuck:<причина> с пробелами — ровно случай застревания,
@@ -664,24 +712,12 @@ CLAUDE_PROJECT_DIR="$AUTOP" "$HOOKS/adk-log.sh" "$DATE_UNIT" event=run_finish to
 auto_lines=$(count_lines "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 2>/dev/null)
 assert_exit "AC-2: autopilot.md-смоук: три task-записи плюс итоговая run_finish дают четыре строки" 4 "${auto_lines:-0}"
 
-auto_valid=$(python3 -c '
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        lines = [json.loads(l) for l in f]
-except Exception:
-    print("0")
-    sys.exit(0)
-ok = len(lines) == 4
-if ok:
-    ok = ok and lines[0].get("event") == "task" and lines[0].get("issue") == "10" and lines[0].get("outcome") == "merged"
-    ok = ok and lines[1].get("event") == "task" and lines[1].get("issue") == "11" and lines[1].get("outcome") == "stuck: тесты падают"
-    ok = ok and lines[2].get("event") == "task" and lines[2].get("issue") == "12" and lines[2].get("outcome") == "skipped"
-    ok = ok and lines[3].get("event") == "run_finish" and lines[3].get("total") == "3" and lines[3].get("merged") == "1" and lines[3].get("stuck") == "1" and lines[3].get("skipped") == "1"
-    ok = ok and all("timestamp" in l for l in lines)
-print("1" if ok else "0")
-' "$AUTOP/.adk/logs/$DATE_UNIT.jsonl")
+auto_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=task|issue=10|outcome=merged' \
+  'event=task|issue=11|outcome=stuck: тесты падают' \
+  'event=task|issue=12|outcome=skipped' \
+  'event=run_finish|total=3|merged=1|stuck=1|skipped=1')
+auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 4 "$auto_spec")
 assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
 
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
@@ -881,6 +917,14 @@ ac_st=$?
 assert_exit "AC-4: ac-check: спека не засчитывает сама себя как тест (docs/specs исключён)" 1 "$ac_st"
 assert_contains "AC-4: ac-check: AC-101 назван непокрытым при самопокрытии спекой" "$ac_out" "AC-101"
 
+# issue #28 K6: корень с trailing slash не должен молча отключать защиту
+# от самопокрытия спекой (root не нормализовался → specs_dir перестаёт
+# матчиться в -not -path → спека сама себя "покрывает" → ложный exit 0)
+ac_out=$("$HOOKS/ac-check.sh" "$SELFM/" 2>&1)
+ac_st=$?
+assert_exit "AC-4: ac-check: trailing slash в корне не отключает защиту от самопокрытия спекой (issue #28 K6)" 1 "$ac_st"
+assert_contains "AC-4: ac-check: AC-101 назван непокрытым при самопокрытии спекой (root с trailing slash)" "$ac_out" "AC-101"
+
 # node_modules/vendor не считаются тестовым корпусом — токен в зависимости
 # не должен ложно засчитываться как покрытие
 VEND="$TMP/ac-vendor-proj"
@@ -889,6 +933,17 @@ write_ac_spec "$VEND/docs/specs/001-x.md" "approved" "- [ ] AC-101: критер
 echo "AC-101" > "$VEND/node_modules/pkg/index.spec.js"
 "$HOOKS/ac-check.sh" "$VEND" >/dev/null 2>&1
 assert_exit "AC-4: ac-check: node_modules не считается тестовым корпусом" 1 $?
+
+# issue #28 K6: недоступная поддиректория не должна течь "Permission denied"
+# в stderr гейта (2>/dev/null был потерян при переходе на prune_default)
+PERMP="$TMP/ac-permdenied-proj"
+mkdir -p "$PERMP/docs/specs" "$PERMP/tests" "$PERMP/secret"
+write_ac_spec "$PERMP/docs/specs/001-x.md" "approved" "- [ ] AC-101: критерий"
+echo "AC-101: покрыт" > "$PERMP/tests/run.sh"
+chmod 000 "$PERMP/secret"
+ac_err=$("$HOOKS/ac-check.sh" "$PERMP" 2>&1 >/dev/null)
+assert_not_contains "AC-4: ac-check: недоступная директория не течёт 'Permission denied' в stderr (issue #28 K6)" "$ac_err" "ermission denied"
+chmod 755 "$PERMP/secret"
 
 # ── AC-проверка подключена к контракту проекта (issue #7) ───────────────────
 # Используем реальный отгружаемый templates/monorepo/scripts/check (а не его
@@ -945,6 +1000,12 @@ done
 
 project_init_content=$(cat "$KIT/commands/project-init.md")
 assert_contains "AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check" "$project_init_content" 'scripts/ac-check'
+
+# scripts/check самого кита (dogfood, issue #9) — по образцу проверки выше
+# для templates/*/scripts/check; раньше не было теста, что строка вызова
+# ac-check.sh не была случайно удалена (issue #28 K8, хвост ревью PR #19)
+kit_check_content=$(cat "$KIT/scripts/check")
+assert_contains "AC-4: scripts/check кита содержит вызов ac-check.sh (issue #28 K8)" "$kit_check_content" 'ac-check.sh'
 
 # ── scripts/check самого кита применяет $#-guard к ac-check (issue #24) ──────
 # Реальный scripts/check кита копируется в изолированную фикстуру-кита:
