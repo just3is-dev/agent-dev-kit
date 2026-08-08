@@ -1001,6 +1001,12 @@ done
 project_init_content=$(cat "$KIT/commands/project-init.md")
 assert_contains "AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check" "$project_init_content" 'scripts/ac-check'
 
+# scripts/check самого кита (dogfood, issue #9) — по образцу проверки выше
+# для templates/*/scripts/check; раньше не было теста, что строка вызова
+# ac-check.sh не была случайно удалена (issue #28 K8, хвост ревью PR #19)
+kit_check_content=$(cat "$KIT/scripts/check")
+assert_contains "AC-4: scripts/check кита содержит вызов ac-check.sh (issue #28 K8)" "$kit_check_content" 'ac-check.sh'
+
 # ── scripts/check самого кита применяет $#-guard к ac-check (issue #24) ──────
 # Реальный scripts/check кита копируется в изолированную фикстуру-кита:
 # hooks/scripts/ac-check.sh — стаб, печатающий маркер (отличить вызов от
