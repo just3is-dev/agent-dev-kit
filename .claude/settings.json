@@ -1,4 +1,7 @@
 {
+  "enabledPlugins": {
+    "agent-dev-kit@agent-dev-kit": true
+  },
   "extraKnownMarketplaces": {
     "agent-dev-kit": {
       "source": {
@@ -6,8 +9,5 @@
         "path": "/Users/a.yalaev/Developments/agent-dev-kit"
       }
     }
-  },
-  "enabledPlugins": {
-    "agent-dev-kit@agent-dev-kit": true
   }
 }
