@@ -50,16 +50,20 @@ argument-hint: "[номер issue; по умолчанию следующий н
    APPROVE — остановись и позови пользователя (PR оставь черновиком —
    решение о ready принимает человек; продолжение обычно через команду
    /review, она авторизует дополнительный круг).
-7. **Итог.** Перед отчётом залогируй финиш: итог (`ready` или
-   `stuck:<краткая причина>`), число кругов ревью, длительность от старта
-   (разница между текущим временем и `timestamp` **последней** строки с
-   `event=start` в журнале `issue-<N>` — если `/work` по этой задаче
-   запускался повторно, самая ранняя строка не годится) и размер диффа
-   (`git diff main... --shortstat`). Причина после `stuck:` обычно содержит
-   пробелы — заключай `outcome` в кавычки, как `diffstat`:
-   `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N> event=finish
-   outcome="<ready|stuck:причина>" rounds=<число кругов> duration=<N>s
-   diffstat="<вывод git diff main... --shortstat>" || true`.
+7. **Итог.** Перед отчётом залогируй итог по схеме ADR-001
+   (docs/adr/001-journal-event-schema.md): `event=outcome`, результат
+   (`result=merged` — PR переведён в ready после APPROVE, дальнейший
+   merge делает человек/`/autopilot`; или `result=stuck`), причина при
+   `stuck` (число кругов ревью отдельным полем не логируется — агрегатор
+   `adk-stats.sh` считает их сам из строк `event=review` этого же
+   журнала), длительность от старта (разница между текущим временем и
+   `timestamp` **последней** строки с `event=start` в журнале `issue-<N>`
+   — если `/work` по этой задаче запускался повторно, самая ранняя
+   строка не годится) и размер диффа (`git diff main... --shortstat`).
+   `reason` обычно содержит пробелы — заключай в кавычки, как `diff`:
+   `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N> event=outcome
+   result=<merged|stuck> [reason="<причина, только при result=stuck>"]
+   duration=<N>s diff="<вывод git diff main... --shortstat>" || true`.
    **Отчёт пользователю:** ссылка на PR, вердикт ревьюера, что осталось
    до merge (merge — человек или /autopilot, в обоих случаях только
    ready-PR после APPROVE).
