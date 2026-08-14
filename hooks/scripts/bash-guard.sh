@@ -89,30 +89,47 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +(create|edit)'; then
   style=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.commitStyle plain conventional,plain)
   ext_lint=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.externalTitleLint false)
   if [ "$style" = "conventional" ] && [ "$ext_lint" != "true" ]; then
-    # Заголовок из --title/-t с учётом shell-кавычек; нет флага (интерактив,
-    # --fill, edit без смены заголовка) — проверять нечего.
+    # Заголовок из --title/-t, принадлежащего именно вызову gh pr create/edit
+    # (gh в командной позиции: начало команды или после ;, &&, ||, |, &).
+    # Не удалось разобрать команду (непарная кавычка) или найти вызов/флаг
+    # (интерактив, --fill, упоминание gh pr create в heredoc/доке) —
+    # fail-open: проверять нечего, ложный блок хуже пропуска (issue #47).
     title=$(python3 -c '
 import shlex, sys
 try:
     toks = shlex.split(sys.argv[1])
 except ValueError:
-    toks = sys.argv[1].split()
+    sys.exit(0)
+seps = {"&&", "||", ";", "|", "&"}
 title = ""
-for i, t in enumerate(toks):
-    if t in ("--title", "-t") and i + 1 < len(toks):
-        title = toks[i + 1]
-    elif t.startswith("--title="):
-        title = t[len("--title="):]
+at_start, i, n = True, 0, len(toks)
+while i < n:
+    t = toks[i]
+    if t in seps or t.endswith(";"):
+        at_start = True
+        i += 1
+        continue
+    if at_start and t == "gh" and toks[i + 1:i + 2] == ["pr"] \
+            and toks[i + 2:i + 3] and toks[i + 2] in ("create", "edit"):
+        j = i + 3
+        while j < n and toks[j] not in seps and not toks[j].endswith(";"):
+            a = toks[j]
+            if a in ("--title", "-t") and j + 1 < n:
+                title = toks[j + 1]
+                j += 1
+            elif a.startswith("--title="):
+                title = a[len("--title="):]
+            j += 1
+        i = j
+        continue
+    at_start = False
+    i += 1
 print(title)
 ' "$cmd")
     if [ -n "$title" ]; then
-      if ! printf '%s' "$title" | grep -Eq '^[a-z]+(\([^)]*\))?: .+'; then
-        deny "Запрещено: conventions.commitStyle=conventional — заголовок PR обязан иметь формат «<commitType>[(scope)]: <суть> (#N)» (он станет сообщением squash-коммита в main). Получено: «$title»."
-      fi
       if ! printf '%s' "$title" | grep -Eq '\(#[0-9]+\)$'; then
-        deny "Запрещено: conventions.commitStyle=conventional — заголовок PR обязан заканчиваться ссылкой на issue «(#N)». Получено: «$title»."
+        deny "Запрещено: conventions.commitStyle=conventional — заголовок PR обязан заканчиваться ссылкой на issue «(#N)» (он станет сообщением squash-коммита в main). Получено: «$title»."
       fi
-      title_type=$(printf '%s' "$title" | sed -E 's/^([a-z]+).*$/\1/')
       issue_n=$(printf '%s' "$title" | grep -Eo '\(#[0-9]+\)$' | grep -Eo '[0-9]+')
       if [ -n "${ADK_GUARD_ISSUE_LABELS+x}" ]; then
         labels="$ADK_GUARD_ISSUE_LABELS"
@@ -122,13 +139,15 @@ print(title)
       else
         labels="unavailable"
       fi
-      if [ "$labels" != "unavailable" ]; then
-        types_json=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get types "{}")
-        # Карта label → commitType: дефолтные типы (docs/config.md),
-        # поверх — переопределения и кастомные типы из types.* конфига.
-        expected=$(python3 -c '
-import json, sys
-types_json, labels_csv = sys.argv[1], sys.argv[2]
+      # Вердикт по карте типов: дефолтные четыре (docs/config.md), поверх —
+      # переопределения и кастомные типы из types.* конфига (только label и
+      # commitType — остальные поля типов гейту не нужны). Формат заголовка
+      # проверяется от известных commitType (алфавит не ограничивается);
+      # labels=unavailable — сверка с label пропускается, формат остаётся.
+      types_json=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get types "{}")
+      verdict=$(python3 -c '
+import json, re, sys
+types_json, labels_csv, title = sys.argv[1:4]
 types = {
     "task": {"label": "type:task", "commitType": "feat"},
     "bug": {"label": "type:bug", "commitType": "fix"},
@@ -142,24 +161,39 @@ except Exception:
 if isinstance(cfg, dict):
     for name, o in cfg.items():
         if isinstance(o, dict):
-            merged = dict(types.get(name, {}))
-            merged.update({k: v for k, v in o.items() if isinstance(v, str)})
-            types[name] = merged
-label_map = {}
-for t in types.values():
-    if t.get("label") and t.get("commitType"):
-        label_map[t["label"]] = t["commitType"]
-for l in labels_csv.split(","):
-    l = l.strip()
-    if l in label_map:
-        print(label_map[l])
-        sys.exit(0)
-print(types["task"]["commitType"])
-' "$types_json" "$labels")
-        if [ "$title_type" != "$expected" ]; then
-          deny "Запрещено: commitType «$title_type» в заголовке PR не соответствует типу issue #$issue_n — по label issue ожидается «$expected». Формат: «<commitType>[(scope)]: <суть> (#N)»."
-        fi
-      fi
+            t = types.setdefault(name, {})
+            for k in ("label", "commitType"):
+                if isinstance(o.get(k), str):
+                    t[k] = o[k]
+commit_types = sorted({t["commitType"] for t in types.values() if t.get("commitType")})
+m = re.match(r"^(\S+?)(\([^)]*\))?: .+", title)
+if not m or m.group(1) not in commit_types:
+    print("format " + "|".join(commit_types))
+    sys.exit(0)
+if labels_csv == "unavailable":
+    print("ok")
+    sys.exit(0)
+labels = [l.strip() for l in labels_csv.split(",") if l.strip()]
+label_map = {t["label"]: t["commitType"] for t in types.values() if t.get("label") and t.get("commitType")}
+matched = [l for l in labels if l in label_map]
+expected = label_map[matched[0]] if matched else types["task"]["commitType"]
+if m.group(1) == expected:
+    print("ok")
+else:
+    print("mismatch %s %s %d" % (m.group(1), expected, 1 if matched else 0))
+' "$types_json" "$labels" "$title")
+      case "$verdict" in
+        ok) ;;
+        format\ *)
+          deny "Запрещено: conventions.commitStyle=conventional — заголовок PR обязан иметь формат «<commitType>[(scope)]: <суть> (#N)», где commitType — один из: ${verdict#format }. Получено: «$title»." ;;
+        mismatch\ *)
+          set -- $verdict
+          if [ "$4" = "1" ]; then
+            deny "Запрещено: commitType «$2» в заголовке PR не соответствует типу issue #$issue_n — по label issue ожидается «$3». Формат: «<commitType>[(scope)]: <суть> (#N)»."
+          else
+            deny "Запрещено: commitType «$2» в заголовке PR не соответствует типу issue #$issue_n — у issue нет label типа, он трактуется как task, ожидается «$3» (или проставь issue label типа). Формат: «<commitType>[(scope)]: <суть> (#N)»."
+          fi ;;
+      esac
     fi
   fi
 fi

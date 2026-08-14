@@ -287,7 +287,31 @@ printf '{"conventions": {"commitStyle": "conventional"}, "types": {"docs": {"lab
 printf '%s' '{"tool_input":{"command":"gh pr create --title \"docs: описать конфиг (#12)\""}}' \
   | ADK_GUARD_ISSUE_LABELS="type:docs" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — кастомный тип из types.* конфига учитывается" 0 $?
+# commitType — произвольная строка конфига, алфавит формата не ограничен
+printf '{"conventions": {"commitStyle": "conventional"}, "types": {"deps": {"label": "type:deps", "commitType": "build-deps"}}}' > "$TITLEP/adk.config.json"
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"build-deps: обновить зависимости (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:deps" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — commitType с дефисом из конфига проходит проверку формата" 0 $?
 printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
+# --title привязан к вызову gh pr create/edit в командной позиции, разбор —
+# fail-open: непарная кавычка в --body и упоминание gh pr create в heredoc
+# (запись доки про сам формат) не должны ложно блокировать
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\" --body \"незакрытая кавычка"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: непарная кавычка в команде не блокирует (разбор fail-open)" 0 $?
+printf '%s' '{"tool_input":{"command":"cat > docs/how-to.md <<'\''EOF'\''\nПример: gh pr create --draft --title Заголовок задачи (#12)\nEOF"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: упоминание gh pr create в heredoc (запись доки) не блокирует" 0 $?
+printf '%s' '{"tool_input":{"command":"git push -u origin issue-12-x && gh pr create --title \"без формата (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: gh pr create в командной позиции после && — валидация работает" 2 $?
+# Дефолтная карта label → commitType в хуке пришита к таблице docs/config.md
+# (та же карта в plan.md/work.md закреплена аналогичными AC-4-тестами)
+guard_src=$(cat "$HOOKS/bash-guard.sh")
+assert_contains "AC-5: bash-guard: дефолт type:task → feat как в docs/config.md" "$guard_src" '"label": "type:task", "commitType": "feat"'
+assert_contains "AC-5: bash-guard: дефолт type:bug → fix как в docs/config.md" "$guard_src" '"label": "type:bug", "commitType": "fix"'
+assert_contains "AC-5: bash-guard: дефолт type:fast-follow → fix как в docs/config.md" "$guard_src" '"label": "type:fast-follow", "commitType": "fix"'
+assert_contains "AC-5: bash-guard: дефолт type:consolidate → refactor как в docs/config.md" "$guard_src" '"label": "type:consolidate", "commitType": "refactor"'
 # Недоступность gh/issue не блокирует ложно: формат проверяем (он не требует
 # сети), сверку commitType с label'ом — пропускаем
 printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\""}}' \
