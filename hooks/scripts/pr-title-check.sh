@@ -33,21 +33,9 @@ fix_required() {
   exit 2
 }
 
-# Репозиторий команды — те же кандидаты, что в bash-guard: явный cd в команде
-# → cwd сессии из payload → корень сессии → PWD хука; корень — git toplevel.
+. "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
 hook_cwd=$(json_field "$payload" "cwd" "")
-cd_prefix=""
-case "$cmd" in
-  cd\ *) cd_prefix=$(printf '%s' "$cmd" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'') ;;
-esac
-git_root=""
-for d in "$cd_prefix" "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
-  [ -n "$d" ] && [ -d "$d" ] || continue
-  if git_root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [ -n "$git_root" ]; then
-    break
-  fi
-  git_root=""
-done
+git_root=$(adk_command_git_root "$cmd" "$hook_cwd")
 
 cfg_root="${git_root:-${CLAUDE_PROJECT_DIR:-$PWD}}"
 style=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.commitStyle plain conventional,plain)
@@ -56,9 +44,13 @@ ext_lint=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.externalTit
 [ "$ext_lint" != "true" ] || exit 0
 
 # Фактический заголовок: явный номер PR из команды (gh pr edit 12), иначе PR
-# текущей ветки. gh недоступен или PR не найден — проверять нечего (fail-open).
-prnum=$(printf '%s' "$cmd" | grep -Eo 'gh +pr +(create|edit) +[0-9]+' | grep -Eo '[0-9]+' | head -1)
-repo_flag=$(printf '%s' "$cmd" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//')
+# текущей ветки — тот, что выберет `gh pr view` без номера (несколько PR
+# одной ветки или закрытый PR ветки — краевые случаи выбора gh, не наши).
+# gh недоступен, PR не найден или -R распарсился ложно (например, из
+# grep -R) — проверять нечего (fail-open).
+prnum=$(adk_command_pr_number "$cmd" 'create|edit')
+repo_flag=$(adk_command_repo_flag "$cmd")
+r_flag="${repo_flag:+ -R $repo_flag}"
 if [ -n "${ADK_GUARD_PR_TITLE+x}" ]; then
   [ "$ADK_GUARD_PR_TITLE" != "unavailable" ] || exit 0
   title="$ADK_GUARD_PR_TITLE"
@@ -79,28 +71,19 @@ else
 fi
 
 if ! printf '%s' "$title" | grep -Eq '\(#[0-9]+\)$'; then
-  fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует завершать заголовок ссылкой на issue «(#N)» — он станет сообщением squash-коммита в main. Сейчас: «$title». Исправь: gh pr edit $pr_ref --title \"<commitType>[(scope)]: <суть> (#N)\"."
+  fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует завершать заголовок ссылкой на issue «(#N)» — он станет сообщением squash-коммита в main. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально: «<commitType>(scope): …»)."
 fi
 issue_n=$(printf '%s' "$title" | grep -Eo '\(#[0-9]+\)$' | grep -Eo '[0-9]+')
-
-if [ -n "${ADK_GUARD_ISSUE_LABELS+x}" ]; then
-  labels="$ADK_GUARD_ISSUE_LABELS"
-elif [ -n "$repo_flag" ] && labels_raw=$(gh issue view "$issue_n" -R "$repo_flag" --json labels -q '.labels[].name' 2>/dev/null); then
-  labels=$(printf '%s' "$labels_raw" | tr '\n' ',')
-elif [ -n "$git_root" ] \
-  && labels_raw=$(cd "$git_root" && gh issue view "$issue_n" --json labels -q '.labels[].name' 2>/dev/null); then
-  labels=$(printf '%s' "$labels_raw" | tr '\n' ',')
-else
-  labels="unavailable"
-fi
 
 # Вердикт по карте типов: дефолтные четыре (docs/config.md), поверх —
 # переопределения и кастомные типы из types.* конфига (только label и
 # commitType — остальные поля типов хуку не нужны). Формат заголовка
-# проверяется от известных commitType (алфавит не ограничивается);
-# labels=unavailable — сверка с label пропускается, формат остаётся.
+# проверяется от известных commitType (алфавит не ограничивается) и не
+# требует сети — поэтому он идёт первым, до запроса labels issue;
+# labels_csv=unavailable — режим «только формат» того же скрипта.
 types_json=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get types "{}")
-verdict=$(python3 -c '
+title_verdict() { # $1: CSV labels issue или "unavailable" (только формат)
+  python3 -c '
 import json, re, sys
 types_json, labels_csv, title = sys.argv[1:4]
 types = {
@@ -138,19 +121,45 @@ else:
     # expected — последним: commitType из конфига может содержать пробел,
     # последнее поле read забирает остаток строки целиком
     print("mismatch %d %s %s" % (1 if matched else 0, m.group(1), expected))
-' "$types_json" "$labels" "$title")
+' "$types_json" "$1" "$title"
+}
+
+verdict=$(title_verdict unavailable)
 case "$verdict" in
-  ok) ;;
   format\ *)
-    fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует формат «<commitType>[(scope)]: <суть> (#N)», где commitType — один из: ${verdict#format }. Сейчас: «$title». Исправь: gh pr edit $pr_ref --title \"...\"." ;;
+    fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует формат «<commitType>[(scope)]: <суть> (#N)», где commitType — один из: ${verdict#format }. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально)." ;;
+esac
+
+# Labels issue: env-обход → -R из команды (без отката на локальный
+# репозиторий: issue #N чужого repo нельзя искать в локальном — labels
+# другого issue дали бы ложный mismatch) → репозиторий команды.
+# Недоступность = сверка с label пропускается (формат уже проверен).
+if [ -n "${ADK_GUARD_ISSUE_LABELS+x}" ]; then
+  labels="$ADK_GUARD_ISSUE_LABELS"
+elif [ -n "$repo_flag" ]; then
+  if labels_raw=$(gh issue view "$issue_n" -R "$repo_flag" --json labels -q '.labels[].name' 2>/dev/null); then
+    labels=$(printf '%s' "$labels_raw" | tr '\n' ',')
+  else
+    labels="unavailable"
+  fi
+elif [ -n "$git_root" ] \
+  && labels_raw=$(cd "$git_root" && gh issue view "$issue_n" --json labels -q '.labels[].name' 2>/dev/null); then
+  labels=$(printf '%s' "$labels_raw" | tr '\n' ',')
+else
+  labels="unavailable"
+fi
+[ "$labels" != "unavailable" ] || exit 0
+
+verdict=$(title_verdict "$labels")
+case "$verdict" in
   mismatch\ *)
     read -r _ vt_has vt_got vt_exp <<VERDICT_EOF
 $verdict
 VERDICT_EOF
     if [ "$vt_has" = "1" ]; then
-      fix_required "commitType «$vt_got» в заголовке PR не соответствует типу issue #$issue_n — по label issue ожидается «$vt_exp». Исправь: gh pr edit $pr_ref --title \"$vt_exp[(scope)]: <суть> (#$issue_n)\"."
+      fix_required "commitType «$vt_got» в заголовке PR не соответствует типу issue #$issue_n — по label issue ожидается «$vt_exp». Исправь: gh pr edit $pr_ref$r_flag --title \"$vt_exp: <суть> (#$issue_n)\" (scope — опционально)."
     else
-      fix_required "commitType «$vt_got» в заголовке PR не соответствует типу issue #$issue_n — у issue нет label типа, он трактуется как task, ожидается «$vt_exp» (или проставь issue label типа). Исправь: gh pr edit $pr_ref --title \"$vt_exp[(scope)]: <суть> (#$issue_n)\"."
+      fix_required "commitType «$vt_got» в заголовке PR не соответствует типу issue #$issue_n — у issue нет label типа, он трактуется как task, ожидается «$vt_exp» (или проставь issue label типа). Исправь: gh pr edit $pr_ref$r_flag --title \"$vt_exp: <суть> (#$issue_n)\" (scope — опционально)."
     fi ;;
 esac
 exit 0

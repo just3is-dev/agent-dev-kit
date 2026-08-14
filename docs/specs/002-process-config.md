@@ -97,13 +97,14 @@
 
 ### Enforcement — три слоя
 
-1. **Хуки читают конфиг** (жёстко): bash-guard — политика merge
-   (`human-only` → блок всегда; `human-review-required` → merge только при
-   `reviewDecision == APPROVED`); при `commitStyle=conventional` —
-   валидация заголовка PR на `gh pr create`/`gh pr edit` по шаблону
-   `<commitType>[(scope)]: <суть> (#N)` с commitType, соответствующим
-   label'у issue. Внутриветочные коммиты не валидируются — squash их
-   схлопывает, точка контроля одна: заголовок PR.
+1. **Хуки читают конфиг** (жёстко): bash-guard (PreToolUse) — политика
+   merge (`human-only` → блок всегда; `human-review-required` → merge
+   только при `reviewDecision == APPROVED`); pr-title-check (PostToolUse,
+   ADR-004) — при `commitStyle=conventional` после `gh pr create`/`gh pr
+   edit` сверяет фактический заголовок PR с шаблоном
+   `<commitType>[(scope)]: <суть> (#N)` и label'ом issue и требует
+   исправить через `gh pr edit`. Внутриветочные коммиты не валидируются —
+   squash их схлопывает, точка контроля одна: заголовок PR.
 2. **Сервер** (жёстче всех): `/project-init` для нового репозитория
    настраивает allowed merge methods по mergeStrategy,
    `delete_branch_on_merge=true`, branch protection по профилю,
@@ -118,7 +119,10 @@
 - Никаких расписаний, ночных прогонов и параллельности — это SPEC-003
   «Автономия»; здесь только конфиг-поля, которые она будет читать.
 - Существующие issues задним числом не типизируются; валидация заголовков
-  применяется к новым PR.
+  применяется к PR, которых касается команда агента (создание или правка,
+  ADR-004): включение `conventional` посреди вехи не требует массово
+  переписывать старые PR, но правка старого PR потребует привести его
+  заголовок.
 - Серверные линтеры (commit-lint, PR-title-check) не переизобретаем:
   если они есть, локальная валидация отключается полем конфига.
 - Конфиг per-project; глобального пользовательского уровня нет.

@@ -5,7 +5,7 @@ set -u
 
 payload=$(cat)
 . "$(cd "$(dirname "$0")" && pwd)/lib/json-field.sh"
-. "$(cd "$(dirname "$0")" && pwd)/lib/config.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
 cmd=$(json_field "$payload" "tool_input.command" "")
 [ -n "$cmd" ] || exit 0
 
@@ -14,24 +14,8 @@ deny() {
   exit 2
 }
 
-# Рабочая директория команды. Корень сессии (CLAUDE_PROJECT_DIR) может не быть
-# репозиторием (сессия открыта выше, проект подключён дополнительной
-# директорией), поэтому кандидаты в порядке достоверности: явный `cd` в самой
-# команде → cwd сессии из payload хука → корень сессии → PWD хука.
 hook_cwd=$(json_field "$payload" "cwd" "")
-cd_prefix=""
-case "$cmd" in
-  cd\ *) cd_prefix=$(printf '%s' "$cmd" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'') ;;
-esac
-
-git_root=""
-for d in "$cd_prefix" "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
-  [ -n "$d" ] && [ -d "$d" ] || continue
-  if git_root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [ -n "$git_root" ]; then
-    break
-  fi
-  git_root=""
-done
+git_root=$(adk_command_git_root "$cmd" "$hook_cwd")
 
 if printf '%s' "$cmd" | grep -q 'git commit' && printf '%s' "$cmd" | grep -q -- '--no-verify'; then
   deny "Запрещено: git commit --no-verify обходит гейты качества. Найди и устрани причину падения проверок."
@@ -78,8 +62,8 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
   gh_decision=""
   if [ -z "$state" ] || { [ "$merge_policy" = "human-review-required" ] && [ -z "$decision" ]; }; then
     # Один сетевой вызов на оба поля PR
-    prnum=$(printf '%s' "$cmd" | grep -Eo 'gh +pr +merge +[0-9]+' | grep -Eo '[0-9]+' | head -1)
-    repo_flag=$(printf '%s' "$cmd" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//')
+    prnum=$(adk_command_pr_number "$cmd" merge)
+    repo_flag=$(adk_command_repo_flag "$cmd")
     jq_q='"\(.isDraft) \(.reviewDecision)"'
     if [ -n "$repo_flag" ]; then
       pr_fields=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json isDraft,reviewDecision -q "$jq_q" 2>/dev/null) || pr_fields=""
@@ -113,7 +97,6 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
     fi
   fi
 fi
-
 
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---
 if printf '%s' "$cmd" | grep -q 'git commit' && [ -n "$git_root" ]; then

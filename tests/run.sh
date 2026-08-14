@@ -318,6 +318,9 @@ assert_exit "AC-5: conventional — заголовок без (#N) отклон�
 printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="feat: починить гейт (#12)" ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — commitType не соответствует label'у issue (type:bug → fix, не feat)" 2 $?
+mm_err=$(printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: починить гейт (#12)" ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
+assert_contains "AC-5: подсказка mismatch даёт шаблон, проходящий проверку (fix: <суть> (#12))" "$mm_err" 'fix: <суть> (#12)'
 printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="feat: добавить фичу (#12)" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — корректный заголовок проходит" 0 $?
@@ -384,9 +387,18 @@ printf '{"conventions": {"commitStyle": "plain"}}' > "$TITLEP/adk.config.json"
 printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="любой заголовок без конвенции" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: plain — любой заголовок проходит" 0 $?
-# Хук зарегистрирован в hooks.json как PostToolUse(Bash)
-hooks_json=$(cat "$KIT/hooks/hooks.json")
-assert_contains "AC-5: pr-title-check.sh зарегистрирован в hooks.json" "$hooks_json" 'pr-title-check\.sh'
+rm "$TITLEP/adk.config.json"
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="любой заголовок без конвенции" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: без конфига любой заголовок проходит (дефолт plain)" 0 $?
+# Хук зарегистрирован в hooks.json именно как PostToolUse с matcher Bash
+title_reg=$(python3 -c 'import json, sys
+entries = json.load(open(sys.argv[1]))["hooks"].get("PostToolUse", [])
+ok = any(e.get("matcher") == "Bash"
+         and any("pr-title-check.sh" in h.get("command", "") for h in e.get("hooks", []))
+         for e in entries)
+print("registered" if ok else "missing")' "$KIT/hooks/hooks.json")
+assert_contains "AC-5: pr-title-check.sh зарегистрирован как PostToolUse(Bash)" "$title_reg" 'registered'
 
 # ── Уведомления ──────────────────────────────────────────────────────────────
 NDIR="$TMP/tmpdir/agent-dev-kit-notify"
