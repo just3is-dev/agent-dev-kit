@@ -809,6 +809,27 @@ check_ac_doc AC-3 "autopilot.md описывает блокировку merge п
 check_ac_doc AC-3 "autopilot.md запрещает обходить блокировку merge хуком" \
   "$AUTOMD" "не пытайся обойти"
 
+# ── /plan проставляет label типа задачи (plan.md, AC-4) ──────────────────────
+# Команда — markdown-инструкция; проверяем, что шаг создания issues читает
+# имя label из конфига (types.task.label, дефолт type:task), создаёт
+# отсутствующий label в репо и вешает его на создаваемые issues; тип
+# задаётся только label'ом, из текста issue не выводится.
+PLANMD="$KIT/commands/plan.md"
+plan_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$PLANMD" | tr '\n' ' ' | tr -s ' ')
+
+assert_contains "AC-4: plan.md шаг 3 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
+  "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
+assert_contains "AC-4: plan.md шаг 3 создаёт отсутствующий label в репо идемпотентно (gh label create, ошибка «уже есть» гасится)" \
+  "$plan_step3" 'gh label create.*2>/dev/null'
+assert_contains "AC-4: plan.md шаг 3 создаёт label до создания issues" \
+  "$plan_step3" 'gh label create.*gh issue create'
+assert_contains "AC-4: plan.md шаг 3 проставляет label создаваемым issues (--label в gh issue create)" \
+  "$plan_step3" 'gh issue create.*--label'
+check_ac_doc AC-4 "plan.md: label — единственный источник типа, из текста issue тип не выводится" \
+  "$PLANMD" "из текста issue не выводится"
+check_ac_doc AC-4 "plan.md: перепланирование не переклеивает labels на закрытых issues" \
+  "$PLANMD" "на закрытых issues labels не переклеивай"
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
