@@ -1,6 +1,6 @@
 ---
 description: Последовательно выполнить очередь issues: свежий субагент на задачу, merge только ready-PR (после APPROVE)
-argument-hint: "[лимит задач за прогон, по умолчанию 5; опционально номера issues]"
+argument-hint: "[лимит задач за прогон, по умолчанию из policies.autopilot.maxTasksPerRun; опционально номера issues]"
 ---
 
 Выполни очередь открытых issues текущего milestone в автономном режиме.
@@ -9,9 +9,42 @@ argument-hint: "[лимит задач за прогон, по умолчани�
 довести PR до ready единственным путём — через вердикт APPROVE ревьюера;
 хук блокирует merge черновиков; значит, мержится только прошедшее ревью.
 
+## Политика прогона
+
+До любых действий прочитай `policies.autopilot` из конфига проекта
+(`adk.config.json`; отсутствие файла или атрибута = дефолт — поведение
+как без конфига, см. docs/config.md):
+
+- включён ли автопилот:
+  `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh policies.autopilot.enabled true`
+- мержит ли автопилот сам:
+  `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh policies.autopilot.canMerge true`
+- лимит задач по умолчанию:
+  `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh policies.autopilot.maxTasksPerRun 5`
+
+`enabled=false` — откажись стартовать: объясни, что автопилот выключен
+конфигом проекта (`policies.autopilot.enabled=false` в `adk.config.json`)
+и включается правкой конфига явным коммитом, — и остановись до любых
+побочных эффектов: журнал прогона не начинай (никакого `run_start` и
+последующих записей), субагентов не запускай, ветки, PR и метки не
+создавай.
+
+`canMerge=false` — прогон идёт как обычно, но ready-PR ты не мержишь:
+собирай их в отдельный список «ждут человека» для итогового отчёта
+(шаг 3 и «Завершение»); merge сделает человек.
+
+Политика merge проекта (`policies.merge`, её читает bash-guard) сильнее
+твоей: при `human-only` и `human-review-required` хук блокирует
+`gh pr merge` из агентской сессии — не пытайся обойти блокировку (иным
+способом merge, правкой конфига или настроек хуков); ready-PR, чей merge
+заблокирован хуком, попадает в тот же список «ждут человека», даже при
+`canMerge=true`.
+
 ## Параметры
 
-- Лимит задач за прогон: из `$ARGUMENTS`, по умолчанию 5.
+- Лимит задач за прогон: из `$ARGUMENTS`; если в аргументах он не задан —
+  `maxTasksPerRun` из конфига (дефолт 5). Аргумент команды переопределяет
+  значение конфига.
 - Если в `$ARGUMENTS` перечислены номера — работай только по ним,
   в указанном порядке (с учётом блокировок).
 
@@ -37,13 +70,18 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
    каждого решения залогируй итог задачи по схеме ADR-001 (журнал —
    наблюдаемость, не гейт: провал записи не блокирует прогон):
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh autopilot-$(date
-   +%Y-%m-%d) event=task issue=<N> result=<merged|stuck|skipped>
+   +%Y-%m-%d) event=task issue=<N> result=<merged|ready|stuck|skipped>
    [reason="<причина, только при result=stuck>"] || true` (причина обычно
    содержит пробелы — заключай в кавычки, как `reason` в шаге 7 `/work`).
-   - **PR ready** → `gh pr merge <PR> --squash --delete-branch` (squash:
-     один issue = один коммит в main, заголовок PR становится сообщением
-     коммита); если настроен CI — дождись зелёного перед merge
-     (`gh pr checks --watch`); после merge — залогируй `result=merged`,
+   - **PR ready, `canMerge=true`** → `gh pr merge <PR> --squash
+     --delete-branch` (squash: один issue = один коммит в main, заголовок
+     PR становится сообщением коммита); если настроен CI — дождись
+     зелёного перед merge (`gh pr checks --watch`); после merge —
+     залогируй `result=merged`, следующая итерация;
+   - **PR ready, но merge не твой** — `canMerge=false` либо merge
+     заблокировал хук по `policies.merge` → PR не мержи, добавь его в
+     список «ждут человека», залогируй `result=ready` (ADR-003). Задача
+     НЕ застряла: метку `needs-human` не ставь, уведомление не шли;
      следующая итерация;
    - **PR остался draft или PR нет** → задача застряла: поставь метку
      (`gh label create needs-human 2>/dev/null; gh issue edit <N> --add-label
@@ -59,14 +97,16 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
 
 ## Завершение
 
-Сводка: сделано и смержено / застряло с метками / пропущено по
-зависимостям; уведомление notify-send об окончании прогона. Залогируй
-итог прогона целиком по схеме ADR-001 (тем же файлом, что и записи по
-задачам — `autopilot-<дата>` за сегодня):
+Сводка: сделано и смержено / ready-PR «ждут человека» (отдельный список
+с номерами PR — при `canMerge=false` или блокировке merge политикой
+`policies.merge`) / застряло с метками / пропущено по зависимостям;
+уведомление notify-send об окончании прогона. Залогируй итог прогона
+целиком по схеме ADR-001 (тем же файлом, что и записи по задачам —
+`autopilot-<дата>` за сегодня):
 `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh autopilot-$(date
-+%Y-%m-%d) event=run_end done=<смержено> stuck=<застряло>
-skipped=<пропущено> || true`. Если за прогон смержено ≥3 задач —
-напомни про `/consolidate` на границе вехи.
++%Y-%m-%d) event=run_end done=<смержено> ready=<ждут человека>
+stuck=<застряло> skipped=<пропущено> || true`. Если за прогон смержено
+≥3 задач — напомни про `/consolidate` на границе вехи.
 
 Запрещено: мержить draft (хук всё равно не даст), редактировать issues
 кроме метки needs-human, «доделывать» застрявшие задачи самому — их
