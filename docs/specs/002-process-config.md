@@ -132,7 +132,7 @@
       попадает); существующий конфиг не перезаписывается; проект БЕЗ
       конфига (или без отдельного атрибута) получает дефолты — текущие
       тесты кита проходят без изменений поведения.
-- [ ] AC-2 (ждёт #43): bash-guard уважает `policies.merge`: `human-only` — `gh pr
+- [ ] AC-2: bash-guard уважает `policies.merge`: `human-only` — `gh pr
       merge` блокируется даже для ready-PR; `human-review-required` —
       merge разрешён только при человеческом approve (тестовый обход —
       env-переменная, как ADK_GUARD_PR_STATE); `agent-after-approve` и
