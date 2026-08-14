@@ -247,6 +247,61 @@ printf '{"tool_input":{"command":"cd %s && git commit -m x"}}' "$P" | CLAUDE_PRO
 assert_exit "bash-guard: секрет-гейт через cd в команде" 2 $?
 rm "$P/src/leak2.ts"
 
+# ── bash-guard: валидация заголовка PR при commitStyle=conventional (AC-5) ──
+# SPEC-002: заголовок PR — будущее сообщение squash-коммита в main, поэтому
+# точка контроля конвенции одна — он, не веточные коммиты.
+# ADK_GUARD_ISSUE_LABELS — тестовый обход сетевого определения labels issue
+# (по образцу ADK_GUARD_PR_STATE): CSV labels; пустая строка — labels нет;
+# "unavailable" — gh или issue недоступны.
+TITLEP="$TMP/titleproj"
+mkdir -p "$TITLEP"
+(cd "$TITLEP" && git init -q -b main)
+printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
+
+printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"Добавить фичу (#12)\" --body x"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — заголовок без префикса типа отклоняется" 2 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"feat: добавить фичу\" --body x"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — заголовок без (#N) отклоняется" 2 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"feat: починить гейт (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — commitType не соответствует label'у issue (type:bug → fix, не feat)" 2 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"feat: добавить фичу (#12)\" --body x"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — корректный заголовок проходит" 0 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"fix(guard): починить гейт (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — корректный заголовок со scope проходит" 0 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — issue без label трактуется как task (feat проходит)" 0 $?
+printf '%s' '{"tool_input":{"command":"gh pr edit 12 --title \"без формата вовсе\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — gh pr edit с неконвенционным заголовком отклоняется" 2 $?
+printf '%s' '{"tool_input":{"command":"gh pr edit 12 --add-label wip"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — gh pr edit без --title не трогается" 0 $?
+# Кастомный тип из конфига переопределяет дефолтную карту label → commitType
+printf '{"conventions": {"commitStyle": "conventional"}, "types": {"docs": {"label": "type:docs", "commitType": "docs"}}}' > "$TITLEP/adk.config.json"
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"docs: описать конфиг (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:docs" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — кастомный тип из types.* конфига учитывается" 0 $?
+printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
+# Недоступность gh/issue не блокирует ложно: формат проверяем (он не требует
+# сети), сверку commitType с label'ом — пропускаем
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="unavailable" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — недоступность gh/issue не блокирует создание PR" 0 $?
+printf '{"conventions": {"commitStyle": "conventional", "externalTitleLint": true}}' > "$TITLEP/adk.config.json"
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"без формата вовсе\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: externalTitleLint=true — серверный линтер есть, локальная проверка выключена" 0 $?
+printf '{"conventions": {"commitStyle": "plain"}}' > "$TITLEP/adk.config.json"
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"любой заголовок без конвенции\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: plain — любой заголовок проходит" 0 $?
+
 # ── Уведомления ──────────────────────────────────────────────────────────────
 NDIR="$TMP/tmpdir/agent-dev-kit-notify"
 mkdir -p "$TMP/tmpdir"
