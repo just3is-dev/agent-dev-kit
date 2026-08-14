@@ -26,10 +26,10 @@ esac
 git_root=""
 for d in "$cd_prefix" "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
   [ -n "$d" ] && [ -d "$d" ] || continue
-  if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
-    git_root="$d"
+  if git_root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [ -n "$git_root" ]; then
     break
   fi
+  git_root=""
 done
 
 if printf '%s' "$cmd" | grep -q 'git commit' && printf '%s' "$cmd" | grep -q -- '--no-verify'; then
@@ -41,23 +41,59 @@ if printf '%s' "$cmd" | grep -Eq 'git push[^|;&]*( --force| -f)\b' \
   deny "Запрещено: force push в main/master."
 fi
 
-# Политика merge: только PR, прошедший ревью. Ready — единственный путь
-# после вердикта APPROVE (draft ставится при создании, ready — ревью-процессом),
-# поэтому "не draft" = машинное доказательство апрува.
-# ADK_GUARD_PR_STATE=draft|ready|unknown — тестовый обход сетевого вызова.
+# Политика merge (SPEC-002 AC-2, policies.merge из adk.config.json):
+# - human-only — merge из агентских сессий запрещён всегда;
+# - human-review-required — сверх проверки ready требуется человеческий
+#   approve на PR (reviewDecision == APPROVED);
+# - agent-after-approve (и отсутствие конфига) — только проверка ready:
+#   ready — единственный путь после вердикта APPROVE (draft ставится при
+#   создании, ready — ревью-процессом), поэтому "не draft" = машинное
+#   доказательство апрува.
+# Тестовые обходы сетевых вызовов: ADK_GUARD_PR_STATE=draft|ready|unknown,
+# ADK_GUARD_PR_REVIEW_DECISION=<reviewDecision, например APPROVED>.
 if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
+  . "$(cd "$(dirname "$0")" && pwd)/lib/config.sh"
+  # Конфиг ищем от репозитория команды: корень сессии (CLAUDE_PROJECT_DIR,
+  # его использует adk_project_root) в мульти-директорной сессии может
+  # указывать вне проекта с adk.config.json.
+  merge_policy_rc=0
+  merge_policy=$(CLAUDE_PROJECT_DIR="${git_root:-${CLAUDE_PROJECT_DIR:-$PWD}}" \
+    adk_config_get "policies.merge" "agent-after-approve" \
+    "agent-after-approve,human-review-required,human-only") || merge_policy_rc=$?
+  # Ненулевой exit читателя = в конфиге неизвестное значение. Дефолт
+  # policies.merge — умышленно разрешающий, поэтому опечатку нельзя молча
+  # трактовать как его осознанный выбор (docs/config.md) — fail-closed.
+  if [ "$merge_policy_rc" -ne 0 ]; then
+    deny "Запрещено: неизвестное значение policies.merge в adk.config.json — merge заблокирован, чтобы опечатка молча не откатилась в разрешающий дефолт. Допустимо: agent-after-approve | human-review-required | human-only."
+  fi
+
+  if [ "$merge_policy" = "human-only" ]; then
+    deny "Запрещено: policies.merge=human-only — merge из агентской сессии запрещён при любом статусе PR; merge делает человек вне процесса."
+  fi
+
   state="${ADK_GUARD_PR_STATE:-}"
-  if [ -z "$state" ]; then
+  decision="${ADK_GUARD_PR_REVIEW_DECISION:-}"
+  gh_isdraft=""
+  gh_decision=""
+  if [ -z "$state" ] || { [ "$merge_policy" = "human-review-required" ] && [ -z "$decision" ]; }; then
+    # Один сетевой вызов на оба поля PR
     prnum=$(printf '%s' "$cmd" | grep -Eo 'gh +pr +merge +[0-9]+' | grep -Eo '[0-9]+' | head -1)
     repo_flag=$(printf '%s' "$cmd" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//')
+    jq_q='"\(.isDraft) \(.reviewDecision)"'
     if [ -n "$repo_flag" ]; then
-      isdraft=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json isDraft -q .isDraft 2>/dev/null) || isdraft=""
+      pr_fields=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json isDraft,reviewDecision -q "$jq_q" 2>/dev/null) || pr_fields=""
     elif [ -n "$git_root" ]; then
-      isdraft=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json isDraft -q .isDraft 2>/dev/null) || isdraft=""
+      pr_fields=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json isDraft,reviewDecision -q "$jq_q" 2>/dev/null) || pr_fields=""
     else
-      isdraft=""
+      pr_fields=""
     fi
-    case "$isdraft" in
+    case "$pr_fields" in
+      *' '*) gh_isdraft="${pr_fields%% *}"; gh_decision="${pr_fields#* }" ;;
+    esac
+  fi
+
+  if [ -z "$state" ]; then
+    case "$gh_isdraft" in
       false) state="ready" ;;
       true)  state="draft" ;;
       *)     state="unknown" ;;
@@ -68,6 +104,13 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
     draft) deny "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
     *) deny "Запрещено: статус PR проверить не удалось (нет git-репозитория в контексте команды или gh недоступен) — merge только для PR со статусом ready. Подсказка: выполняй merge из директории репозитория или с флагом -R owner/repo." ;;
   esac
+
+  if [ "$merge_policy" = "human-review-required" ]; then
+    [ -n "$decision" ] || decision="$gh_decision"
+    if [ "$decision" != "APPROVED" ]; then
+      deny "Запрещено: policies.merge=human-review-required — merge только при человеческом approve на PR (reviewDecision=APPROVED); сейчас: ${decision:-approve отсутствует или статус недоступен}."
+    fi
+  fi
 fi
 
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---

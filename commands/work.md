@@ -96,5 +96,10 @@ argument-hint: "[номер issue; по умолчанию следующий н
    result=<merged|stuck> [reason="<причина, только при result=stuck>"]
    duration=<N>s diff="<вывод git diff main... --shortstat>" || true`.
    **Отчёт пользователю:** ссылка на PR, вердикт ревьюера, что осталось
-   до merge (merge — человек или /autopilot, в обоих случаях только
-   ready-PR после APPROVE).
+   до merge — формулировка по политике
+   (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh policies.merge
+   agent-after-approve`): при `agent-after-approve` merge сделает человек
+   или /autopilot (в обоих случаях только ready-PR после APPROVE); при
+   `human-review-required` и `human-only` пиши «PR готов к ревью коллеги»
+   — не «смержено» и не «будет смержено автоматически»: merge при этих
+   политиках делает только человек.
