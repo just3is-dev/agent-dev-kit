@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Проверка AC-трассируемости: у каждого критерия приёмки (AC-<n>) approved-
 # спеки должен быть хотя бы один помеченный тест. Использование:
-#   ac-check.sh <корень проекта> [тестовый путь ...]
+#   ac-check.sh [--complete] <корень проекта> [тестовый путь ...]
+# Переходное состояние (issue #54): approved-спека мержится до реализации,
+# тесты AC появляются по ходу милестоуна. Критерий, помеченный в строке
+# аннотацией «ждёт #<issue>» (ставит /plan при декомпозиции, снимает PR,
+# добавляющий тег-тест), принимается без теста. --complete — проверка
+# полноты на границе милестоуна (/consolidate): аннотации не учитываются,
+# каждый AC обязан иметь тест.
 # AC-токены собираются из раздела "## Критерии приёмки" approved-спек
 # (docs/specs/*.md). Статус читается как первое слово после "Статус:" —
 # так строка шаблона "Статус: draft <!-- draft | approved | ... -->"
@@ -20,9 +26,15 @@
 # этой задачи (issue #5) — уточняется конвенцией тегирования (issue #6).
 set -u
 
+complete_mode=0
+if [ "${1:-}" = "--complete" ]; then
+  complete_mode=1
+  shift
+fi
+
 root="${1:-}"
 if [ -z "$root" ]; then
-  echo "usage: ac-check.sh <project_root> [test_path ...]" >&2
+  echo "usage: ac-check.sh [--complete] <project_root> [test_path ...]" >&2
   exit 1
 fi
 root="${root%/}"
@@ -46,6 +58,13 @@ for spec in "$specs_dir"/*.md; do
   sections="$sections
 $(awk '/^## Критерии приёмки/{flag=1; next} /^## /{flag=0} flag' "$spec")"
 done
+
+# AC-токены строк секции с аннотацией «ждёт #<issue>» — запланированные:
+# тест появится в названном issue, до тех пор отсутствие теста не ошибка
+pending=""
+if [ "$complete_mode" -eq 0 ]; then
+  pending=$(printf '%s' "$sections" | grep -E 'ждёт #[0-9]+' | grep -oE 'AC-[0-9]+' | sort -u)
+fi
 
 while IFS= read -r ac; do
   [ -n "$ac" ] && acs+=("$ac")
@@ -96,9 +115,9 @@ fi
 
 declare -a missing=()
 for ac in "${acs[@]}"; do
-  if ! printf '%s\n' "$covered" | grep -qxF "$ac"; then
-    missing+=("$ac")
-  fi
+  printf '%s\n' "$covered" | grep -qxF "$ac" && continue
+  printf '%s\n' "$pending" | grep -qxF "$ac" && continue
+  missing+=("$ac")
 done
 
 if [ "${#missing[@]}" -gt 0 ]; then
