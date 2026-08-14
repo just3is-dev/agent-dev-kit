@@ -60,7 +60,11 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
 ## Завершение
 
 Сводка: сделано и смержено / застряло с метками / пропущено по
-зависимостям; уведомление notify-send об окончании прогона. Залогируй
+зависимостям; уведомление notify-send об окончании прогона. Формулировки
+сводки — по политике (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
+policies.merge agent-after-approve`): при `human-review-required` и
+`human-only` merge агенту запрещён (хук блокирует `gh pr merge`), поэтому
+ready-PR в сводке — «PR готов к ревью коллеги», не «смержено». Залогируй
 итог прогона целиком по схеме ADR-001 (тем же файлом, что и записи по
 задачам — `autopilot-<дата>` за сегодня):
 `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh autopilot-$(date
