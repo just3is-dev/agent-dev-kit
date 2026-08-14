@@ -127,38 +127,38 @@
 
 ## Критерии приёмки
 
-- [ ] AC-1: `/project-init` заполняет `adk.config.json` атрибутами
+- [ ] AC-1 (ждёт #41): `/project-init` заполняет `adk.config.json` атрибутами
       (пресеты — только ярлыки ответов в диалоге, имя пресета в файл не
       попадает); существующий конфиг не перезаписывается; проект БЕЗ
       конфига (или без отдельного атрибута) получает дефолты — текущие
       тесты кита проходят без изменений поведения.
-- [ ] AC-2: bash-guard уважает `policies.merge`: `human-only` — `gh pr
+- [ ] AC-2 (ждёт #43): bash-guard уважает `policies.merge`: `human-only` — `gh pr
       merge` блокируется даже для ready-PR; `human-review-required` —
       merge разрешён только при человеческом approve (тестовый обход —
       env-переменная, как ADK_GUARD_PR_STATE); `agent-after-approve` и
       отсутствие конфига — поведение как сейчас (фикстурные тесты на все
       три политики).
-- [ ] AC-3: `/autopilot` читает `policies.autopilot`: `enabled=false` —
+- [ ] AC-3 (ждёт #44): `/autopilot` читает `policies.autopilot`: `enabled=false` —
       отказ старта с объяснением; `canMerge=false` — ready-PR не мержатся
       и перечисляются в отчёте как «ждут человека»; `maxTasksPerRun`
       ограничивает прогон.
-- [ ] AC-4: `/plan` создаёт issues с label типа task (labels в репо
+- [ ] AC-4 (ждёт #45): `/plan` создаёт issues с label типа task (labels в репо
       создаются при отсутствии); `/work` определяет тип по label и
       применяет правила типа; issue без label обрабатывается как task.
-- [ ] AC-5: при `commitStyle=conventional` bash-guard отклоняет
+- [ ] AC-5 (ждёт #47): при `commitStyle=conventional` bash-guard отклоняет
       `gh pr create` с заголовком, не соответствующим
       `<commitType>[(scope)]: <суть> (#N)` или с commitType, не
       соответствующим label'у issue; при `plain` и без конфига — не
       вмешивается.
-- [ ] AC-6: `/project-init` в новом репозитории настраивает сервер по
+- [ ] AC-6 (ждёт #48): `/project-init` в новом репозитории настраивает сервер по
       конфигу: allowed merge method выводится из пары `squash` ×
       `branchUpdate` (true→squash-merge; false+rebase→rebase-merge;
       false+merge→merge-commit), плюс delete_branch_on_merge, protection,
       ISSUE_TEMPLATE; в существующем — сверяет и сообщает расхождения,
       не меняя ничего.
-- [ ] AC-7: журнал прогонов содержит тип задачи; `/stats` выводит разрез
+- [ ] AC-7 (ждёт #51): журнал прогонов содержит тип задачи; `/stats` выводит разрез
       по типам (задачи/баги: количество, средние круги ревью).
-- [ ] AC-8: перед merge неактуальной ветки (BEHIND/CONFLICTING относительно
+- [ ] AC-8 (ждёт #52): перед merge неактуальной ветки (BEHIND/CONFLICTING относительно
       main) `/work` и `/autopilot` актуализируют её способом из
       `conventions.branchUpdate` (`rebase` или `merge`) и перегоняют
       гейты; merge без перегона гейтов после актуализации невозможен

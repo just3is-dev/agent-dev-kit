@@ -19,6 +19,11 @@ argument-hint: "[область: milestone, пакет или путь; по у�
 
 2. **Петля сбежавших дефектов и выжимка журнала** — перед показом
    кандидатов:
+   - Прогони `scripts/ac-check --complete .` (или
+     `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ac-check.sh --complete .`):
+     на границе милестоуна аннотации «ждёт #N» не оправдывают отсутствие
+     теста — каждый AC утверждённых спек обязан быть покрыт. Непокрытые —
+     блокер закрытия вехи, не кандидат на потом.
    - Собери баг-issues области (`gh issue list --state all --search
      "Сбежал от" --limit 200 --json number,title,body,milestone`,
      отфильтровав по `$ARGUMENTS`, если он задан как milestone) и вытащи
