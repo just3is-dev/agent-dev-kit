@@ -1562,8 +1562,8 @@ check_ac_doc AC-1 "docs/config.md документирует поведение 
 # существует; существующий конфиг никогда не перезаписывается.
 PI_MD="$KIT/commands/project-init.md"
 
-check_ac_doc AC-1 "project-init.md содержит шаг записи adk.config.json" \
-  "$PI_MD" "adk.config.json"
+check_ac_doc AC-1 "project-init.md содержит шаг записи adk.config.json (не просто упоминание)" \
+  "$PI_MD" "запиши \`adk.config.json\` в корень проекта"
 check_ac_doc AC-1 "project-init.md задаёт вопрос о процессе через AskUserQuestion" \
   "$PI_MD" "спроси через AskUserQuestion, как устроен процесс"
 for preset in "личный" "командный" "только вручную"; do
@@ -1574,23 +1574,29 @@ for merge_val in agent-after-approve human-review-required human-only; do
   check_ac_doc AC-1 "project-init.md сопоставляет пресетам значение policies.merge=$merge_val" \
     "$PI_MD" "$merge_val"
 done
+for attr in policies.review.humanApprovalRequired policies.autopilot.enabled policies.autopilot.canMerge; do
+  check_ac_doc AC-1 "project-init.md задаёт пресетами атрибут $attr" \
+    "$PI_MD" "$attr"
+done
 check_ac_doc AC-1 "project-init.md: явный запрет перезаписи существующего конфига" \
   "$PI_MD" "уже есть — не трогай и не перезаписывай"
 check_ac_doc AC-1 "project-init.md: существующий конфиг упоминается в итоговом отчёте" \
   "$PI_MD" "скажи об этом в итоговом отчёте"
+check_ac_doc AC-1 "project-init.md: файл создаётся всегда, даже при полностью дефолтном пресете" \
+  "$PI_MD" "Файл создавай всегда, даже если все выбранные значения совпадают с дефолтами"
 check_ac_doc AC-1 "project-init.md: имя пресета в файл не записывается" \
   "$PI_MD" "имя пресета в файл не записывается"
-pi_flat=$(tr '\n' ' ' < "$PI_MD" | tr -s ' ')
-assert_not_contains "AC-1: project-init.md не пишет поле \"preset\" в конфиг" "$pi_flat" '"preset"'
+assert_not_contains "AC-1: project-init.md не пишет поле \"preset\" в конфиг" "$project_init_content" '"preset"'
 
 # конфиг коммитится (разделяемая правда команды) — шаблонный gitignore не
 # должен его игнорировать ни литеральной строкой, ни широким паттерном;
-# проверяем поведением, через git check-ignore
+# проверяем поведением, через git check-ignore (глобальный excludesFile
+# машины отключён, чтобы чужой ~/.gitignore не давал ложный результат)
 GICONF="$TMP/gitignore-config"
 mkdir -p "$GICONF"
 (cd "$GICONF" && git init -q -b main)
 cp "$KIT/templates/base/gitignore" "$GICONF/.gitignore"
-(cd "$GICONF" && git check-ignore -q adk.config.json)
+(cd "$GICONF" && git -c core.excludesFile=/dev/null check-ignore -q adk.config.json)
 assert_exit "AC-1: templates/base/gitignore не игнорирует adk.config.json (в отличие от .adk/)" 1 $?
 
 check_ac_doc AC-1 "README отражает adk.config.json в разделе /project-init" \
