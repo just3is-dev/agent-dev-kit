@@ -104,9 +104,14 @@ issue → ветка issue-N-слаг → падающие тесты из DoD �
 
 **Политика merge: только после APPROVE.** Draft-PR смержить нельзя
 (GitHub), ready PR становится единственным путём — через вердикт APPROVE,
-а хук разрешает `gh pr merge` только для ready. Мержите вы — читая спеку,
+а хук разрешает `gh pr merge` только для ready. Строгость задаёт
+`policies.merge` в `adk.config.json` (см. `docs/config.md`):
+`agent-after-approve` (дефолт) — как описано выше;
+`human-review-required` — сверх ready нужен человеческий approve на PR;
+`human-only` — merge из агентских сессий запрещён всегда. Мержите вы — читая спеку,
 тесты и вердикт, — либо `/autopilot`: он проходит очередь issues (свежий
-субагент на задачу), мержит ready-PR сам (squash: один issue = один коммит в main), а застрявшие помечает
+субагент на задачу), мержит ready-PR сам, если политика это позволяет
+(squash: один issue = один коммит в main), а застрявшие помечает
 `needs-human` и присылает уведомление.
 
 ### 5. Повторяйте `/work`, пока milestone не закрыт.
@@ -200,7 +205,7 @@ issue → ветка issue-N-слаг → падающие тесты из DoD �
 |---|---|---|
 | `post-edit-check` | После каждого Edit/Write | `scripts/check <файл>`; ошибки возвращаются агенту с требованием исправить |
 | `stop-test` | Агент завершает работу | `scripts/test`; красные тесты не дают закончить. Бегут только при изменениях в рабочем дереве; успешный прогон кэшируется по хэшу диффа |
-| `bash-guard` | Перед каждой Bash-командой | Запрещает `git commit --no-verify`, force push в main/master и `gh pr merge` черновиков (merge только для ready-PR, т.е. после APPROVE; непроверяемый статус = запрет). Перед `git commit` сканирует изменения на секреты (ключи AWS/GitHub/Slack/Google, `sk-*`, приватные ключи) и блокирует коммит `.env` |
+| `bash-guard` | Перед каждой Bash-командой | Запрещает `git commit --no-verify`, force push в main/master и `gh pr merge` вопреки `policies.merge` (дефолт `agent-after-approve`: merge только для ready-PR, т.е. после APPROVE; `human-review-required` — плюс человеческий approve на PR; `human-only` — запрет всегда; непроверяемый статус или неизвестное значение политики = запрет). Перед `git commit` сканирует изменения на секреты (ключи AWS/GitHub/Slack/Google, `sk-*`, приватные ключи) и блокирует коммит `.env` |
 
 Плюс серверный гейт: `/project-init` предлагает включить branch protection —
 merge в main только через PR с зелёным CI, прямые пуши запрещены. Его не

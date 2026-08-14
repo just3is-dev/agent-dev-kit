@@ -48,6 +48,17 @@ exit-код; тот, кому не важна (значение не из зак
 | `policies.autopilot.canMerge` | bool | `true` | `/autopilot` сегодня мержит ready-PR сам (`gh pr merge --squash --delete-branch`). |
 | `policies.autopilot.maxTasksPerRun` | число | `5` | Дефолт лимита `/autopilot` сегодня (`commands/autopilot.md`: «по умолчанию 5»). |
 
+`policies.merge` энфорсится хуком bash-guard (SPEC-002 AC-2): `human-only`
+— merge из агентских сессий блокируется всегда; `human-review-required` —
+сверх проверки ready требуется человеческий approve на PR
+(`reviewDecision == APPROVED`); неизвестное значение атрибута блокирует
+merge (fail-closed, см. «Неизвестное значение атрибута» выше). Важно про
+`human-review-required`: GitHub заполняет `reviewDecision` только когда в
+репозитории ревью обязательно (branch protection required reviews /
+CODEOWNERS) — без этого поле пустое даже при живом approve, и merge будет
+блокироваться всегда; включайте политику вместе с серверным требованием
+ревью.
+
 ### `conventions` — как выглядит история
 
 | Атрибут | Тип / допустимые значения | Дефолт | Какое сегодняшнее поведение воспроизводит |

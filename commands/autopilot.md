@@ -44,7 +44,14 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
      один issue = один коммит в main, заголовок PR становится сообщением
      коммита); если настроен CI — дождись зелёного перед merge
      (`gh pr checks --watch`); после merge — залогируй `result=merged`,
-     следующая итерация;
+     следующая итерация. Исключение — `policies.merge` со значением
+     `human-review-required` или `human-only`
+     (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh policies.merge
+     agent-after-approve`): merge не выполняй (хук всё равно заблокирует)
+     — PR остаётся ready и ждёт человека, это не застревание (метку
+     needs-human не ставь, предохранитель не трогай); залогируй
+     `result=skipped reason="merge делает человек (policies.merge)"` и
+     переходи к следующей итерации;
    - **PR остался draft или PR нет** → задача застряла: поставь метку
      (`gh label create needs-human 2>/dev/null; gh issue edit <N> --add-label
      needs-human`), отправь уведомление

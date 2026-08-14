@@ -214,12 +214,14 @@ assert_exit "bash-guard: gh pr create разрешён" 0 $?
 # Тесты выше (draft/ready/unknown без конфига) — режим по умолчанию
 # agent-after-approve; здесь конфиг задаёт остальные режимы.
 printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
-printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+guard_err=$(printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
 assert_exit "AC-2: policies.merge=human-only — merge ready-PR блокируется" 2 $?
+assert_contains "AC-2: human-only — в deny-тексте названа именно политика" "$guard_err" 'policies.merge=human-only'
 
 printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
-printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=ready ADK_GUARD_PR_REVIEW_DECISION=REVIEW_REQUIRED CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+guard_err=$(printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=ready ADK_GUARD_PR_REVIEW_DECISION=REVIEW_REQUIRED CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
 assert_exit "AC-2: policies.merge=human-review-required — блок без человеческого approve" 2 $?
+assert_contains "AC-2: human-review-required — в deny-тексте названа именно политика" "$guard_err" 'policies.merge=human-review-required'
 printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=ready ADK_GUARD_PR_REVIEW_DECISION=APPROVED CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "AC-2: policies.merge=human-review-required — merge разрешён при reviewDecision=APPROVED" 0 $?
 printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=draft ADK_GUARD_PR_REVIEW_DECISION=APPROVED CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
@@ -230,6 +232,13 @@ printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STAT
 assert_exit "AC-2: policies.merge=agent-after-approve — merge ready-PR разрешён (как без конфига)" 0 $?
 printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "AC-2: policies.merge=agent-after-approve — draft блокируется (как без конфига)" 2 $?
+
+# Неизвестное значение политики — fail-closed: дефолт policies.merge
+# умышленно разрешающий, опечатка не должна молча открывать гейт
+printf '{"policies": {"merge": "human_only"}}' > "$P/adk.config.json"
+guard_err=$(printf '{"tool_input":{"command":"gh pr merge 5 --squash"}}' | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
+assert_exit "AC-2: опечатка в policies.merge блокирует merge (fail-closed, не откат в разрешающий дефолт)" 2 $?
+assert_contains "AC-2: опечатка в policies.merge — deny-текст объясняет причину" "$guard_err" 'неизвестное значение policies.merge'
 
 # Конфиг ищется от репозитория команды, а не от корня сессии: в
 # мульти-директорной сессии CLAUDE_PROJECT_DIR может указывать вне проекта
@@ -666,6 +675,8 @@ assert_contains "AC-2: work.md шаг 7 — при human-политиках от
 autopilot_text=$(tr '\n' ' ' < "$KIT/commands/autopilot.md" | tr -s ' ')
 assert_contains "AC-2: autopilot.md сверяет формулировку сводки с policies.merge" "$autopilot_text" 'policies\.merge'
 assert_contains "AC-2: autopilot.md — при human-политиках сводка «PR готов к ревью коллеги», не «смержено»" "$autopilot_text" 'готов к ревью коллеги'
+autopilot_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$KIT/commands/autopilot.md" | tr '\n' ' ' | tr -s ' ')
+assert_contains "AC-2: autopilot.md шаг 3 — при human-политиках ready-PR не мержится (исключение названо в самом шаге)" "$autopilot_step3" 'policies\.merge'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает work.md
 # (start → review → outcome, схема ADR-001), даёт журнал с тремя валидными
