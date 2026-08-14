@@ -44,9 +44,9 @@ exit-код; тот, кому не важна (значение не из зак
 | `policies.merge` | `agent-after-approve` \| `human-review-required` \| `human-only` | `agent-after-approve` | Ready-PR мержит кто угодно, включая `/autopilot`, — сегодня ничего это не ограничивает. |
 | `policies.review.maxRounds` | число | `2` | `/work` и `/autopilot` останавливаются и зовут человека после двух кругов ревью без APPROVE (см. `commands/work.md`, шаг 6). |
 | `policies.review.humanApprovalRequired` | bool | `false` | Вердикт даёт reviewer-агент; человек не обязан approve'ить PR отдельно. |
-| `policies.autopilot.enabled` | bool | `true` | `/autopilot` сегодня ничем не заблокирован. |
-| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` сегодня мержит ready-PR сам (`gh pr merge --squash --delete-branch`). |
-| `policies.autopilot.maxTasksPerRun` | число | `5` | Дефолт лимита `/autopilot` сегодня (`commands/autopilot.md`: «по умолчанию 5»). |
+| `policies.autopilot.enabled` | bool | `true` | `/autopilot` стартует без ограничений; `false` — отказ старта без побочных эффектов (читается в `commands/autopilot.md`, «Политика прогона»). |
+| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge --squash --delete-branch`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). |
+| `policies.autopilot.maxTasksPerRun` | число | `5` | Лимит задач `/autopilot` за прогон; аргумент команды его переопределяет (`commands/autopilot.md`, «Параметры»). |
 
 ### `conventions` — как выглядит история
 

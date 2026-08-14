@@ -138,7 +138,7 @@
       env-переменная, как ADK_GUARD_PR_STATE); `agent-after-approve` и
       отсутствие конфига — поведение как сейчас (фикстурные тесты на все
       три политики).
-- [ ] AC-3 (ждёт #44): `/autopilot` читает `policies.autopilot`: `enabled=false` —
+- [ ] AC-3: `/autopilot` читает `policies.autopilot`: `enabled=false` —
       отказ старта с объяснением; `canMerge=false` — ready-PR не мержатся
       и перечисляются в отчёте как «ждут человека»; `maxTasksPerRun`
       ограничивает прогон.
