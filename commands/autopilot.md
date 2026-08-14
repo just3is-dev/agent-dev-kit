@@ -1,5 +1,5 @@
 ---
-description: Последовательно выполнить очередь issues: свежий субагент на задачу, merge только ready-PR (после APPROVE)
+description: Последовательно выполнить очередь issues: свежий субагент на задачу, merge только ready-PR (после APPROVE) и только если policies.merge разрешает merge агенту
 argument-hint: "[лимит задач за прогон, по умолчанию из policies.autopilot.maxTasksPerRun; опционально номера issues]"
 ---
 

@@ -26,10 +26,10 @@ esac
 git_root=""
 for d in "$cd_prefix" "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
   [ -n "$d" ] && [ -d "$d" ] || continue
-  if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
-    git_root="$d"
+  if git_root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [ -n "$git_root" ]; then
     break
   fi
+  git_root=""
 done
 
 if printf '%s' "$cmd" | grep -q 'git commit' && printf '%s' "$cmd" | grep -q -- '--no-verify'; then

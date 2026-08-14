@@ -257,6 +257,12 @@ assert_contains "AC-2: опечатка в policies.merge — deny-текст о
 printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
 printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$P" | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$TMP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "AC-2: human-only действует и при корне сессии вне проекта (конфиг от репозитория команды)" 2 $?
+
+# Конфиг лежит в toplevel репозитория, а команда выполняется из подкаталога:
+# политика обязана найтись через rev-parse --show-toplevel, а не от cwd
+mkdir -p "$P/sub"
+printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$P/sub" | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$TMP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-2: human-only действует из подкаталога репозитория (конфиг от toplevel)" 2 $?
 rm "$P/adk.config.json"
 
 # bash-guard: секрет-гейт (фейковый ключ собирается конкатенацией,
@@ -686,7 +692,7 @@ assert_contains "AC-2: work.md шаг 7 сверяет формулировку 
 assert_contains "AC-2: work.md шаг 7 — при human-политиках отчёт «PR готов к ревью коллеги», не «смержено»" "$step7" 'готов к ревью коллеги'
 autopilot_text=$(tr '\n' ' ' < "$KIT/commands/autopilot.md" | tr -s ' ')
 assert_contains "AC-2: autopilot.md сверяет формулировку сводки с policies.merge" "$autopilot_text" 'policies\.merge'
-assert_contains "AC-2: autopilot.md — при human-политиках сводка «PR готов к ревью коллеги», не «смержено»" "$autopilot_text" 'готов к ревью коллеги'
+assert_contains "AC-2: autopilot.md — заблокированные политикой ready-PR идут в сводку как «ждут человека», не «смержено»" "$autopilot_text" 'ждут человека'
 autopilot_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$KIT/commands/autopilot.md" | tr '\n' ' ' | tr -s ' ')
 assert_contains "AC-2: autopilot.md шаг 3 — при human-политиках ready-PR не мержится (исключение названо в самом шаге)" "$autopilot_step3" 'policies\.merge'
 

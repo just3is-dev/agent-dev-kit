@@ -52,7 +52,10 @@ exit-код; тот, кому не важна (значение не из зак
 — merge из агентских сессий блокируется всегда; `human-review-required` —
 сверх проверки ready требуется человеческий approve на PR
 (`reviewDecision == APPROVED`); неизвестное значение атрибута блокирует
-merge (fail-closed, см. «Неизвестное значение атрибута» выше). Важно про
+merge (fail-closed, см. «Неизвестное значение атрибута» выше; это касается
+именно опечатки в значении — синтаксически битый `adk.config.json` по
+контракту читателя молча даёт дефолты, то есть разрешающий
+`agent-after-approve`). Важно про
 `human-review-required`: GitHub заполняет `reviewDecision` только когда в
 репозитории ревью обязательно (branch protection required reviews /
 CODEOWNERS) — без этого поле пустое даже при живом approve, и merge будет
