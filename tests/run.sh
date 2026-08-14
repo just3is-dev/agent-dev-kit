@@ -964,6 +964,84 @@ ac_err=$("$HOOKS/ac-check.sh" "$PERMP" 2>&1 >/dev/null)
 assert_not_contains "AC-4: ac-check: недоступная директория не течёт 'Permission denied' в stderr (issue #28 K6)" "$ac_err" "ermission denied"
 chmod 755 "$PERMP/secret"
 
+# ── Запланированные AC: аннотация «(ждёт #N)» (issue #54) ───────────────────
+# Репро бага: approved-спека мержится до реализации милестоуна, тест AC
+# появляется в одном из будущих issues — гейт не должен быть красным весь
+# милестоун, если непокрытый AC явно помечен номером issue.
+PEND="$TMP/ac-pending-proj"
+mkdir -p "$PEND/docs/specs" "$PEND/tests"
+write_ac_spec "$PEND/docs/specs/001-x.md" "approved" "- [ ] AC-101 (ждёт #7): критерий, тест которого появится в issue #7"
+: > "$PEND/tests/run.sh"
+"$HOOKS/ac-check.sh" "$PEND" >/dev/null 2>&1
+assert_exit "issue #54: ac-check: непокрытый AC с аннотацией «ждёт #N» принимается" 0 $?
+
+# --complete (граница милестоуна): аннотации не оправдывают отсутствие теста
+pend_out=$("$HOOKS/ac-check.sh" --complete "$PEND" 2>&1)
+pend_st=$?
+assert_exit "issue #54: ac-check --complete: аннотированный AC без теста — непокрыт" 1 "$pend_st"
+assert_contains "issue #54: ac-check --complete: непокрытый AC назван в выводе" "$pend_out" "AC-101"
+
+# аннотация одного AC не оправдывает другой непокрытый AC без аннотации
+write_ac_spec "$PEND/docs/specs/001-x.md" "approved" "- [ ] AC-101 (ждёт #7): запланирован
+- [ ] AC-102: ни теста, ни аннотации"
+pend_out=$("$HOOKS/ac-check.sh" "$PEND" 2>&1)
+pend_st=$?
+assert_exit "issue #54: ac-check: AC без теста и без аннотации остаётся непокрытым" 1 "$pend_st"
+assert_contains "issue #54: ac-check: непокрытым назван именно AC без аннотации" "$pend_out" "AC-102"
+assert_not_contains "issue #54: ac-check: аннотированный AC не попадает в непокрытые" "$pend_out" "AC-101"
+
+# оставшаяся аннотация на уже покрытом AC безвредна, в том числе в --complete
+write_ac_spec "$PEND/docs/specs/001-x.md" "approved" "- [ ] AC-101 (ждёт #7): тест уже добавлен, аннотацию забыли снять"
+echo "AC-101: покрыт" > "$PEND/tests/run.sh"
+"$HOOKS/ac-check.sh" --complete "$PEND" >/dev/null 2>&1
+assert_exit "issue #54: ac-check --complete: покрытый AC с оставшейся аннотацией проходит" 0 $?
+
+# аннотация действует только в секции критериев — «ждёт #N» в прозе не считается
+cat > "$PEND/docs/specs/001-x.md" <<'EOF'
+# SPEC
+
+Статус: approved
+
+## Что делаем
+
+AC-101 ждёт #7 — но это проза, а не критерий.
+
+## Критерии приёмки
+
+- [ ] AC-101: критерий без теста и без аннотации в секции
+EOF
+: > "$PEND/tests/run.sh"
+"$HOOKS/ac-check.sh" "$PEND" >/dev/null 2>&1
+assert_exit "issue #54: ac-check: «ждёт #N» вне секции критериев не аннотирует AC" 1 $?
+
+# круг ревью 1 (PR #55): аннотация привязана к токену, а не к строке —
+# «(ждёт #N)» помечает pending только AC непосредственно перед собой;
+# токен, упомянутый дальше в тексте того же критерия, тестом не освобождён
+write_ac_spec "$PEND/docs/specs/001-x.md" "approved" "- [ ] AC-101 (ждёт #7): пересекается с AC-102
+- [ ] AC-102: ни теста, ни аннотации"
+: > "$PEND/tests/run.sh"
+pend_out=$("$HOOKS/ac-check.sh" "$PEND" 2>&1)
+pend_st=$?
+assert_exit "issue #54: ac-check: аннотация не заражает другие AC-токены своей строки" 1 "$pend_st"
+assert_contains "issue #54: ac-check: AC из текста аннотированной строки остаётся непокрытым" "$pend_out" "AC-102"
+
+# проза «ждёт #N» не сразу после токена — не аннотация
+write_ac_spec "$PEND/docs/specs/001-x.md" "approved" "- [ ] AC-101: команда сообщает «ждёт #12» в отчёте"
+"$HOOKS/ac-check.sh" "$PEND" >/dev/null 2>&1
+assert_exit "issue #54: ac-check: «ждёт #N» не сразу после AC-токена — не аннотация" 1 $?
+
+# круг ревью 1 (PR #55): строгий режим не деградирует молча — --complete не
+# первым аргументом (лёгкая перестановка при вызове из /consolidate) раньше
+# трактовался как путь тестов: аннотированный AC принимался, exit 0
+write_ac_spec "$PEND/docs/specs/001-x.md" "approved" "- [ ] AC-101 (ждёт #7): запланирован"
+: > "$PEND/tests/run.sh"
+"$HOOKS/ac-check.sh" "$PEND" --complete "$PEND/tests/run.sh" >/dev/null 2>&1
+assert_exit "issue #54: ac-check: --complete не первым аргументом — громкая ошибка, не мягкий режим" 1 $?
+
+# несуществующий корень — ошибка, а не молчаливый exit 0
+"$HOOKS/ac-check.sh" "$TMP/no-such-root" >/dev/null 2>&1
+assert_exit "issue #54: ac-check: несуществующий корень проекта — ошибка" 1 $?
+
 # ── AC-проверка подключена к контракту проекта (issue #7) ───────────────────
 # Используем реальный отгружаемый templates/monorepo/scripts/check (а не его
 # пересказ) — без пакетов у него нет внешних зависимостей (npx/uv), поэтому
@@ -1181,6 +1259,20 @@ check_ac_doc AC-6 "consolidate.md агрегирует распределени�
   "$KIT/commands/consolidate.md" "агрегацию по гейтам"
 check_ac_doc AC-6 "consolidate.md вызывает adk-stats.sh" \
   "$KIT/commands/consolidate.md" "hooks/scripts/adk-stats.sh"
+
+# ── Цикл аннотаций «ждёт #N» закреплён в процессе (issue #54) ───────────────
+check_ac_doc "issue #54" "/plan проставляет аннотации «ждёт #N» при декомпозиции" \
+  "$KIT/commands/plan.md" "ждёт #"
+check_ac_doc "issue #54" "/work снимает аннотацию в PR, добавляющем тег-тест" \
+  "$KIT/commands/work.md" "(ждёт #N)"
+check_ac_doc "issue #54" "/consolidate прогоняет ac-check --complete на границе вехи" \
+  "$KIT/commands/consolidate.md" "ac-check.sh --complete"
+check_ac_doc "issue #54" "шаблон спеки: секция «Переходные состояния»" \
+  "$KIT/templates/process/spec-template.md" "## Переходные состояния"
+check_ac_doc "issue #54" "reviewer: переходные состояния гейтов в чек-листе" \
+  "$KIT/agents/reviewer.md" "Переходные состояния"
+check_ac_doc "issue #54" "контракт: аннотация «ждёт #N» и --complete описаны" \
+  "$KIT/docs/contract.md" "ждёт #"
 
 # ── Общий хелпер hooks/scripts/lib/paths.sh (issue #23) ─────────────────────
 # Кандидат K3 из /consolidate: adk-log.sh и adk-stats.sh дублировали
