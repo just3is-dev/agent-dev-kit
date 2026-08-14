@@ -58,7 +58,7 @@ exit-код; тот, кому не важна (значение не из зак
 | `conventions.language` | строка (код языка) | `ru` | Промпты и коммуникация кита сегодня на русском. |
 | `conventions.branchPattern` | строка-шаблон с `{n}`/`{slug}` | `issue-{n}-{slug}` | Дефолт из самой спеки; совпадает с сегодняшним `commands/work.md` (шаг 2). |
 | `conventions.attribution` | bool | `true` | Trailer `Co-Authored-By` сегодня добавляется в коммиты по умолчанию (стандартное поведение агента), конфиг не отключает это неявно. |
-| `conventions.externalTitleLint` | bool | `false` | Отключает локальную валидацию заголовка PR при `commitStyle=conventional` (issue #47, AC-5), если у проекта уже есть серверный линтер (commit-lint, PR-title-check) — переизобретать его не нужно (раздел «Границы» SPEC-002). Дефолт `false`: локальная валидация, когда она появится, включена. |
+| `conventions.externalTitleLint` | bool | `false` | Отключает локальную валидацию заголовка PR при `commitStyle=conventional` (issue #47, AC-5), если у проекта уже есть серверный линтер (commit-lint, PR-title-check) — переизобретать его не нужно (раздел «Границы» SPEC-002). Дефолт `false`: локальная валидация включена. |
 
 ### `types` — типизация work items
 

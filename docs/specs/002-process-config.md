@@ -145,7 +145,7 @@
 - [ ] AC-4: `/plan` создаёт issues с label типа task (labels в репо
       создаются при отсутствии); `/work` определяет тип по label и
       применяет правила типа; issue без label обрабатывается как task.
-- [ ] AC-5 (ждёт #47): при `commitStyle=conventional` bash-guard отклоняет
+- [ ] AC-5: при `commitStyle=conventional` bash-guard отклоняет
       `gh pr create` с заголовком, не соответствующим
       `<commitType>[(scope)]: <суть> (#N)` или с commitType, не
       соответствующим label'у issue; при `plain` и без конфига — не
