@@ -1286,6 +1286,132 @@ else
   fails=$((fails + 1))
 fi
 
+# ── Конфиг процесса: lib/config.sh + adk-config.sh (issue #41, AC-1) ────────
+# Модель — SPEC-002 (docs/specs/002-process-config.md): плоские атрибуты,
+# отсутствие файла/атрибута = его дефолт (docs/config.md — таблица).
+CONFIG_LIB="$HOOKS/lib/config.sh"
+CONFP="$TMP/configproj"
+mkdir -p "$CONFP"
+
+# Нет файла adk.config.json → дефолт, exit 0 (и через lib, и через CLI)
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
+assert_exit "AC-1: config.sh: нет файла — adk_config_get завершается успешно" 0 $?
+if [ "$out" = "agent-after-approve" ]; then
+  echo "PASS: AC-1: config.sh: нет файла — вернулся дефолт"
+else
+  echo "FAIL: AC-1: config.sh: нет файла — вернулось '$out' вместо дефолта"
+  fails=$((fails + 1))
+fi
+cli_out=$(CLAUDE_PROJECT_DIR="$CONFP" "$HOOKS/adk-config.sh" policies.merge agent-after-approve)
+assert_exit "AC-1: adk-config.sh: нет файла — CLI завершается успешно" 0 $?
+if [ "$cli_out" = "agent-after-approve" ]; then
+  echo "PASS: AC-1: adk-config.sh: нет файла — CLI вернул дефолт"
+else
+  echo "FAIL: AC-1: adk-config.sh: нет файла — CLI вернул '$cli_out' вместо дефолта"
+  fails=$((fails + 1))
+fi
+
+# Файл есть, атрибута нет → дефолт
+cat > "$CONFP/adk.config.json" <<'EOF'
+{"policies": {"merge": "human-only"}}
+EOF
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.review.maxRounds 2")
+if [ "$out" = "2" ]; then
+  echo "PASS: AC-1: config.sh: файл есть, атрибута нет — вернулся дефолт"
+else
+  echo "FAIL: AC-1: config.sh: файл есть, атрибута нет — вернулось '$out' вместо дефолта"
+  fails=$((fails + 1))
+fi
+
+# Атрибут задан → его значение (в т.ч. вложенный путь через точку)
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
+if [ "$out" = "human-only" ]; then
+  echo "PASS: AC-1: config.sh: атрибут задан — вернулось значение из файла"
+else
+  echo "FAIL: AC-1: config.sh: атрибут задан — вернулось '$out' вместо human-only"
+  fails=$((fails + 1))
+fi
+
+# Путь уходит глубже, чем есть данных (промежуточный узел — не объект) → дефолт
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge.extra fallback")
+if [ "$out" = "fallback" ]; then
+  echo "PASS: AC-1: config.sh: путь глубже данных — вернулся дефолт, не упал"
+else
+  echo "FAIL: AC-1: config.sh: путь глубже данных — вернулось '$out' вместо дефолта"
+  fails=$((fails + 1))
+fi
+
+# Битый JSON → дефолт и exit 0 (конфиг не роняет хук)
+printf '{broken' > "$CONFP/adk.config.json"
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
+status=$?
+assert_exit "AC-1: config.sh: битый JSON — exit 0, конфиг не роняет хук" 0 "$status"
+if [ "$out" = "agent-after-approve" ]; then
+  echo "PASS: AC-1: config.sh: битый JSON — вернулся дефолт"
+else
+  echo "FAIL: AC-1: config.sh: битый JSON — вернулось '$out' вместо дефолта"
+  fails=$((fails + 1))
+fi
+
+# Неизвестное значение атрибута (не входит в allowed-csv) — дефолт напечатан,
+# но откат громкий: exit 1 и предупреждение в stderr, не то же самое, что
+# "атрибута нет" (issue #41 DoD — молчаливого разрешения быть не должно).
+printf '{"policies": {"merge": "typo-value"}}' > "$CONFP/adk.config.json"
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve agent-after-approve,human-review-required,human-only" 2>"$TMP/config-stderr")
+status=$?
+assert_exit "AC-1: config.sh: неизвестное значение — exit 1 (не совпадает с 'атрибута нет')" 1 "$status"
+if [ "$out" = "agent-after-approve" ]; then
+  echo "PASS: AC-1: config.sh: неизвестное значение — на stdout всё равно дефолт (не роняет вызывающего)"
+else
+  echo "FAIL: AC-1: config.sh: неизвестное значение — вернулось '$out' вместо дефолта"
+  fails=$((fails + 1))
+fi
+stderr_content=$(cat "$TMP/config-stderr")
+assert_contains "AC-1: config.sh: неизвестное значение — предупреждение в stderr, откат не молчаливый" "$stderr_content" "typo-value"
+
+# Известное значение из allowed-csv → возвращается как есть, exit 0
+printf '{"policies": {"merge": "human-only"}}' > "$CONFP/adk.config.json"
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve agent-after-approve,human-review-required,human-only")
+assert_exit "AC-1: config.sh: значение из allowed-csv — exit 0" 0 $?
+if [ "$out" = "human-only" ]; then
+  echo "PASS: AC-1: config.sh: значение из allowed-csv вернулось как есть"
+else
+  echo "FAIL: AC-1: config.sh: значение из allowed-csv вернулось '$out' вместо human-only"
+  fails=$((fails + 1))
+fi
+
+# ADK_CONFIG_FILE переопределяет путь к файлу конфига (по образцу ADK_LOGS_DIR)
+CUSTOM_CFG="$TMP/custom-adk.config.json"
+printf '{"policies": {"merge": "human-review-required"}}' > "$CUSTOM_CFG"
+out=$(ADK_CONFIG_FILE="$CUSTOM_CFG" CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
+if [ "$out" = "human-review-required" ]; then
+  echo "PASS: AC-1: config.sh: ADK_CONFIG_FILE переопределяет путь к конфигу"
+else
+  echo "FAIL: AC-1: config.sh: ADK_CONFIG_FILE не переопределил путь (вернулось '$out')"
+  fails=$((fails + 1))
+fi
+
+# adk-config.sh без пути атрибута — понятная ошибка использования, не тихий сбой
+"$HOOKS/adk-config.sh" >/dev/null 2>"$TMP/config-usage-stderr"
+assert_exit "AC-1: adk-config.sh: без аргумента пути — exit 2 (usage)" 2 $?
+assert_contains "AC-1: adk-config.sh: без аргумента пути — сообщение usage в stderr" "$(cat "$TMP/config-usage-stderr")" "usage"
+
+# docs/config.md документирует полный плоский набор атрибутов спеки с дефолтами
+CONFIG_DOC="$KIT/docs/config.md"
+for attr in "policies.merge" "policies.review.maxRounds" "policies.review.humanApprovalRequired" \
+  "policies.autopilot.enabled" "policies.autopilot.canMerge" "policies.autopilot.maxTasksPerRun" \
+  "conventions.squash" "conventions.branchUpdate" "conventions.commitStyle" "conventions.language" \
+  "conventions.branchPattern" "conventions.attribution"; do
+  check_ac_doc AC-1 "docs/config.md документирует атрибут $attr" "$CONFIG_DOC" "$attr"
+done
+for typ in "type:task" "type:bug" "type:fast-follow" "type:consolidate"; do
+  check_ac_doc AC-1 "docs/config.md документирует дефолтный тип $typ" "$CONFIG_DOC" "$typ"
+done
+check_ac_doc AC-1 "docs/config.md документирует поле отключения локальной валидации при внешнем линтере" \
+  "$CONFIG_DOC" "conventions.externalTitleLint"
+check_ac_doc AC-1 "docs/config.md документирует поведение при неизвестном значении атрибута" \
+  "$CONFIG_DOC" "молч"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
