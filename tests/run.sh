@@ -1556,6 +1556,46 @@ done
 check_ac_doc AC-1 "docs/config.md документирует поведение при неизвестном значении атрибута (откат не молчаливый)" \
   "$CONFIG_DOC" "молча использует дефолт как ни в чём не бывало"
 
+# ── /project-init заполняет adk.config.json пресетами-ярлыками (issue #42, AC-1) ─
+# Пресеты — только наборы готовых ответов в диалоге init (SPEC-002): в файл
+# попадают плоские атрибуты из docs/config.md, имя пресета в рантайме не
+# существует; существующий конфиг никогда не перезаписывается.
+PI_MD="$KIT/commands/project-init.md"
+
+check_ac_doc AC-1 "project-init.md содержит шаг записи adk.config.json" \
+  "$PI_MD" "adk.config.json"
+check_ac_doc AC-1 "project-init.md задаёт вопрос о процессе через AskUserQuestion" \
+  "$PI_MD" "спроси через AskUserQuestion, как устроен процесс"
+for preset in "личный" "командный" "только вручную"; do
+  check_ac_doc AC-1 "project-init.md предлагает пресет-ярлык «$preset»" \
+    "$PI_MD" "$preset"
+done
+for merge_val in agent-after-approve human-review-required human-only; do
+  check_ac_doc AC-1 "project-init.md сопоставляет пресетам значение policies.merge=$merge_val" \
+    "$PI_MD" "$merge_val"
+done
+check_ac_doc AC-1 "project-init.md: явный запрет перезаписи существующего конфига" \
+  "$PI_MD" "уже есть — не трогай и не перезаписывай"
+check_ac_doc AC-1 "project-init.md: существующий конфиг упоминается в итоговом отчёте" \
+  "$PI_MD" "скажи об этом в итоговом отчёте"
+check_ac_doc AC-1 "project-init.md: имя пресета в файл не записывается" \
+  "$PI_MD" "имя пресета в файл не записывается"
+pi_flat=$(tr '\n' ' ' < "$PI_MD" | tr -s ' ')
+assert_not_contains "AC-1: project-init.md не пишет поле \"preset\" в конфиг" "$pi_flat" '"preset"'
+
+# конфиг коммитится (разделяемая правда команды) — шаблонный gitignore не
+# должен его игнорировать ни литеральной строкой, ни широким паттерном;
+# проверяем поведением, через git check-ignore
+GICONF="$TMP/gitignore-config"
+mkdir -p "$GICONF"
+(cd "$GICONF" && git init -q -b main)
+cp "$KIT/templates/base/gitignore" "$GICONF/.gitignore"
+(cd "$GICONF" && git check-ignore -q adk.config.json)
+assert_exit "AC-1: templates/base/gitignore не игнорирует adk.config.json (в отличие от .adk/)" 1 $?
+
+check_ac_doc AC-1 "README отражает adk.config.json в разделе /project-init" \
+  "$KIT/README.md" "запишет плоские атрибуты процесса в \`adk.config.json\`"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
