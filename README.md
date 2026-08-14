@@ -252,6 +252,7 @@ templates/
   python-service/ ruff, mypy, pytest (окружение uv) + ci.yml
   monorepo/       корневые скрипты-диспетчеры по пакетам + ci.yml
 docs/contract.md  контракт команд проекта
+docs/config.md    таблица атрибутов adk.config.json и их дефолтов
 docs/adr/         архитектурные решения (ADR), создаются по скиллу adr
 docs/specs/       спеки фич, создаются `/spec`
 docs/plans/       планы задач без GitHub-issues, создаются `/plan`

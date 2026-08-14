@@ -1391,26 +1391,78 @@ else
   fails=$((fails + 1))
 fi
 
+# Bool-атрибут печатается строчными true/false — и заданный в файле, и
+# взятый как дефолт (issue #41 review: python-репрезентация "True"/"False"
+# ломала бы потребителей, сравнивающих строку с "true"/"false").
+printf '{"policies": {"autopilot": {"enabled": false}}}' > "$CONFP/adk.config.json"
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.autopilot.enabled true")
+if [ "$out" = "false" ]; then
+  echo "PASS: AC-1: config.sh: bool-значение из файла — строчное 'false', не 'False'"
+else
+  echo "FAIL: AC-1: config.sh: bool-значение из файла — вернулось '$out' вместо 'false'"
+  fails=$((fails + 1))
+fi
+out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.autopilot.canMerge true")
+if [ "$out" = "true" ]; then
+  echo "PASS: AC-1: config.sh: bool-дефолт — строчное 'true' (атрибута нет в файле)"
+else
+  echo "FAIL: AC-1: config.sh: bool-дефолт — вернулось '$out' вместо 'true'"
+  fails=$((fails + 1))
+fi
+
 # adk-config.sh без пути атрибута — понятная ошибка использования, не тихий сбой
 "$HOOKS/adk-config.sh" >/dev/null 2>"$TMP/config-usage-stderr"
 assert_exit "AC-1: adk-config.sh: без аргумента пути — exit 2 (usage)" 2 $?
 assert_contains "AC-1: adk-config.sh: без аргумента пути — сообщение usage в stderr" "$(cat "$TMP/config-usage-stderr")" "usage"
 
-# docs/config.md документирует полный плоский набор атрибутов спеки с дефолтами
+# docs/config.md документирует полный плоский набор атрибутов спеки С ИХ
+# ДЕФОЛТАМИ (не только имя атрибута) — DoD issue #41. Разбираем таблицу
+# markdown (колонки "Атрибут"/"Тип"/"Дефолт"/"Что воспроизводит") и
+# сверяем колонку "Дефолт" с ожидаемым значением, чтобы строка без
+# дефолта или с неверным дефолтом реально роняла тест.
 CONFIG_DOC="$KIT/docs/config.md"
-for attr in "policies.merge" "policies.review.maxRounds" "policies.review.humanApprovalRequired" \
-  "policies.autopilot.enabled" "policies.autopilot.canMerge" "policies.autopilot.maxTasksPerRun" \
-  "conventions.squash" "conventions.branchUpdate" "conventions.commitStyle" "conventions.language" \
-  "conventions.branchPattern" "conventions.attribution"; do
-  check_ac_doc AC-1 "docs/config.md документирует атрибут $attr" "$CONFIG_DOC" "$attr"
-done
+check_config_default() { # check_config_default <атрибут> <ожидаемый_дефолт>
+  local attr="$1" expected="$2" actual
+  actual=$(python3 -c '
+import sys
+path, attr = sys.argv[1], sys.argv[2]
+for line in open(path, encoding="utf-8"):
+    line = line.rstrip("\n")
+    if not line.startswith("| `" + attr + "`"):
+        continue
+    protected = line.replace("\\|", "\x00")
+    cells = [c.strip() for c in protected.strip("|").split("|")]
+    if len(cells) < 3:
+        continue
+    print(cells[2].strip("`").replace("\x00", "\\|"))
+    break
+' "$CONFIG_DOC" "$attr")
+  if [ "$actual" = "$expected" ]; then
+    echo "PASS: AC-1: docs/config.md — $attr документирует дефолт '$expected'"
+  else
+    echo "FAIL: AC-1: docs/config.md — $attr дефолт в доке '$actual', ожидали '$expected'"
+    fails=$((fails + 1))
+  fi
+}
+check_config_default "policies.merge" "agent-after-approve"
+check_config_default "policies.review.maxRounds" "2"
+check_config_default "policies.review.humanApprovalRequired" "false"
+check_config_default "policies.autopilot.enabled" "true"
+check_config_default "policies.autopilot.canMerge" "true"
+check_config_default "policies.autopilot.maxTasksPerRun" "5"
+check_config_default "conventions.squash" "true"
+check_config_default "conventions.branchUpdate" "rebase"
+check_config_default "conventions.commitStyle" "plain"
+check_config_default "conventions.language" "ru"
+check_config_default "conventions.branchPattern" "issue-{n}-{slug}"
+check_config_default "conventions.attribution" "true"
+check_config_default "conventions.externalTitleLint" "false"
+
 for typ in "type:task" "type:bug" "type:fast-follow" "type:consolidate"; do
   check_ac_doc AC-1 "docs/config.md документирует дефолтный тип $typ" "$CONFIG_DOC" "$typ"
 done
-check_ac_doc AC-1 "docs/config.md документирует поле отключения локальной валидации при внешнем линтере" \
-  "$CONFIG_DOC" "conventions.externalTitleLint"
-check_ac_doc AC-1 "docs/config.md документирует поведение при неизвестном значении атрибута" \
-  "$CONFIG_DOC" "молч"
+check_ac_doc AC-1 "docs/config.md документирует поведение при неизвестном значении атрибута (откат не молчаливый)" \
+  "$CONFIG_DOC" "молча использует дефолт как ни в чём не бывало"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"

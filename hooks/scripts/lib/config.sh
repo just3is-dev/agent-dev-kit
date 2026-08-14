@@ -15,9 +15,12 @@
 # adk_config_get <path> <default> [allowed-csv]:
 # - файла нет, JSON битый, путь не найден на любом уровне вложенности →
 #   печатает <default>, exit 0. Конфиг никогда не роняет вызывающий хук.
-# - путь найден, [allowed-csv] не передан → печатает найденное значение
-#   как есть (bool из JSON — python-строка "True"/"False", тот же
-#   компромисс, что и в json_field — вызывающий сам трактует).
+# - путь найден, [allowed-csv] не передан → печатает найденное значение;
+#   bool/число/объект сериализуются как json.dumps (bool → "true"/"false"
+#   строчными, как в самом adk.config.json и в <default>, а не
+#   python-репрезентацией "True"/"False" — иначе один и тот же атрибут
+#   печатался бы по-разному в зависимости от того, задан он в файле или
+#   берётся из дефолта).
 # - путь найден, [allowed-csv] передан, значение не входит в список →
 #   печатает <default>, НО exit 1 и предупреждение в stderr: это
 #   единственный случай, отличный от "нет конфига", и он обязан быть
@@ -63,17 +66,19 @@ if d is None:
     print(default)
     sys.exit(0)
 
-out = json.dumps(d, ensure_ascii=False) if isinstance(d, (dict, list)) else d
+# json.dumps даёт строчные "true"/"false" для bool (в отличие от print(d),
+# который напечатал бы python-репрезентацию "True"/"False") и не трогает
+# уже-строковые значения кавычками — единственный не-строковый случай,
+# который остаётся строкой сам по себе.
+out = d if isinstance(d, str) else json.dumps(d, ensure_ascii=False)
 
-if allowed is not None:
-    str_out = out if isinstance(out, str) else str(out)
-    if str_out not in allowed:
-        sys.stderr.write(
-            "adk-config: неизвестное значение %r для %s, использован дефолт %r\n"
-            % (str_out, path, default)
-        )
-        print(default)
-        sys.exit(1)
+if allowed is not None and out not in allowed:
+    sys.stderr.write(
+        "adk-config: неизвестное значение %r для %s, использован дефолт %r\n"
+        % (out, path, default)
+    )
+    print(default)
+    sys.exit(1)
 
 print(out)
 ' "$cfg" "$path" "$default" "$allowed"
