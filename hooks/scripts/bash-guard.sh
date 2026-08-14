@@ -90,40 +90,55 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +(create|edit)'; then
   ext_lint=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.externalTitleLint false)
   if [ "$style" = "conventional" ] && [ "$ext_lint" != "true" ]; then
     # Заголовок из --title/-t, принадлежащего именно вызову gh pr create/edit
-    # (gh в командной позиции: начало команды или после ;, &&, ||, |, &).
-    # Не удалось разобрать команду (непарная кавычка) или найти вызов/флаг
-    # (интерактив, --fill, упоминание gh pr create в heredoc/доке) —
+    # (gh в командной позиции: начало строки или после ;, &&, ||, |, &;
+    # перевод строки — тоже разделитель команд). Тело heredoc (<<MARKER …
+    # MARKER) — данные, не команды. Не удалось разобрать строку (непарная
+    # кавычка), не нашли вызов/флаг (интерактив, --fill, упоминание в доке)
+    # или в заголовке нераскрытая shell-подстановка ($VAR, $(...), `...`) —
     # fail-open: проверять нечего, ложный блок хуже пропуска (issue #47).
     title=$(python3 -c '
-import shlex, sys
-try:
-    toks = shlex.split(sys.argv[1])
-except ValueError:
-    sys.exit(0)
+import re, shlex, sys
+lines, heredoc_end = [], None
+for ln in sys.argv[1].split("\n"):
+    if heredoc_end is not None:
+        if ln.strip() == heredoc_end:
+            heredoc_end = None
+        continue
+    m = re.search(r"<<-?\s*([\x27\"]?)(\w+)\1", ln)
+    if m:
+        heredoc_end = m.group(2)
+    lines.append(ln)
 seps = {"&&", "||", ";", "|", "&"}
 title = ""
-at_start, i, n = True, 0, len(toks)
-while i < n:
-    t = toks[i]
-    if t in seps or t.endswith(";"):
-        at_start = True
-        i += 1
+for ln in lines:
+    try:
+        toks = shlex.split(ln)
+    except ValueError:
         continue
-    if at_start and t == "gh" and toks[i + 1:i + 2] == ["pr"] \
-            and toks[i + 2:i + 3] and toks[i + 2] in ("create", "edit"):
-        j = i + 3
-        while j < n and toks[j] not in seps and not toks[j].endswith(";"):
-            a = toks[j]
-            if a in ("--title", "-t") and j + 1 < n:
-                title = toks[j + 1]
+    at_start, i, n = True, 0, len(toks)
+    while i < n:
+        t = toks[i]
+        if t in seps or t.endswith(";"):
+            at_start = True
+            i += 1
+            continue
+        if at_start and t == "gh" and toks[i + 1:i + 2] == ["pr"] \
+                and toks[i + 2:i + 3] and toks[i + 2] in ("create", "edit"):
+            j = i + 3
+            while j < n and toks[j] not in seps and not toks[j].endswith(";"):
+                a = toks[j]
+                if a in ("--title", "-t") and j + 1 < n:
+                    title = toks[j + 1]
+                    j += 1
+                elif a.startswith("--title="):
+                    title = a[len("--title="):]
                 j += 1
-            elif a.startswith("--title="):
-                title = a[len("--title="):]
-            j += 1
-        i = j
-        continue
-    at_start = False
-    i += 1
+            i = j
+            continue
+        at_start = False
+        i += 1
+if "$" in title or "`" in title:
+    title = ""
 print(title)
 ' "$cmd")
     if [ -n "$title" ]; then
@@ -180,18 +195,22 @@ expected = label_map[matched[0]] if matched else types["task"]["commitType"]
 if m.group(1) == expected:
     print("ok")
 else:
-    print("mismatch %s %s %d" % (m.group(1), expected, 1 if matched else 0))
+    # expected — последним: commitType из конфига может содержать пробел,
+    # последнее поле read забирает остаток строки целиком
+    print("mismatch %d %s %s" % (1 if matched else 0, m.group(1), expected))
 ' "$types_json" "$labels" "$title")
       case "$verdict" in
         ok) ;;
         format\ *)
           deny "Запрещено: conventions.commitStyle=conventional — заголовок PR обязан иметь формат «<commitType>[(scope)]: <суть> (#N)», где commitType — один из: ${verdict#format }. Получено: «$title»." ;;
         mismatch\ *)
-          set -- $verdict
-          if [ "$4" = "1" ]; then
-            deny "Запрещено: commitType «$2» в заголовке PR не соответствует типу issue #$issue_n — по label issue ожидается «$3». Формат: «<commitType>[(scope)]: <суть> (#N)»."
+          read -r _ vt_has vt_got vt_exp <<VERDICT_EOF
+$verdict
+VERDICT_EOF
+          if [ "$vt_has" = "1" ]; then
+            deny "Запрещено: commitType «$vt_got» в заголовке PR не соответствует типу issue #$issue_n — по label issue ожидается «$vt_exp». Формат: «<commitType>[(scope)]: <суть> (#N)»."
           else
-            deny "Запрещено: commitType «$2» в заголовке PR не соответствует типу issue #$issue_n — у issue нет label типа, он трактуется как task, ожидается «$3» (или проставь issue label типа). Формат: «<commitType>[(scope)]: <суть> (#N)»."
+            deny "Запрещено: commitType «$vt_got» в заголовке PR не соответствует типу issue #$issue_n — у issue нет label типа, он трактуется как task, ожидается «$vt_exp» (или проставь issue label типа). Формат: «<commitType>[(scope)]: <суть> (#N)»."
           fi ;;
       esac
     fi

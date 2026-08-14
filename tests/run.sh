@@ -305,6 +305,28 @@ assert_exit "AC-5: упоминание gh pr create в heredoc (запись д
 printf '%s' '{"tool_input":{"command":"git push -u origin issue-12-x && gh pr create --title \"без формата (#12)\""}}' \
   | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "AC-5: gh pr create в командной позиции после && — валидация работает" 2 $?
+# Заголовок с shell-подстановкой: PreToolUse видит нераскрытый текст, проверять
+# нечего — fail-open, не «неправильный формат» (сценарий work.md шаг 5:
+# commitType читается из конфига в переменную)
+printf '%s' '{"tool_input":{"command":"CT=$(hooks/scripts/adk-config.sh types.task.commitType feat); gh pr create --draft --title \"$CT: добавить валидацию (#47)\" --body \"Closes #47\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: shell-подстановка VAR в заголовке не блокирует (fail-open)" 0 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"$(hooks/scripts/adk-config.sh types.task.commitType feat): добавить (#47)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: командная подстановка в заголовке не блокирует (fail-open)" 0 $?
+printf '%s' '{"tool_input":{"command":"TITLE=\"feat: сделать (#12)\"; gh pr create --draft --title \"$TITLE\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: заголовок целиком в переменной не блокирует (fail-open)" 0 $?
+# Перевод строки — разделитель команд: gh pr create со второй строки
+# многострочной команды проверяется (типовая форма work.md: push, затем create)
+printf '%s' '{"tool_input":{"command":"git push -u origin issue-12-x\ngh pr create --draft --title \"плохой заголовок\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: gh pr create со второй строки многострочной команды проверяется" 2 $?
+# Тело heredoc — данные: gh pr create сразу после токена-разделителя внутри
+# heredoc (строка md-таблицы) не разбирается как команда
+printf '%s' '{"tool_input":{"command":"cat > README.md <<'\''EOF'\''\n| gh pr create --title Заголовок | описание |\nEOF"}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: gh pr create после разделителя внутри heredoc не блокирует" 0 $?
 # Дефолтная карта label → commitType в хуке пришита к таблице docs/config.md
 # (та же карта в plan.md/work.md закреплена аналогичными AC-4-тестами)
 guard_src=$(cat "$HOOKS/bash-guard.sh")
@@ -312,6 +334,20 @@ assert_contains "AC-5: bash-guard: дефолт type:task → feat как в doc
 assert_contains "AC-5: bash-guard: дефолт type:bug → fix как в docs/config.md" "$guard_src" '"label": "type:bug", "commitType": "fix"'
 assert_contains "AC-5: bash-guard: дефолт type:fast-follow → fix как в docs/config.md" "$guard_src" '"label": "type:fast-follow", "commitType": "fix"'
 assert_contains "AC-5: bash-guard: дефолт type:consolidate → refactor как в docs/config.md" "$guard_src" '"label": "type:consolidate", "commitType": "refactor"'
+# Поведенческое покрытие той же карты (не grep исходника): fast-follow → fix,
+# consolidate → refactor
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"fix: доработка по ревью (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:fast-follow" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: type:fast-follow — fix проходит (дефолтная карта, поведение)" 0 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: доработка по ревью (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:fast-follow" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: type:fast-follow — feat отклоняется (ожидается fix)" 2 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"refactor: слить дубли (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:consolidate" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: type:consolidate — refactor проходит (дефолтная карта, поведение)" 0 $?
+printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: слить дубли (#12)\""}}' \
+  | ADK_GUARD_ISSUE_LABELS="type:consolidate" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "AC-5: type:consolidate — feat отклоняется (ожидается refactor)" 2 $?
 # Недоступность gh/issue не блокирует ложно: формат проверяем (он не требует
 # сети), сверку commitType с label'ом — пропускаем
 printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\""}}' \
