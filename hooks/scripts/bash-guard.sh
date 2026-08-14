@@ -41,23 +41,44 @@ if printf '%s' "$cmd" | grep -Eq 'git push[^|;&]*( --force| -f)\b' \
   deny "Запрещено: force push в main/master."
 fi
 
-# Политика merge: только PR, прошедший ревью. Ready — единственный путь
-# после вердикта APPROVE (draft ставится при создании, ready — ревью-процессом),
-# поэтому "не draft" = машинное доказательство апрува.
-# ADK_GUARD_PR_STATE=draft|ready|unknown — тестовый обход сетевого вызова.
+# Политика merge (SPEC-002 AC-2, policies.merge из adk.config.json):
+# - human-only — merge из агентских сессий запрещён всегда;
+# - human-review-required — сверх проверки ready требуется человеческий
+#   approve на PR (reviewDecision == APPROVED);
+# - agent-after-approve (и отсутствие конфига) — только проверка ready:
+#   ready — единственный путь после вердикта APPROVE (draft ставится при
+#   создании, ready — ревью-процессом), поэтому "не draft" = машинное
+#   доказательство апрува.
+# Тестовые обходы сетевых вызовов: ADK_GUARD_PR_STATE=draft|ready|unknown,
+# ADK_GUARD_PR_REVIEW_DECISION=<reviewDecision, например APPROVED>.
 if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
+  . "$(cd "$(dirname "$0")" && pwd)/lib/config.sh"
+  # Конфиг ищем от репозитория команды: корень сессии (CLAUDE_PROJECT_DIR,
+  # его использует adk_project_root) в мульти-директорной сессии может
+  # указывать вне проекта с adk.config.json.
+  merge_policy=$(CLAUDE_PROJECT_DIR="${git_root:-${CLAUDE_PROJECT_DIR:-$PWD}}" \
+    adk_config_get "policies.merge" "agent-after-approve" \
+    "agent-after-approve,human-review-required,human-only") || true
+
+  if [ "$merge_policy" = "human-only" ]; then
+    deny "Запрещено: policies.merge=human-only — merge из агентской сессии запрещён при любом статусе PR; merge делает человек вне процесса."
+  fi
+
+  prnum=$(printf '%s' "$cmd" | grep -Eo 'gh +pr +merge +[0-9]+' | grep -Eo '[0-9]+' | head -1)
+  repo_flag=$(printf '%s' "$cmd" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//')
+  pr_field() { # pr_field <json-поле> — значение поля PR через gh, пусто при ошибке
+    local out=""
+    if [ -n "$repo_flag" ]; then
+      out=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json "$1" -q ".$1" 2>/dev/null) || out=""
+    elif [ -n "$git_root" ]; then
+      out=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json "$1" -q ".$1" 2>/dev/null) || out=""
+    fi
+    printf '%s' "$out"
+  }
+
   state="${ADK_GUARD_PR_STATE:-}"
   if [ -z "$state" ]; then
-    prnum=$(printf '%s' "$cmd" | grep -Eo 'gh +pr +merge +[0-9]+' | grep -Eo '[0-9]+' | head -1)
-    repo_flag=$(printf '%s' "$cmd" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//')
-    if [ -n "$repo_flag" ]; then
-      isdraft=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json isDraft -q .isDraft 2>/dev/null) || isdraft=""
-    elif [ -n "$git_root" ]; then
-      isdraft=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json isDraft -q .isDraft 2>/dev/null) || isdraft=""
-    else
-      isdraft=""
-    fi
-    case "$isdraft" in
+    case "$(pr_field isDraft)" in
       false) state="ready" ;;
       true)  state="draft" ;;
       *)     state="unknown" ;;
@@ -68,6 +89,14 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
     draft) deny "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
     *) deny "Запрещено: статус PR проверить не удалось (нет git-репозитория в контексте команды или gh недоступен) — merge только для PR со статусом ready. Подсказка: выполняй merge из директории репозитория или с флагом -R owner/repo." ;;
   esac
+
+  if [ "$merge_policy" = "human-review-required" ]; then
+    decision="${ADK_GUARD_PR_REVIEW_DECISION:-}"
+    [ -n "$decision" ] || decision=$(pr_field reviewDecision)
+    if [ "$decision" != "APPROVED" ]; then
+      deny "Запрещено: policies.merge=human-review-required — merge только при человеческом approve на PR (reviewDecision=APPROVED); сейчас: ${decision:-approve отсутствует или статус недоступен}."
+    fi
+  fi
 fi
 
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---
