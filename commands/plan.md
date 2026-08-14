@@ -27,7 +27,7 @@ argument-hint: "[номер или путь спеки; по умолчанию 
      docs/config.md). Перед созданием issues создай отсутствующий label
      в репозитории: `gh label create <label> 2>/dev/null || true`.
      Правило спеки: тип задачи задаётся только label'ом, из текста issue
-     не выводится; issue без label читается как `task`;
+     не выводится;
    - по issue на задачу: заголовок — название задачи, тело — контекст,
      «Сделать», DoD, зависимости («Blocked by #N»), ссылка на файл спеки;
      `gh issue create --milestone ... --label <label> --title ... --body ...`;
