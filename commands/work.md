@@ -63,8 +63,9 @@ argument-hint: "[номер issue; по умолчанию следующий н
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh types.<тип>.commitType <дефолт>`
    (дефолты: task → `feat`, bug → `fix`, fastFollow → `fix`,
    consolidate → `refactor`). При `conventions.commitStyle=conventional`
-   формат заголовка — `<commitType>[(scope)]: <суть> (#N)` (его же
-   валидирует bash-guard, AC-5 SPEC-002); при `plain` (дефолт) —
+   формат заголовка — `<commitType>[(scope)]: <суть> (#N)` (фактический
+   заголовок PR после `gh pr create`/`gh pr edit` сверяет
+   PostToolUse-хук pr-title-check, AC-5 SPEC-002); при `plain` (дефолт) —
    «глагол + результат (#N)». Тело: `Closes #N`, что сделано,
    какие тесты это доказывают, ссылки на ADR. Никаких «попутных» изменений
    в PR. Draft — это механическая защита: GitHub не даёт смержить черновик,

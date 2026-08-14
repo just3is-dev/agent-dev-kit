@@ -290,120 +290,103 @@ printf '{"tool_input":{"command":"cd %s && git commit -m x"}}' "$P" | CLAUDE_PRO
 assert_exit "bash-guard: секрет-гейт через cd в команде" 2 $?
 rm "$P/src/leak2.ts"
 
-# ── bash-guard: валидация заголовка PR при commitStyle=conventional (AC-5) ──
+# ── pr-title-check: PostToolUse-валидация заголовка PR (commitStyle=conventional, AC-5) ──
 # SPEC-002: заголовок PR — будущее сообщение squash-коммита в main, поэтому
-# точка контроля конвенции одна — он, не веточные коммиты.
-# ADK_GUARD_ISSUE_LABELS — тестовый обход сетевого определения labels issue
-# (по образцу ADK_GUARD_PR_STATE): CSV labels; пустая строка — labels нет;
-# "unavailable" — gh или issue недоступны.
+# точка контроля конвенции одна — он, не веточные коммиты. После gh pr
+# create/edit проверяется фактический заголовок PR (gh pr view), а не текст
+# команды — разбора shell нет вовсе (ADR-004). Хук PostToolUse: действие уже
+# случилось, exit 2 — это требование исправить заголовок, не блок.
+# Тестовые обходы сети (по образцу ADK_GUARD_PR_STATE):
+# ADK_GUARD_PR_TITLE — фактический заголовок PR ("unavailable" — gh или PR
+# недоступны); ADK_GUARD_ISSUE_LABELS — CSV labels issue (пустая строка —
+# labels нет; "unavailable" — gh или issue недоступны).
 TITLEP="$TMP/titleproj"
 mkdir -p "$TITLEP"
 (cd "$TITLEP" && git init -q -b main)
 printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
+TCMD='{"tool_input":{"command":"gh pr create --draft --body x"}}'
 
-printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"Добавить фичу (#12)\" --body x"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="Добавить фичу (#12)" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — заголовок без префикса типа отклоняется" 2 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"feat: добавить фичу\" --body x"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+title_err=$(printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="Добавить фичу (#12)" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
+assert_contains "AC-5: отказ подсказывает исправление через gh pr edit --title" "$title_err" 'gh pr edit'
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — заголовок без (#N) отклоняется" 2 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"feat: починить гейт (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: починить гейт (#12)" ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — commitType не соответствует label'у issue (type:bug → fix, не feat)" 2 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"feat: добавить фичу (#12)\" --body x"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу (#12)" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — корректный заголовок проходит" 0 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"fix(guard): починить гейт (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="fix(guard): починить гейт (#12)" ADK_GUARD_ISSUE_LABELS="type:bug" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — корректный заголовок со scope проходит" 0 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу (#12)" ADK_GUARD_ISSUE_LABELS="" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — issue без label трактуется как task (feat проходит)" 0 $?
-printf '%s' '{"tool_input":{"command":"gh pr edit 12 --title \"без формата вовсе\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: conventional — gh pr edit с неконвенционным заголовком отклоняется" 2 $?
+# Любой gh pr edit триггерит сверку фактического заголовка — даже если сама
+# команда заголовок не меняла (валидируется состояние PR, не команда)
 printf '%s' '{"tool_input":{"command":"gh pr edit 12 --add-label wip"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: conventional — gh pr edit без --title не трогается" 0 $?
+  | ADK_GUARD_PR_TITLE="без формата вовсе" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: gh pr edit — фактический заголовок сверяется независимо от флагов команды" 2 $?
+# Команда без gh pr create/edit валидацию не запускает вовсе
+printf '%s' '{"tool_input":{"command":"git push -u origin issue-12-x"}}' \
+  | ADK_GUARD_PR_TITLE="без формата вовсе" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: команда без gh pr create/edit не проверяется" 0 $?
+# Shell-подстановки в команде безразличны: проверяется фактический заголовок
+# (класс ложных запретов/пропусков парсера команд снят по построению)
+printf '%s' '{"tool_input":{"command":"CT=$(hooks/scripts/adk-config.sh types.task.commitType feat); gh pr create --draft --title \"$CT: добавить валидацию (#12)\" --body \"Closes #12\""}}' \
+  | ADK_GUARD_PR_TITLE="feat: добавить валидацию (#12)" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: shell-подстановка в команде не мешает — сверяется фактический заголовок" 0 $?
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="unavailable" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: gh или PR недоступны — не блокируем (fail-open)" 0 $?
 # Кастомный тип из конфига переопределяет дефолтную карту label → commitType
 printf '{"conventions": {"commitStyle": "conventional"}, "types": {"docs": {"label": "type:docs", "commitType": "docs"}}}' > "$TITLEP/adk.config.json"
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"docs: описать конфиг (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:docs" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="docs: описать конфиг (#12)" ADK_GUARD_ISSUE_LABELS="type:docs" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — кастомный тип из types.* конфига учитывается" 0 $?
 # commitType — произвольная строка конфига, алфавит формата не ограничен
 printf '{"conventions": {"commitStyle": "conventional"}, "types": {"deps": {"label": "type:deps", "commitType": "build-deps"}}}' > "$TITLEP/adk.config.json"
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"build-deps: обновить зависимости (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:deps" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="build-deps: обновить зависимости (#12)" ADK_GUARD_ISSUE_LABELS="type:deps" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: conventional — commitType с дефисом из конфига проходит проверку формата" 0 $?
 printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
-# --title привязан к вызову gh pr create/edit в командной позиции, разбор —
-# fail-open: непарная кавычка в --body и упоминание gh pr create в heredoc
-# (запись доки про сам формат) не должны ложно блокировать
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\" --body \"незакрытая кавычка"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: непарная кавычка в команде не блокирует (разбор fail-open)" 0 $?
-printf '%s' '{"tool_input":{"command":"cat > docs/how-to.md <<'\''EOF'\''\nПример: gh pr create --draft --title Заголовок задачи (#12)\nEOF"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: упоминание gh pr create в heredoc (запись доки) не блокирует" 0 $?
-printf '%s' '{"tool_input":{"command":"git push -u origin issue-12-x && gh pr create --title \"без формата (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: gh pr create в командной позиции после && — валидация работает" 2 $?
-# Заголовок с shell-подстановкой: PreToolUse видит нераскрытый текст, проверять
-# нечего — fail-open, не «неправильный формат» (сценарий work.md шаг 5:
-# commitType читается из конфига в переменную)
-printf '%s' '{"tool_input":{"command":"CT=$(hooks/scripts/adk-config.sh types.task.commitType feat); gh pr create --draft --title \"$CT: добавить валидацию (#47)\" --body \"Closes #47\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: shell-подстановка VAR в заголовке не блокирует (fail-open)" 0 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --draft --title \"$(hooks/scripts/adk-config.sh types.task.commitType feat): добавить (#47)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: командная подстановка в заголовке не блокирует (fail-open)" 0 $?
-printf '%s' '{"tool_input":{"command":"TITLE=\"feat: сделать (#12)\"; gh pr create --draft --title \"$TITLE\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: заголовок целиком в переменной не блокирует (fail-open)" 0 $?
-# Перевод строки — разделитель команд: gh pr create со второй строки
-# многострочной команды проверяется (типовая форма work.md: push, затем create)
-printf '%s' '{"tool_input":{"command":"git push -u origin issue-12-x\ngh pr create --draft --title \"плохой заголовок\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: gh pr create со второй строки многострочной команды проверяется" 2 $?
-# Тело heredoc — данные: gh pr create сразу после токена-разделителя внутри
-# heredoc (строка md-таблицы) не разбирается как команда
-printf '%s' '{"tool_input":{"command":"cat > README.md <<'\''EOF'\''\n| gh pr create --title Заголовок | описание |\nEOF"}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: gh pr create после разделителя внутри heredoc не блокирует" 0 $?
-# Дефолтная карта label → commitType в хуке пришита к таблице docs/config.md
-# (та же карта в plan.md/work.md закреплена аналогичными AC-4-тестами)
-guard_src=$(cat "$HOOKS/bash-guard.sh")
-assert_contains "AC-5: bash-guard: дефолт type:task → feat как в docs/config.md" "$guard_src" '"label": "type:task", "commitType": "feat"'
-assert_contains "AC-5: bash-guard: дефолт type:bug → fix как в docs/config.md" "$guard_src" '"label": "type:bug", "commitType": "fix"'
-assert_contains "AC-5: bash-guard: дефолт type:fast-follow → fix как в docs/config.md" "$guard_src" '"label": "type:fast-follow", "commitType": "fix"'
-assert_contains "AC-5: bash-guard: дефолт type:consolidate → refactor как в docs/config.md" "$guard_src" '"label": "type:consolidate", "commitType": "refactor"'
-# Поведенческое покрытие той же карты (не grep исходника): fast-follow → fix,
-# consolidate → refactor
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"fix: доработка по ревью (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:fast-follow" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+# Поведенческое покрытие дефолтной карты: fast-follow → fix, consolidate → refactor
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="fix: доработка по ревью (#12)" ADK_GUARD_ISSUE_LABELS="type:fast-follow" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: type:fast-follow — fix проходит (дефолтная карта, поведение)" 0 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: доработка по ревью (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:fast-follow" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: доработка по ревью (#12)" ADK_GUARD_ISSUE_LABELS="type:fast-follow" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: type:fast-follow — feat отклоняется (ожидается fix)" 2 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"refactor: слить дубли (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:consolidate" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="refactor: слить дубли (#12)" ADK_GUARD_ISSUE_LABELS="type:consolidate" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: type:consolidate — refactor проходит (дефолтная карта, поведение)" 0 $?
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: слить дубли (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:consolidate" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: слить дубли (#12)" ADK_GUARD_ISSUE_LABELS="type:consolidate" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: type:consolidate — feat отклоняется (ожидается refactor)" 2 $?
 # Недоступность gh/issue не блокирует ложно: формат проверяем (он не требует
 # сети), сверку commitType с label'ом — пропускаем
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"feat: добавить фичу (#12)\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="unavailable" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
-assert_exit "AC-5: conventional — недоступность gh/issue не блокирует создание PR" 0 $?
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу (#12)" ADK_GUARD_ISSUE_LABELS="unavailable" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: conventional — недоступность gh/issue не блокирует корректный заголовок" 0 $?
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="без формата вовсе (#12)" ADK_GUARD_ISSUE_LABELS="unavailable" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "AC-5: недоступность gh/issue — проверка формата всё равно работает" 2 $?
 printf '{"conventions": {"commitStyle": "conventional", "externalTitleLint": true}}' > "$TITLEP/adk.config.json"
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"без формата вовсе\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="без формата вовсе" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: externalTitleLint=true — серверный линтер есть, локальная проверка выключена" 0 $?
 printf '{"conventions": {"commitStyle": "plain"}}' > "$TITLEP/adk.config.json"
-printf '%s' '{"tool_input":{"command":"gh pr create --title \"любой заголовок без конвенции\""}}' \
-  | ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="любой заголовок без конвенции" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: plain — любой заголовок проходит" 0 $?
+# Хук зарегистрирован в hooks.json как PostToolUse(Bash)
+hooks_json=$(cat "$KIT/hooks/hooks.json")
+assert_contains "AC-5: pr-title-check.sh зарегистрирован в hooks.json" "$hooks_json" 'pr-title-check\.sh'
 
 # ── Уведомления ──────────────────────────────────────────────────────────────
 NDIR="$TMP/tmpdir/agent-dev-kit-notify"
@@ -1035,7 +1018,7 @@ assert_contains "AC-4: work.md шаг 3 — правило consolidate: набл
 
 assert_contains "AC-4: work.md шаг 5 читает commitType типа из конфига (adk-config.sh types.<тип>.commitType)" \
   "$work_type_step5" 'adk-config\.sh types\.<тип>\.commitType'
-check_ac_doc AC-4 "work.md шаг 5: формат conventional-заголовка с commitType типа — вход для bash-guard (AC-5)" \
+check_ac_doc AC-4 "work.md шаг 5: формат conventional-заголовка с commitType типа — его сверяет pr-title-check (AC-5)" \
   "$WORKMD" "<commitType>[(scope)]: <суть> (#N)"
 
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────

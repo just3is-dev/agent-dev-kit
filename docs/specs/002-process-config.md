@@ -145,11 +145,13 @@
 - [ ] AC-4: `/plan` создаёт issues с label типа task (labels в репо
       создаются при отсутствии); `/work` определяет тип по label и
       применяет правила типа; issue без label обрабатывается как task.
-- [ ] AC-5: при `commitStyle=conventional` bash-guard отклоняет
-      `gh pr create` с заголовком, не соответствующим
-      `<commitType>[(scope)]: <суть> (#N)` или с commitType, не
-      соответствующим label'у issue; при `plain` и без конфига — не
-      вмешивается.
+- [ ] AC-5: при `commitStyle=conventional` PostToolUse-хук после
+      `gh pr create`/`gh pr edit` сверяет фактический заголовок PR и
+      требует исправить (через `gh pr edit`) заголовок, не
+      соответствующий `<commitType>[(scope)]: <суть> (#N)` или с
+      commitType, не соответствующим label'у issue; при `plain` и без
+      конфига — не вмешивается. Валидируется состояние PR, а не текст
+      команды (ADR-004: PreToolUse-парсинг shell-команд отклонён).
 - [ ] AC-6 (ждёт #48): `/project-init` в новом репозитории настраивает сервер по
       конфигу: allowed merge method выводится из пары `squash` ×
       `branchUpdate` (true→squash-merge; false+rebase→rebase-merge;
