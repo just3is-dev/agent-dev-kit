@@ -830,6 +830,45 @@ check_ac_doc AC-4 "plan.md: label — единственный источник 
 check_ac_doc AC-4 "plan.md: перепланирование не переклеивает labels на закрытых issues" \
   "$PLANMD" "на закрытых issues labels не переклеивай"
 
+# ── /work определяет тип по label и применяет правила типа (work.md, AC-4) ──
+# Команда — markdown-инструкция; проверяем, что шаг 1 читает labels issue и
+# сопоставляет их с types.* конфига, шаг 3 применяет правила каждого
+# дефолтного типа, а шаг 5 ставит commitType типа в заголовок PR.
+work_type_step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+work_type_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+work_type_step5=$(sed -n '/^5\. \*\*/,/^6\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+
+assert_contains "AC-4: work.md шаг 1 читает labels issue (gh issue view --json labels)" \
+  "$work_type_step1" 'gh issue view.*--json labels'
+assert_contains "AC-4: work.md шаг 1 читает label типа task из конфига через adk-config.sh (дефолт type:task)" \
+  "$work_type_step1" 'adk-config\.sh types\.task\.label type:task'
+assert_contains "AC-4: work.md шаг 1 читает label типа bug из конфига (дефолт type:bug)" \
+  "$work_type_step1" 'types\.bug\.label type:bug'
+assert_contains "AC-4: work.md шаг 1 читает label типа fastFollow из конфига (дефолт type:fast-follow)" \
+  "$work_type_step1" 'types\.fastFollow\.label type:fast-follow'
+assert_contains "AC-4: work.md шаг 1 читает label типа consolidate из конфига (дефолт type:consolidate)" \
+  "$work_type_step1" 'types\.consolidate\.label type:consolidate'
+check_ac_doc AC-4 "work.md: нет label или неизвестный label — тип task (безопасный дефолт)" \
+  "$WORKMD" "Нет label или ни один label не совпал с типами — тип \`task\`"
+check_ac_doc AC-4 "work.md: label — единственный источник типа, из текста issue тип не выводится" \
+  "$WORKMD" "из текста issue тип не выводится"
+
+assert_contains "AC-4: work.md шаг 3 — правило bug: первым падающий репро-тест" \
+  "$work_type_step3" 'bug.*падающий репро-тест'
+assert_contains "AC-4: work.md шаг 3 — правило bug: обязательные поля тела (Воспроизведение/Ожидаемое/Фактическое/Сбежал от)" \
+  "$work_type_step3" 'Воспроизведение.*Ожидаемое.*Фактическое.*Сбежал от'
+assert_contains "AC-4: work.md шаг 3 — правило task: тесты DoD с AC-тегами" \
+  "$work_type_step3" 'task.*AC-тег'
+assert_contains "AC-4: work.md шаг 3 — правило fastFollow: источник — вердикт ревью PR #N" \
+  "$work_type_step3" 'fastFollow.*вердикт ревью PR #N'
+assert_contains "AC-4: work.md шаг 3 — правило consolidate: наблюдаемое поведение не меняется" \
+  "$work_type_step3" 'consolidate.*поведение не меняется'
+
+assert_contains "AC-4: work.md шаг 5 читает commitType типа из конфига (adk-config.sh types.<тип>.commitType)" \
+  "$work_type_step5" 'adk-config\.sh types\.<тип>\.commitType'
+check_ac_doc AC-4 "work.md шаг 5: формат conventional-заголовка с commitType типа — вход для bash-guard (AC-5)" \
+  "$WORKMD" "<commitType>[(scope)]: <суть> (#N)"
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
