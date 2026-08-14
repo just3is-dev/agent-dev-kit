@@ -44,9 +44,9 @@ exit-код; тот, кому не важна (значение не из зак
 | `policies.merge` | `agent-after-approve` \| `human-review-required` \| `human-only` | `agent-after-approve` | Ready-PR мержит кто угодно, включая `/autopilot`, — сегодня ничего это не ограничивает. |
 | `policies.review.maxRounds` | число | `2` | `/work` и `/autopilot` останавливаются и зовут человека после двух кругов ревью без APPROVE (см. `commands/work.md`, шаг 6). |
 | `policies.review.humanApprovalRequired` | bool | `false` | Вердикт даёт reviewer-агент; человек не обязан approve'ить PR отдельно. |
-| `policies.autopilot.enabled` | bool | `true` | `/autopilot` сегодня ничем не заблокирован. |
-| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` сегодня мержит ready-PR сам (`gh pr merge --squash --delete-branch`). |
-| `policies.autopilot.maxTasksPerRun` | число | `5` | Дефолт лимита `/autopilot` сегодня (`commands/autopilot.md`: «по умолчанию 5»). |
+| `policies.autopilot.enabled` | bool | `true` | `/autopilot` стартует без ограничений; `false` — отказ старта без побочных эффектов (читается в `commands/autopilot.md`, «Политика прогона»). |
+| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge --squash --delete-branch`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). |
+| `policies.autopilot.maxTasksPerRun` | число | `5` | Лимит задач `/autopilot` за прогон; аргумент команды его переопределяет (`commands/autopilot.md`, «Параметры»). |
 
 `policies.merge` энфорсится хуком bash-guard (SPEC-002 AC-2): `human-only`
 — merge из агентских сессий блокируется всегда; `human-review-required` —
@@ -77,9 +77,12 @@ CODEOWNERS) — без этого поле пустое даже при живо
 `consolidate`), значение — объект с полями `label`, `commitType`,
 `requiredFields`. Отсутствие label у issue сегодня и после появления
 типов трактуется как `task` (безопасный дефолт, «Решённые вопросы»
-SPEC-002) — конфиг здесь не меняет сегодняшнее поведение, потому что
-label'ы типов кит пока нигде не проставляет и не читает (это AC-4,
-отдельные задачи).
+SPEC-002). `types.task.label` читает `/plan`: при создании issues он
+создаёт этот label в репозитории и вешает на каждый issue (AC-4,
+issue #45). `/work` читает labels issue, определяет тип по совпадению с
+`types.<имя>.label` (нет label или label неизвестен — тип `task`),
+применяет правила типа на реализации и ставит `commitType` типа в
+заголовок PR (AC-4, issue #46).
 
 | Тип | `label` | `commitType` | `requiredFields` |
 |---|---|---|---|

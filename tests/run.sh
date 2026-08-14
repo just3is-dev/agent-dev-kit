@@ -38,6 +38,18 @@ assert_not_contains() { # assert_not_contains <описание> <текст> <�
   fi
 }
 
+check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <искомая подстрока>
+  # Markdown-прозу переносит по словам — схлопываем переводы строк и
+  # повторяющиеся пробелы, чтобы искомая фраза не ломалась о жёсткий
+  # перенос строки, случайно совпавший с серединой фразы.
+  if tr '\n' ' ' < "$3" | tr -s ' ' | grep -qF -- "$4"; then
+    echo "PASS: $1: $2"
+  else
+    echo "FAIL: $1: $2 — не найдена подстрока «$4» в $3"
+    fails=$((fails + 1))
+  fi
+}
+
 count_lines() { # count_lines <файл> — обёртка над wc -l для сравнения через assert_exit
   wc -l < "$1" | tr -d ' '
 }
@@ -787,6 +799,124 @@ auto_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
 auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 5 "$auto_spec")
 assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
 
+# ── /autopilot читает policies.autopilot (AC-3) ──────────────────────────────
+# Команда — markdown-инструкция; проверяем, что она предписывает чтение
+# конфига через adk-config.sh с дефолтами спеки (отсутствие конфига =
+# сегодняшнее поведение: лимит 5, merge ready-PR) и все три ветки
+# политики: отказ старта, «ждут человека» вместо merge, лимит из конфига.
+policy_section=$(sed -n '/^## Политика прогона/,/^## Параметры/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+params_section=$(sed -n '/^## Параметры/,/^## Цикл/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+
+assert_contains "AC-3: autopilot.md читает policies.autopilot.enabled через adk-config.sh (дефолт true — без конфига автопилот работает)" \
+  "$policy_section" 'adk-config\.sh policies\.autopilot\.enabled true'
+assert_contains "AC-3: autopilot.md читает policies.autopilot.canMerge через adk-config.sh (дефолт true — без конфига мержит сам)" \
+  "$policy_section" 'adk-config\.sh policies\.autopilot\.canMerge true'
+assert_contains "AC-3: autopilot.md читает policies.autopilot.maxTasksPerRun через adk-config.sh (дефолт 5 — как сегодня)" \
+  "$policy_section" 'adk-config\.sh policies\.autopilot\.maxTasksPerRun 5'
+
+# политика читается до цикла — иначе «отказ без журнала» невыполним:
+# run_start логируется в преамбуле «## Цикл»
+policy_line=$(grep -n '^## Политика прогона' "$AUTOMD" | head -1 | cut -d: -f1)
+cycle_line=$(grep -n '^## Цикл' "$AUTOMD" | head -1 | cut -d: -f1)
+if [ -n "$policy_line" ] && [ -n "$cycle_line" ] && [ "$policy_line" -lt "$cycle_line" ]; then
+  echo "PASS: AC-3: autopilot.md читает политику до «## Цикл» (то есть до run_start)"
+else
+  echo "FAIL: AC-3: autopilot.md политика должна читаться до «## Цикл» (policy=$policy_line cycle=$cycle_line)"
+  fails=$((fails + 1))
+fi
+
+# enabled=false — отказ старта с объяснением и без побочных эффектов
+check_ac_doc AC-3 "autopilot.md: enabled=false — отказ старта" \
+  "$AUTOMD" "откажись стартовать"
+check_ac_doc AC-3 "autopilot.md: enabled=false — журнал прогона не начинается" \
+  "$AUTOMD" "журнал прогона не начинай"
+check_ac_doc AC-3 "autopilot.md: enabled=false — отказ объясняет причину (имя атрибута в сообщении)" \
+  "$AUTOMD" "policies.autopilot.enabled=false"
+
+# canMerge=false — ready-PR не мержатся, а собираются в список «ждут человека»
+step3_ac3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+finish_ac3=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+assert_contains "AC-3: autopilot.md шаг 3 мержит только при canMerge=true" "$step3_ac3" 'canMerge=true'
+assert_contains "AC-3: autopilot.md шаг 3: canMerge=false — ready-PR не мержится, а попадает в «ждут человека»" "$step3_ac3" 'canMerge=false.*ждут человека'
+assert_contains "AC-3: autopilot.md шаг 3: ready-PR без merge логируется result=ready (ADR-003)" "$step3_ac3" 'result=ready'
+check_ac_doc AC-3 "autopilot.md: задача с ready-PR при canMerge=false не застряла — метка needs-human не ставится" \
+  "$AUTOMD" "метку \`needs-human\` не ставь"
+assert_contains "AC-3: autopilot.md «Завершение» — сводка содержит отдельный список «ждут человека»" "$finish_ac3" 'ждут человека'
+assert_contains "AC-3: autopilot.md «Завершение» — run_end пишет агрегат ready= (сколько PR ждут человека)" "$finish_ac3" 'ready='
+
+# maxTasksPerRun — дефолт лимита; аргумент команды переопределяет
+assert_contains "AC-3: autopilot.md лимит прогона по умолчанию — maxTasksPerRun из конфига" "$params_section" 'maxTasksPerRun'
+check_ac_doc AC-3 "autopilot.md: аргумент команды переопределяет лимит из конфига" \
+  "$AUTOMD" "Аргумент команды переопределяет значение конфига"
+
+# взаимодействие с policies.merge: хук блокирует merge — не обходить
+check_ac_doc AC-3 "autopilot.md описывает блокировку merge политикой human-only" \
+  "$AUTOMD" "human-only"
+check_ac_doc AC-3 "autopilot.md описывает блокировку merge политикой human-review-required" \
+  "$AUTOMD" "human-review-required"
+check_ac_doc AC-3 "autopilot.md запрещает обходить блокировку merge хуком" \
+  "$AUTOMD" "не пытайся обойти"
+
+# ── /plan проставляет label типа задачи (plan.md, AC-4) ──────────────────────
+# Команда — markdown-инструкция; проверяем, что шаг создания issues читает
+# имя label из конфига (types.task.label, дефолт type:task), создаёт
+# отсутствующий label в репо и вешает его на создаваемые issues; тип
+# задаётся только label'ом, из текста issue не выводится.
+PLANMD="$KIT/commands/plan.md"
+plan_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$PLANMD" | tr '\n' ' ' | tr -s ' ')
+
+assert_contains "AC-4: plan.md шаг 3 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
+  "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
+assert_contains "AC-4: plan.md шаг 3 создаёт отсутствующий label в репо идемпотентно (gh label create, ошибка «уже есть» гасится)" \
+  "$plan_step3" 'gh label create.*2>/dev/null'
+assert_contains "AC-4: plan.md шаг 3 создаёт label до создания issues" \
+  "$plan_step3" 'gh label create.*gh issue create'
+assert_contains "AC-4: plan.md шаг 3 проставляет label создаваемым issues (--label в gh issue create)" \
+  "$plan_step3" 'gh issue create.*--label'
+check_ac_doc AC-4 "plan.md: label — единственный источник типа, из текста issue тип не выводится" \
+  "$PLANMD" "из текста issue не выводится"
+check_ac_doc AC-4 "plan.md: перепланирование не переклеивает labels на закрытых issues" \
+  "$PLANMD" "на закрытых issues labels не переклеивай"
+
+# ── /work определяет тип по label и применяет правила типа (work.md, AC-4) ──
+# Команда — markdown-инструкция; проверяем, что шаг 1 читает labels issue и
+# сопоставляет их с types.* конфига, шаг 3 применяет правила каждого
+# дефолтного типа, а шаг 5 ставит commitType типа в заголовок PR.
+work_type_step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+work_type_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+work_type_step5=$(sed -n '/^5\. \*\*/,/^6\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+
+assert_contains "AC-4: work.md шаг 1 читает labels issue (gh issue view --json labels)" \
+  "$work_type_step1" 'gh issue view.*--json labels'
+assert_contains "AC-4: work.md шаг 1 читает label типа task из конфига через adk-config.sh (дефолт type:task)" \
+  "$work_type_step1" 'adk-config\.sh types\.task\.label type:task'
+assert_contains "AC-4: work.md шаг 1 читает label типа bug из конфига (дефолт type:bug)" \
+  "$work_type_step1" 'types\.bug\.label type:bug'
+assert_contains "AC-4: work.md шаг 1 читает label типа fastFollow из конфига (дефолт type:fast-follow)" \
+  "$work_type_step1" 'types\.fastFollow\.label type:fast-follow'
+assert_contains "AC-4: work.md шаг 1 читает label типа consolidate из конфига (дефолт type:consolidate)" \
+  "$work_type_step1" 'types\.consolidate\.label type:consolidate'
+check_ac_doc AC-4 "work.md: нет label или неизвестный label — тип task (безопасный дефолт)" \
+  "$WORKMD" "Нет label или ни один label не совпал с типами — тип \`task\`"
+check_ac_doc AC-4 "work.md: label — единственный источник типа, из текста issue тип не выводится" \
+  "$WORKMD" "из текста issue тип не выводится"
+
+assert_contains "AC-4: work.md шаг 3 — правило bug: первым падающий репро-тест" \
+  "$work_type_step3" 'bug.*падающий репро-тест'
+assert_contains "AC-4: work.md шаг 3 — правило bug: обязательные поля тела (Воспроизведение/Ожидаемое/Фактическое/Сбежал от)" \
+  "$work_type_step3" 'Воспроизведение.*Ожидаемое.*Фактическое.*Сбежал от'
+assert_contains "AC-4: work.md шаг 3 — правило task: тесты DoD с AC-тегами" \
+  "$work_type_step3" 'task.*AC-тег'
+assert_contains "AC-4: work.md шаг 3 — правило fastFollow: источник — вердикт ревью PR #N" \
+  "$work_type_step3" 'fastFollow.*вердикт ревью PR #N'
+assert_contains "AC-4: work.md шаг 3 — правило consolidate: наблюдаемое поведение не меняется" \
+  "$work_type_step3" 'consolidate.*поведение не меняется'
+
+assert_contains "AC-4: work.md шаг 5 читает commitType типа из конфига (adk-config.sh types.<тип>.commitType)" \
+  "$work_type_step5" 'adk-config\.sh types\.<тип>\.commitType'
+check_ac_doc AC-4 "work.md шаг 5: формат conventional-заголовка с commitType типа — вход для bash-guard (AC-5)" \
+  "$WORKMD" "<commitType>[(scope)]: <суть> (#N)"
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
@@ -1257,18 +1387,6 @@ guard_ac_check
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
 # правильном месте каждого из семи файлов, а не просто что "AC-" где-то
 # встречается в файле.
-check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <искомая подстрока>
-  # Markdown-прозу переносит по словам — схлопываем переводы строк и
-  # повторяющиеся пробелы, чтобы искомая фраза не ломалась о жёсткий
-  # перенос строки, случайно совпавший с серединой фразы.
-  if tr '\n' ' ' < "$3" | tr -s ' ' | grep -qF -- "$4"; then
-    echo "PASS: $1: $2"
-  else
-    echo "FAIL: $1: $2 — не найдена подстрока «$4» в $3"
-    fails=$((fails + 1))
-  fi
-}
-
 check_ac_doc AC-5 "spec-template: критерий приёмки — пронумерованный checkbox AC-1" \
   "$KIT/templates/process/spec-template.md" "- [ ] AC-1:"
 check_ac_doc AC-5 "spec-template: пример второго критерия пронумерован" \
