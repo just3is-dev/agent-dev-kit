@@ -38,6 +38,18 @@ assert_not_contains() { # assert_not_contains <описание> <текст> <�
   fi
 }
 
+check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <искомая подстрока>
+  # Markdown-прозу переносит по словам — схлопываем переводы строк и
+  # повторяющиеся пробелы, чтобы искомая фраза не ломалась о жёсткий
+  # перенос строки, случайно совпавший с серединой фразы.
+  if tr '\n' ' ' < "$3" | tr -s ' ' | grep -qF -- "$4"; then
+    echo "PASS: $1: $2"
+  else
+    echo "FAIL: $1: $2 — не найдена подстрока «$4» в $3"
+    fails=$((fails + 1))
+  fi
+}
+
 count_lines() { # count_lines <файл> — обёртка над wc -l для сравнения через assert_exit
   wc -l < "$1" | tr -d ' '
 }
@@ -739,6 +751,64 @@ auto_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
 auto_valid=$(jsonl_check "$AUTOP/.adk/logs/$DATE_UNIT.jsonl" 5 "$auto_spec")
 assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/исход задачи и агрегаты итога прогона (сделано/застряло/пропущено)" 1 "$auto_valid"
 
+# ── /autopilot читает policies.autopilot (AC-3) ──────────────────────────────
+# Команда — markdown-инструкция; проверяем, что она предписывает чтение
+# конфига через adk-config.sh с дефолтами спеки (отсутствие конфига =
+# сегодняшнее поведение: лимит 5, merge ready-PR) и все три ветки
+# политики: отказ старта, «ждут человека» вместо merge, лимит из конфига.
+policy_section=$(sed -n '/^## Политика прогона/,/^## Параметры/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+params_section=$(sed -n '/^## Параметры/,/^## Цикл/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+
+assert_contains "AC-3: autopilot.md читает policies.autopilot.enabled через adk-config.sh (дефолт true — без конфига автопилот работает)" \
+  "$policy_section" 'adk-config\.sh policies\.autopilot\.enabled true'
+assert_contains "AC-3: autopilot.md читает policies.autopilot.canMerge через adk-config.sh (дефолт true — без конфига мержит сам)" \
+  "$policy_section" 'adk-config\.sh policies\.autopilot\.canMerge true'
+assert_contains "AC-3: autopilot.md читает policies.autopilot.maxTasksPerRun через adk-config.sh (дефолт 5 — как сегодня)" \
+  "$policy_section" 'adk-config\.sh policies\.autopilot\.maxTasksPerRun 5'
+
+# политика читается до цикла — иначе «отказ без журнала» невыполним:
+# run_start логируется в преамбуле «## Цикл»
+policy_line=$(grep -n '^## Политика прогона' "$AUTOMD" | head -1 | cut -d: -f1)
+cycle_line=$(grep -n '^## Цикл' "$AUTOMD" | head -1 | cut -d: -f1)
+if [ -n "$policy_line" ] && [ -n "$cycle_line" ] && [ "$policy_line" -lt "$cycle_line" ]; then
+  echo "PASS: AC-3: autopilot.md читает политику до «## Цикл» (то есть до run_start)"
+else
+  echo "FAIL: AC-3: autopilot.md политика должна читаться до «## Цикл» (policy=$policy_line cycle=$cycle_line)"
+  fails=$((fails + 1))
+fi
+
+# enabled=false — отказ старта с объяснением и без побочных эффектов
+check_ac_doc AC-3 "autopilot.md: enabled=false — отказ старта" \
+  "$AUTOMD" "откажись стартовать"
+check_ac_doc AC-3 "autopilot.md: enabled=false — журнал прогона не начинается" \
+  "$AUTOMD" "журнал прогона не начинай"
+check_ac_doc AC-3 "autopilot.md: enabled=false — отказ объясняет причину (имя атрибута в сообщении)" \
+  "$AUTOMD" "policies.autopilot.enabled=false"
+
+# canMerge=false — ready-PR не мержатся, а собираются в список «ждут человека»
+step3_ac3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+finish_ac3=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+assert_contains "AC-3: autopilot.md шаг 3 мержит только при canMerge=true" "$step3_ac3" 'canMerge=true'
+assert_contains "AC-3: autopilot.md шаг 3: canMerge=false — ready-PR не мержится, а попадает в «ждут человека»" "$step3_ac3" 'canMerge=false.*ждут человека'
+assert_contains "AC-3: autopilot.md шаг 3: ready-PR без merge логируется result=ready (ADR-003)" "$step3_ac3" 'result=ready'
+check_ac_doc AC-3 "autopilot.md: задача с ready-PR при canMerge=false не застряла — метка needs-human не ставится" \
+  "$AUTOMD" "метку \`needs-human\` не ставь"
+assert_contains "AC-3: autopilot.md «Завершение» — сводка содержит отдельный список «ждут человека»" "$finish_ac3" 'ждут человека'
+assert_contains "AC-3: autopilot.md «Завершение» — run_end пишет агрегат ready= (сколько PR ждут человека)" "$finish_ac3" 'ready='
+
+# maxTasksPerRun — дефолт лимита; аргумент команды переопределяет
+assert_contains "AC-3: autopilot.md лимит прогона по умолчанию — maxTasksPerRun из конфига" "$params_section" 'maxTasksPerRun'
+check_ac_doc AC-3 "autopilot.md: аргумент команды переопределяет лимит из конфига" \
+  "$AUTOMD" "Аргумент команды переопределяет значение конфига"
+
+# взаимодействие с policies.merge: хук блокирует merge — не обходить
+check_ac_doc AC-3 "autopilot.md описывает блокировку merge политикой human-only" \
+  "$AUTOMD" "human-only"
+check_ac_doc AC-3 "autopilot.md описывает блокировку merge политикой human-review-required" \
+  "$AUTOMD" "human-review-required"
+check_ac_doc AC-3 "autopilot.md запрещает обходить блокировку merge хуком" \
+  "$AUTOMD" "не пытайся обойти"
+
 # ── Монорепа: корневой диспетчер ─────────────────────────────────────────────
 M="$TMP/mono"
 mkdir -p "$M/scripts" "$M/apps/web/scripts" "$M/apps/web/src" "$M/apps/api/scripts" "$M/apps/api/src"
@@ -1209,18 +1279,6 @@ guard_ac_check
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
 # правильном месте каждого из семи файлов, а не просто что "AC-" где-то
 # встречается в файле.
-check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <искомая подстрока>
-  # Markdown-прозу переносит по словам — схлопываем переводы строк и
-  # повторяющиеся пробелы, чтобы искомая фраза не ломалась о жёсткий
-  # перенос строки, случайно совпавший с серединой фразы.
-  if tr '\n' ' ' < "$3" | tr -s ' ' | grep -qF -- "$4"; then
-    echo "PASS: $1: $2"
-  else
-    echo "FAIL: $1: $2 — не найдена подстрока «$4» в $3"
-    fails=$((fails + 1))
-  fi
-}
-
 check_ac_doc AC-5 "spec-template: критерий приёмки — пронумерованный checkbox AC-1" \
   "$KIT/templates/process/spec-template.md" "- [ ] AC-1:"
 check_ac_doc AC-5 "spec-template: пример второго критерия пронумерован" \
