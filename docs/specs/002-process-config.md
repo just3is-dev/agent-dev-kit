@@ -142,7 +142,7 @@
       отказ старта с объяснением; `canMerge=false` — ready-PR не мержатся
       и перечисляются в отчёте как «ждут человека»; `maxTasksPerRun`
       ограничивает прогон.
-- [ ] AC-4 (ждёт #45): `/plan` создаёт issues с label типа task (labels в репо
+- [ ] AC-4: `/plan` создаёт issues с label типа task (labels в репо
       создаются при отсутствии); `/work` определяет тип по label и
       применяет правила типа; issue без label обрабатывается как task.
 - [ ] AC-5 (ждёт #47): при `commitStyle=conventional` bash-guard отклоняет
