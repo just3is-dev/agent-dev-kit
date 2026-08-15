@@ -208,9 +208,16 @@ issue → ветка issue-N-слаг → падающие тесты из DoD �
 | `bash-guard` | Перед каждой Bash-командой | Запрещает `git commit --no-verify`, force push в main/master и `gh pr merge` вопреки `policies.merge` (дефолт `agent-after-approve`: merge только для ready-PR, т.е. после APPROVE; `human-review-required` — плюс человеческий approve на PR; `human-only` — запрет всегда; непроверяемый статус или неизвестное значение политики = запрет). Перед `git commit` сканирует изменения на секреты (ключи AWS/GitHub/Slack/Google, `sk-*`, приватные ключи) и блокирует коммит `.env` |
 | `pr-title-check` | После `gh pr create`/`gh pr edit` | При `conventions.commitStyle=conventional` сверяет фактический заголовок PR (`gh pr view`) с форматом `<commitType>[(scope)]: <суть> (#N)` и label'ом issue (`types.*` конфига); нарушение возвращается агенту с требованием исправить через `gh pr edit`. Выключается `conventions.externalTitleLint=true` |
 
-Плюс серверный гейт: `/project-init` предлагает включить branch protection —
-merge в main только через PR с зелёным CI, прямые пуши запрещены. Его не
-обойти даже локальным саботажем хуков.
+Плюс серверный гейт: новому репозиторию `/project-init` настраивает сервер
+по `adk.config.json`: единственный разрешённый метод приземления, производный от
+пары `conventions.squash` × `conventions.branchUpdate` (`squash=true` →
+squash-merge; `false`+`rebase` → rebase-merge; `false`+`merge` →
+merge-commit; выводится скриптом `adk-config.sh --merge-method`),
+автоудаление веток после merge (`delete_branch_on_merge`) и branch
+protection по `policies` — merge в main только через PR с зелёным CI,
+прямые пуши запрещены, а при `policies.review.humanApprovalRequired=true` —
+ещё и обязательный человеческий approve. Его не обойти даже локальным
+саботажем хуков.
 
 ### Уведомления
 

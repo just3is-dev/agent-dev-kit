@@ -74,6 +74,14 @@ CODEOWNERS) — без этого поле пустое даже при живо
 | `conventions.attribution` | bool | `true` | Trailer `Co-Authored-By` сегодня добавляется в коммиты по умолчанию (стандартное поведение агента), конфиг не отключает это неявно. |
 | `conventions.externalTitleLint` | bool | `false` | Отключает локальную валидацию заголовка PR (PostToolUse-хук `pr-title-check`, ADR-004) при `commitStyle=conventional` (issue #47, AC-5), если у проекта уже есть серверный линтер (commit-lint, PR-title-check) — переизобретать его не нужно (раздел «Границы» SPEC-002). Дефолт `false`: локальная валидация включена. |
 
+Серверный метод приземления GitHub — производная пары `conventions.squash`
+× `conventions.branchUpdate`, а не отдельный атрибут: `squash=true` →
+squash-merge; `false`+`rebase` → rebase-merge; `false`+`merge` →
+merge-commit (комбинация «rebase-актуализация + merge-commit приземление»
+невыразима сознательно — «Решённые вопросы» SPEC-002). Читатель печатает
+её командой `adk-config.sh --merge-method`; по этому выводу `/project-init`
+настраивает allowed merge methods нового репозитория (AC-6, issue #48).
+
 `conventions.commitStyle` энфорсится PostToolUse-хуком `pr-title-check`
 (ADR-004): после `gh pr create`/`gh pr edit` сверяется фактический
 заголовок PR, нарушение возвращается агенту с требованием исправить через

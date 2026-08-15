@@ -157,7 +157,7 @@
       commitType, не соответствующим label'у issue; при `plain` и без
       конфига — не вмешивается. Валидируется состояние PR, а не текст
       команды (ADR-004: PreToolUse-парсинг shell-команд отклонён).
-- [ ] AC-6 (ждёт #48): `/project-init` в новом репозитории настраивает сервер по
+- [ ] AC-6: `/project-init` в новом репозитории настраивает сервер по
       конфигу: allowed merge method выводится из пары `squash` ×
       `branchUpdate` (true→squash-merge; false+rebase→rebase-merge;
       false+merge→merge-commit), плюс delete_branch_on_merge, protection,
