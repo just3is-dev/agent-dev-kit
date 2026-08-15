@@ -80,7 +80,7 @@ argument-hint: "[номер issue; по умолчанию следующий н
    true`. APPROVE — перед переводом в ready проверь актуальность ветки
    (AC-8 SPEC-002). Факт отставания бери из git, а не из GitHub-статусов
    (`mergeStateStatus=BEHIND` GitHub отдаёт только при включённом
-   `required_status_checks.strict`): `git fetch origin main &&
+   `required_status_checks.strict`): `git fetch origin &&
    git rev-list --count HEAD..origin/main` — счётчик больше нуля значит
    BEHIND, ветка отстала. Конфликтность — `gh pr view <PR> --json
    mergeable`: `CONFLICTING` — конфликт с main, остановись и позови
@@ -92,11 +92,15 @@ argument-hint: "[номер issue; по умолчанию следующий н
    в конфиге, остановись; fetch уже сделан выше): `rebase` (дефолт) —
    перебазируй (`git rebase origin/main`), затем `git push
    --force-with-lease origin <ветка PR>`; `merge` — влей main в ветку
-   (`git merge origin/main`), затем `git push`. После актуализации
-   обязательно перегони гейты (`./scripts/check`, `./scripts/test`) и
-   дождись зелёного CI: переводить PR в ready без перегона гейтов после
-   актуализации запрещено — зелёные проверки отставшей ветки относятся
-   к устаревшему состоянию кода. Ветка актуальна и гейты зелёные —
+   (`git merge origin/main`), затем `git push origin <ветка PR>`.
+   Конфликт при самой актуализации (rebase останавливается, merge не
+   применяется) — прерви её (`git rebase --abort` / `git merge --abort`),
+   остановись и позови пользователя, как при `CONFLICTING`. После
+   актуализации обязательно перегони гейты (`./scripts/check`,
+   `./scripts/test`) и дождись зелёного CI: переводить PR в ready без
+   перегона гейтов после актуализации запрещено — зелёные проверки
+   отставшей ветки относятся к устаревшему состоянию кода. Ветка
+   актуальна и гейты зелёные —
    переведи PR из черновика: `gh pr ready <PR>`; только этот шаг делает
    merge возможным. REQUEST_CHANGES — PR остаётся draft:
    исправь блокеры и «важно», прогони гейты, запусти ревью повторно

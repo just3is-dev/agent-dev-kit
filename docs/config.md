@@ -67,7 +67,7 @@ CODEOWNERS) — без этого поле пустое даже при живо
 | Атрибут | Тип / допустимые значения | Дефолт | Какое сегодняшнее поведение воспроизводит |
 |---|---|---|---|
 | `conventions.squash` | bool | `true` | Squash уже внедрён как дефолт в командах и серверно (см. «Решённые вопросы» SPEC-002). |
-| `conventions.branchUpdate` | `rebase` \| `merge` | `rebase` | Способ актуализации отставшей ветки (AC-8, issue #52): `/work` перед переводом PR в ready и `/autopilot` перед merge проверяют `mergeStateStatus`; `BEHIND` → rebase (дефолт) или merge из этого атрибута, затем обязательный перегон гейтов; `CONFLICTING` → человек. Участвует и в производной allowed merge methods (см. ниже). |
+| `conventions.branchUpdate` | `rebase` \| `merge` | `rebase` | Способ актуализации отставшей ветки (AC-8, issue #52): `/work` перед переводом PR в ready и `/autopilot` перед merge определяют отставание фактом из git (`git rev-list --count` до `origin/main`; `mergeStateStatus=BEHIND` GitHub отдаёт лишь при `required_status_checks.strict`, поэтому статусам не доверяем); отставшая ветка → rebase (дефолт) или merge из этого атрибута, затем обязательный перегон гейтов; конфликт (`mergeable=CONFLICTING` или конфликт при самой актуализации) → человек. Участвует и в производной allowed merge methods (см. ниже). |
 | `conventions.commitStyle` | `conventional` \| `plain` | `plain` | Заголовки PR сегодня — «глагол + результат (#N)», не формат `<type>(scope): summary` (`commands/work.md`, шаг 5). |
 | `conventions.language` | строка (код языка) | `ru` | Промпты и коммуникация кита сегодня на русском. |
 | `conventions.branchPattern` | строка-шаблон с `{n}`/`{slug}` | `issue-{n}-{slug}` | Дефолт из самой спеки; совпадает с сегодняшним `commands/work.md` (шаг 2). |

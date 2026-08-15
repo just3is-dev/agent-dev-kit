@@ -847,6 +847,20 @@ assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$wor
 assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" "$work_ready" 'CONFLICTING'
 assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$ap_merge" 'BEHIND'
 assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICTING" "$ap_merge" 'CONFLICTING'
+# Якоря механики (круг 2 ревью PR #67: фиксы без якорей переживают откат):
+# отставание — фактом из git, не mergeStateStatus (BEHIND у GitHub виден
+# только при required_status_checks.strict); в автопилоте — явный checkout
+# и refspec; fetch без «origin main» (текст в одной команде с force-push
+# ложно триггерит гейт bash-guard); отказы актуализации определены.
+assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_ready" 'git rev-list --count HEAD\.\.origin/main'
+assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$ap_merge" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
+assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$ap_merge" 'gh pr checkout <PR>'
+assert_contains "AC-8: autopilot.md — push после rebase с обязательным refspec" "$ap_merge" 'force-with-lease origin <ветка PR>'
+printf '%s' "$work_ready" | grep -q 'git fetch origin main' && ac8_fom=1 || ac8_fom=0
+assert_exit "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" 0 $ac8_fom
+assert_contains "AC-8: work.md — конфликт при самой актуализации прерывается (--abort)" "$work_ready" 'git rebase --abort'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации: --abort и застревание" "$ap_merge" 'git rebase --abort'
+assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание" "$ap_merge" 'гейты красные после актуализации'
 assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_ready" 'conventions\.branchUpdate rebase'
 assert_contains "AC-8: autopilot.md читает conventions.branchUpdate с дефолтом rebase" "$ap_merge" 'conventions\.branchUpdate rebase'
 check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
