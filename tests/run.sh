@@ -876,6 +876,15 @@ check_ac_doc AC-8 "autopilot.md: после актуализации гейты 
   "$KIT/commands/autopilot.md" "merge без перегона гейтов после актуализации запрещён"
 assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке (не «разреши сам»)" "$work_ready" 'конфликт с main, остановись и позови пользователя'
 assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$ap_merge" 'конфликт с main требует человека.*needs-human'
+# /review — второй путь в ready: та же проверка актуальности (issue #68,
+# fast-follow из вердикта PR #67)
+review_ready=$(sed -n '/^5\. \*\*/,/^6\. \*\*/p' "$KIT/commands/review.md" | tr '\n' ' ' | tr -s ' ')
+assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <N>'
+assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
+assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
+assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'без перегона гейтов'
+assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
+assert_contains "AC-8: review.md — дерево возвращается на исходную ветку в любом исходе" "$review_ready" 'верни рабочее дерево на исходную ветку'
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
