@@ -21,10 +21,12 @@ argument-hint: "[номер issue; по умолчанию следующий н
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh types.consolidate.label type:consolidate`.
    Совпавший label задаёт тип. Нет label или ни один label не совпал с
    типами — тип `task` (безопасный дефолт). Тип определяет правила
-   реализации (шаг 3) и commitType заголовка PR (шаг 5). Залогируй старт:
-   `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N> event=start
-   issue=<N> || true` (журнал — наблюдаемость, не гейт: провал записи
-   не блокирует задачу).
+   реализации (шаг 3), commitType заголовка PR (шаг 5) и пишется в журнал
+   (`type=<тип>` — имя типа из конфига: task|bug|fastFollow|consolidate,
+   расширение схемы ADR-001; по нему `/stats` режет агрегаты). Залогируй
+   старт: `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N>
+   event=start issue=<N> type=<тип> || true` (журнал — наблюдаемость,
+   не гейт: провал записи не блокирует задачу).
 2. **Подготовь ветку.** Обнови main (`git pull`), создай
    `issue-<N>-<слаг>`. Одна задача = одна ветка = один PR.
 3. **Реализуй по скиллу tdd:** DoD → падающие тесты → минимальная
@@ -93,9 +95,11 @@ argument-hint: "[номер issue; по умолчанию следующий н
    — если `/work` по этой задаче запускался повторно, самая ранняя
    строка не годится) и размер диффа (`git diff main... --shortstat`).
    `reason` обычно содержит пробелы — заключай в кавычки, как `diff`:
-   `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N> event=outcome
-   result=<merged|stuck> [reason="<причина, только при result=stuck>"]
-   duration=<N>s diff="<вывод git diff main... --shortstat>" || true`.
+   `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N>
+   event=outcome type=<тип> result=<merged|stuck>
+   [reason="<причина, только при result=stuck>"]
+   duration=<N>s diff="<вывод git diff main... --shortstat>" || true`
+   (`type` — тот же тип задачи, что в `event=start` шага 1).
    **Отчёт пользователю:** ссылка на PR, вердикт ревьюера, что осталось
    до merge — формулировка по политике
    (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh policies.merge
