@@ -8,6 +8,5 @@ payload=$(cat)
 msg=$(json_field "$payload" "message" "")
 [ -n "$msg" ] || msg="Claude ждёт вашего ответа"
 
-proj=$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")
-adk_notify_send "Claude — $proj" "$msg"
+adk_notify_send "$msg"
 exit 0

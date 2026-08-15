@@ -34,14 +34,35 @@ adk_logs_dir() {
   fi
 }
 
-# adk_notify_send <title> <message> — вызывает notify-send.sh рядом со
+# adk_notify_state_dir — печатает каталог состояния локальных уведомлений:
+# "${TMPDIR:-/tmp}/agent-dev-kit-notify". До этой правки путь собирался
+# вручную в prompt-timestamp.sh и stop-test.sh (issue #93).
+adk_notify_state_dir() {
+  printf '%s\n' "${TMPDIR:-/tmp}/agent-dev-kit-notify"
+}
+
+# adk_notify_ts_file <session_id> — путь к файлу метки времени начала хода
+# для сессии: "<adk_notify_state_dir>/<session_id>".
+adk_notify_ts_file() {
+  printf '%s\n' "$(adk_notify_state_dir)/$1"
+}
+
+# adk_notify_send <message> — вызывает notify-send.sh рядом со
 # скриптом-вызывающим. До этой правки выражение
 # "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" дублировалось в
 # stop-test.sh и notification.sh. $0 внутри функции — это $0 вызывающего
 # скрипта (bash не меняет его при вызове функции), поэтому путь
 # разрешается так же, как и раньше.
+# Заголовок "Claude — <проект>" (basename ${CLAUDE_PROJECT_DIR:-$PWD}, без
+# git-фолбэка — правило корня для уведомлений намеренно не унифицировано с
+# adk_project_root, см. docs/adr/002-shared-hook-lib-paths.md) до этой
+# правки собирался в каждом вызывающем скрипте под разными именами
+# переменных (proj/proj_name, issue #93); теперь формируется здесь, и
+# вызывающим остаётся передать только текст сообщения.
 adk_notify_send() {
-  "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" "$@"
+  local msg="$1"
+  local title="Claude — $(basename "${CLAUDE_PROJECT_DIR:-$PWD}")"
+  "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" "$title" "$msg"
 }
 
 # adk_command_git_root <cmd> <hook_cwd> — git toplevel репозитория, к которому
