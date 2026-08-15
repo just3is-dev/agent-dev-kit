@@ -58,14 +58,8 @@ if [ -n "${ADK_GUARD_PR_TITLE+x}" ]; then
   title="$ADK_GUARD_PR_TITLE"
   pr_ref="${prnum:-<N>}"
 else
-  jq_q='"\(.number) \(.title)"'
-  if [ -n "$repo_flag" ]; then
-    pr_fields=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json number,title -q "$jq_q" 2>/dev/null) || pr_fields=""
-  elif [ -n "$git_root" ]; then
-    pr_fields=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json number,title -q "$jq_q" 2>/dev/null) || pr_fields=""
-  else
-    pr_fields=""
-  fi
+  pr_fields=$(adk_gh_pr_fields "$prnum" "$repo_flag" "$git_root" \
+    number,title '"\(.number) \(.title)"')
   case "$pr_fields" in
     *' '*) pr_ref="${pr_fields%% *}"; title="${pr_fields#* }" ;;
     *) exit 0 ;;

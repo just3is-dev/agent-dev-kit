@@ -62,16 +62,10 @@ if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
   gh_decision=""
   if [ -z "$state" ] || { [ "$merge_policy" = "human-review-required" ] && [ -z "$decision" ]; }; then
     # Один сетевой вызов на оба поля PR
-    prnum=$(adk_command_pr_number "$cmd" merge)
-    repo_flag=$(adk_command_repo_flag "$cmd")
-    jq_q='"\(.isDraft) \(.reviewDecision)"'
-    if [ -n "$repo_flag" ]; then
-      pr_fields=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json isDraft,reviewDecision -q "$jq_q" 2>/dev/null) || pr_fields=""
-    elif [ -n "$git_root" ]; then
-      pr_fields=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json isDraft,reviewDecision -q "$jq_q" 2>/dev/null) || pr_fields=""
-    else
-      pr_fields=""
-    fi
+    pr_fields=$(adk_gh_pr_fields \
+      "$(adk_command_pr_number "$cmd" merge)" \
+      "$(adk_command_repo_flag "$cmd")" \
+      "$git_root" isDraft,reviewDecision '"\(.isDraft) \(.reviewDecision)"')
     case "$pr_fields" in
       *' '*) gh_isdraft="${pr_fields%% *}"; gh_decision="${pr_fields#* }" ;;
     esac
