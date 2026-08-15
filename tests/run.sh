@@ -1884,6 +1884,58 @@ assert_exit "AC-1: templates/base/gitignore не игнорирует adk.config
 check_ac_doc AC-1 "README отражает adk.config.json в разделе /project-init" \
   "$KIT/README.md" "запишет плоские атрибуты процесса в \`adk.config.json\`"
 
+# ── Производный метод приземления и сервер нового репозитория (issue #48, AC-6) ─
+# SPEC-002: серверный метод приземления GitHub — производная пары
+# conventions.squash × conventions.branchUpdate, не самостоятельная
+# настройка: squash=true → squash-merge; false+rebase → rebase-merge;
+# false+merge → merge-commit. Комбинация «rebase-актуализация +
+# merge-commit приземление» невыразима сознательно («Решённые вопросы»).
+MMP="$TMP/mergemethod"
+mkdir -p "$MMP"
+
+check_merge_method() { # check_merge_method <описание> <ожидаемое>
+  local out
+  out=$(CLAUDE_PROJECT_DIR="$MMP" "$HOOKS/adk-config.sh" --merge-method 2>/dev/null)
+  if [ "$out" = "$2" ]; then
+    echo "PASS: $1"
+  else
+    echo "FAIL: $1 (вернулось '$out', ожидали '$2')"
+    fails=$((fails + 1))
+  fi
+}
+
+# branchUpdate=merge в фикстуре нарочно: squash=true главнее стиля ветки
+printf '{"conventions": {"squash": true, "branchUpdate": "merge"}}' > "$MMP/adk.config.json"
+CLAUDE_PROJECT_DIR="$MMP" "$HOOKS/adk-config.sh" --merge-method >/dev/null 2>&1
+assert_exit "AC-6: merge-method: вывод завершается успешно" 0 $?
+check_merge_method "AC-6: merge-method: squash=true → squash-merge (независимо от branchUpdate)" "squash-merge"
+
+printf '{"conventions": {"squash": false, "branchUpdate": "rebase"}}' > "$MMP/adk.config.json"
+check_merge_method "AC-6: merge-method: squash=false + branchUpdate=rebase → rebase-merge" "rebase-merge"
+
+printf '{"conventions": {"squash": false, "branchUpdate": "merge"}}' > "$MMP/adk.config.json"
+check_merge_method "AC-6: merge-method: squash=false + branchUpdate=merge → merge-commit" "merge-commit"
+
+# дефолты: squash=true, branchUpdate=rebase (docs/config.md) → squash-merge
+rm "$MMP/adk.config.json"
+check_merge_method "AC-6: merge-method: без конфига — дефолт squash-merge" "squash-merge"
+
+printf '{"conventions": {"squash": false}}' > "$MMP/adk.config.json"
+check_merge_method "AC-6: merge-method: squash=false без branchUpdate — дефолт rebase даёт rebase-merge" "rebase-merge"
+rm "$MMP/adk.config.json"
+
+# /project-init для нового репозитория применяет серверные настройки по конфигу
+check_ac_doc AC-6 "project-init.md выводит метод приземления через adk-config.sh --merge-method" \
+  "$PI_MD" "adk-config.sh --merge-method"
+check_ac_doc AC-6 "project-init.md применяет allowed merge methods по производному значению" \
+  "$PI_MD" "allow_squash_merge"
+check_ac_doc AC-6 "project-init.md включает delete_branch_on_merge" \
+  "$PI_MD" "delete_branch_on_merge=true"
+check_ac_doc AC-6 "project-init.md настраивает protection по policies (человеческий approve)" \
+  "$PI_MD" "required_pull_request_reviews"
+check_ac_doc AC-6 "README описывает производный метод приземления в серверном гейте" \
+  "$KIT/README.md" "метод приземления, производный от"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then

@@ -39,6 +39,32 @@ adk_config_file() {
   fi
 }
 
+# Серверный метод приземления GitHub — производная пары conventions.squash ×
+# conventions.branchUpdate, не самостоятельная настройка (SPEC-002, AC-6):
+# squash=true → squash-merge; false+rebase → rebase-merge; false+merge →
+# merge-commit. Комбинация «rebase-актуализация + merge-commit приземление»
+# невыразима сознательно («Решённые вопросы» спеки). Сама производная —
+# чистая функция своих двух аргументов, отдельно от чтения конфига.
+adk_merge_method() { # adk_merge_method <squash: true|false> <branchUpdate: rebase|merge>
+  if [ "$1" = "true" ]; then
+    echo "squash-merge"
+  elif [ "$2" = "merge" ]; then
+    echo "merge-commit"
+  else
+    echo "rebase-merge"
+  fi
+}
+
+# Обёртка над конфигом: читает пару атрибутов (неизвестные значения
+# откатываются в дефолты с предупреждением adk_config_get в stderr) и
+# печатает производный метод.
+adk_config_merge_method() {
+  local squash branch_update
+  squash=$(adk_config_get "conventions.squash" "true" "true,false")
+  branch_update=$(adk_config_get "conventions.branchUpdate" "rebase" "rebase,merge")
+  adk_merge_method "$squash" "$branch_update"
+}
+
 adk_config_get() {
   local path="$1" default="${2:-}" allowed="${3:-}"
   local root cfg
