@@ -74,9 +74,8 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
    result=<merged|ready|stuck|skipped>
    [reason="<причина, только при result=stuck>"] || true` (причина обычно
    содержит пробелы — заключай в кавычки, как `reason` в шаге 7 `/work`;
-   `type` — тип задачи по label issue, определённый так же, как в шаге 1
-   `/work`: labels issue сопоставляются с labels типов из конфига
-   `types.*`, нет label или совпадения — `task`).
+   `type` — тип задачи по label issue, правило определения — шаг 1
+   `/work`, оно здесь не дублируется).
    - **PR ready, `canMerge=true`** → `gh pr merge <PR> --squash
      --delete-branch` (squash: один issue = один коммит в main, заголовок
      PR становится сообщением коммита); если настроен CI — дождись

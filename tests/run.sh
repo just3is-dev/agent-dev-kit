@@ -833,6 +833,8 @@ check_ac_doc AC-7 "consolidate.md читает label баг-типа из кон
   "$KIT/commands/consolidate.md" "types.bug.label type:bug"
 check_ac_doc AC-7 "consolidate.md собирает баг-issues по label, а не поиском по тексту" \
   "$KIT/commands/consolidate.md" "--label"
+check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPEC-002) не теряются молча" \
+  "$KIT/commands/consolidate.md" "Переходное состояние: баг-issues"
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
