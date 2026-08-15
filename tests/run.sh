@@ -2008,6 +2008,27 @@ check_ac_doc AC-6 "project-init.md настраивает protection по polici
 check_ac_doc AC-6 "README описывает производный метод приземления в серверном гейте" \
   "$KIT/README.md" "метод приземления, производный от"
 
+# ── /project-init: branch protection — 403, restrictions, дефолтная ветка
+# (issue #90, хвост вердиктов ревью PR #63 и PR #65). Три факта из DoD:
+# 403 назван наравне с 404 как факт (не сбой инициализации), restrictions:
+# null в PUT (GitHub иначе отвечает 422 без всех четырёх верхнеуровневых
+# ключей), имя ветки берётся из default_branch в обоих вызовах — не
+# зашито литералом main.
+check_ac_doc "issue #90" "project-init.md: PUT branch protection несёт restrictions: null" \
+  "$PI_MD" "restrictions=null"
+check_ac_doc "issue #90" "project-init.md: PUT branch protection берёт ветку из default_branch, не из литерала main" \
+  "$PI_MD" "gh api repos/{owner}/{repo} -q .default_branch"
+check_ac_doc "issue #90" "project-init.md: PUT branch protection адресуется по <default_branch>, не по main" \
+  "$PI_MD" "gh api -X PUT repos/{owner}/{repo}/branches/<default_branch>/protection"
+check_ac_doc "issue #90" "project-init.md: 403 на PUT branch protection назван фактом, не сбоем инициализации" \
+  "$PI_MD" "Ответ \`403\` на этот вызов — не сбой инициализации"
+check_ac_doc "issue #90" "project-init.md: сверка существующего репозитория читает branch protection по default_branch" \
+  "$PI_MD" "gh api repos/{owner}/{repo}/branches/<default_branch>/protection"
+check_ac_doc "issue #90" "project-init.md: сверка существующего репозитория называет 403 фактом наравне с 404" \
+  "$PI_MD" "ответ 403 — под текущими правами доступа к настройкам"
+assert_not_contains "issue #90: старая форма — PUT протекции литералом branches/main/protection не матчится" \
+  "$project_init_content" 'branches/main/protection'
+
 # ── /project-init генерирует ISSUE_TEMPLATE из блока types (issue #49, AC-6) ─
 # SPEC-002: .github/ISSUE_TEMPLATE/* генерируются из types при /project-init —
 # люди в команде создают issues в том же формате, что и агенты; иначе /work,
