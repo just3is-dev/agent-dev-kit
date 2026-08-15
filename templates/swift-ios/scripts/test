@@ -45,11 +45,17 @@ fi
 proj=$(find . -maxdepth 1 -name '*.xcodeproj' | sort | head -n 1)
 if [ -n "$proj" ]; then
   name=$(basename "$proj" .xcodeproj)
-  if ! list_json=$(xcodebuild -list -json -project "$proj" 2>&1); then
+  # stderr — отдельно от разбираемого JSON: xcodebuild шумит в stderr и на
+  # успешном пути, подмешивание ломало бы разбор здорового проекта
+  list_err=$(mktemp)
+  if ! list_json=$(xcodebuild -list -json -project "$proj" 2>"$list_err"); then
     echo "scripts/test: xcodebuild -list не смог прочитать $proj:" >&2
+    cat "$list_err" >&2
     printf '%s\n' "$list_json" >&2
+    rm -f "$list_err"
     exit 1
   fi
+  rm -f "$list_err"
   scheme=$(printf '%s' "$list_json" | python3 -c '
 import json, sys
 schemes = json.load(sys.stdin).get("project", {}).get("schemes") or []

@@ -1570,6 +1570,27 @@ assert_exit "issue #70: swift-ios: project.yml без xcodegen — громка�
 assert_contains "issue #70: swift-ios: ошибка называет xcodegen" "$sios_out" "xcodegen"
 rm "$SIOS/project.yml"
 
+# шум xcodebuild в stderr на успешном пути не ломает разбор списка схем
+# (круг 2 PR #71: 2>&1 подмешивал stderr в JSON → JSONDecodeError на
+# здоровом проекте)
+mkdir -p "$SIOS/Demo.xcodeproj"
+cat > "$SBIN/xcodebuild" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *-list*)
+    echo '{"project":{"schemes":["Demo"]}}'
+    echo "DVTPlugInLoading: Requested but did not find extension point" >&2
+    exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$SBIN/xcodebuild"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" ./scripts/test 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: stderr-шум xcodebuild -list не ломает smoke здорового проекта" 0 "$sios_st"
+assert_not_contains "issue #70: swift-ios: разбор схем не падает JSONDecodeError от шума" "$sios_out" "JSONDecodeError"
+rm -rf "$SIOS/Demo.xcodeproj" "$SBIN/xcodebuild"
+
 # scripts/check самого кита (dogfood, issue #9) — по образцу проверки выше
 # для templates/*/scripts/check; раньше не было теста, что строка вызова
 # ac-check.sh не была случайно удалена (issue #28 K8, хвост ревью PR #19)
