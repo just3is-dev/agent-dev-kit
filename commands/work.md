@@ -5,6 +5,8 @@ argument-hint: "[номер issue; по умолчанию следующий н
 
 Выполни одну задачу от issue до PR с вердиктом ревьюера.
 
+Нотация ниже: `<N>` — номер issue, `<PR>` — номер pull request.
+
 1. **Выбери задачу.** `$ARGUMENTS` — номер issue, иначе возьми через
    `gh issue list --state open` следующий незаблокированный issue текущего
    milestone (зависимости «Blocked by #N» с незакрытыми N пропускай).
@@ -122,7 +124,7 @@ argument-hint: "[номер issue; по умолчанию следующий н
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N>
    event=outcome type=<тип> result=<merged|stuck>
    [reason="<причина, только при result=stuck>"]
-   duration=<N>s diff="<вывод git diff main... --shortstat>" || true`
+   duration=<сек>s diff="<вывод git diff main... --shortstat>" || true`
    (`type` — тот же тип задачи, что в `event=start` шага 1).
    **Отчёт пользователю:** ссылка на PR, вердикт ревьюера, что осталось
    до merge — формулировка по политике
