@@ -836,6 +836,30 @@ check_ac_doc AC-7 "consolidate.md собирает баг-issues по label, а 
 check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPEC-002) не теряются молча" \
   "$KIT/commands/consolidate.md" "Переходное состояние: баг-issues"
 
+# ── SPEC-002 AC-8: актуализация отставшей ветки перед ready/merge ────────────
+# /work (перед переводом PR в ready) и /autopilot (перед merge ready-PR)
+# проверяют состояние PR относительно main; неактуальная ветка
+# актуализируется способом из conventions.branchUpdate, после чего гейты
+# перегоняются обязательно — merge/ready без перегона запрещён инструкцией.
+work_ready=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$KIT/commands/work.md" | tr '\n' ' ' | tr -s ' ')
+ap_merge=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$KIT/commands/autopilot.md" | tr '\n' ' ' | tr -s ' ')
+assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$work_ready" 'BEHIND'
+assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" "$work_ready" 'CONFLICTING'
+assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$ap_merge" 'BEHIND'
+assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICTING" "$ap_merge" 'CONFLICTING'
+assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_ready" 'conventions\.branchUpdate rebase'
+assert_contains "AC-8: autopilot.md читает conventions.branchUpdate с дефолтом rebase" "$ap_merge" 'conventions\.branchUpdate rebase'
+check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
+  "$KIT/commands/work.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
+check_ac_doc AC-8 "autopilot.md: при branchUpdate=merge актуализация через git merge, не rebase" \
+  "$KIT/commands/autopilot.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
+check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
+  "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
+check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
+  "$KIT/commands/autopilot.md" "merge без перегона гейтов после актуализации запрещён"
+assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке" "$work_ready" 'конфликт'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации ведёт к needs-human (как застрявшая задача)" "$ap_merge" 'конфликт.*needs-human\|CONFLICTING.*застряв'
+
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
 step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
