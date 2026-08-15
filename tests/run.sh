@@ -1936,6 +1936,34 @@ check_ac_doc AC-6 "project-init.md настраивает protection по polici
 check_ac_doc AC-6 "README описывает производный метод приземления в серверном гейте" \
   "$KIT/README.md" "метод приземления, производный от"
 
+# ── /project-init генерирует ISSUE_TEMPLATE из блока types (issue #49, AC-6) ─
+# SPEC-002: .github/ISSUE_TEMPLATE/* генерируются из types при /project-init —
+# люди в команде создают issues в том же формате, что и агенты; иначе /work,
+# читающий тип по label и ожидающий обязательные поля типа, их не найдёт.
+check_ac_doc AC-6 "project-init.md генерирует .github/ISSUE_TEMPLATE/* из блока types" \
+  "$PI_MD" ".github/ISSUE_TEMPLATE/"
+check_ac_doc AC-6 "project-init.md: имя и label шаблона — из types.<имя>.label" \
+  "$PI_MD" "types.<имя>.label"
+check_ac_doc AC-6 "project-init.md: тело шаблона — из полей types.<имя>.requiredFields" \
+  "$PI_MD" "types.<имя>.requiredFields"
+check_ac_doc AC-6 "project-init.md: шаблон bug содержит строку «Сбежал от: <гейт>» (её агрегирует /consolidate)" \
+  "$PI_MD" "Сбежал от: <гейт>"
+
+# дефолтный набор типов — перечислены все четыре шаблона с их label'ами
+for pair in "task type:task" "bug type:bug" "fastFollow type:fast-follow" \
+  "consolidate type:consolidate"; do
+  tname="${pair%% *}"
+  tlabel="${pair#* }"
+  check_ac_doc AC-6 "project-init.md перечисляет дефолтный шаблон $tname с label $tlabel" \
+    "$PI_MD" "\`$tname\` (\`$tlabel\`)"
+done
+
+# существующее не перезаписывается — принцип спеки
+check_ac_doc AC-6 "project-init.md: явный запрет перезаписи существующих шаблонов" \
+  "$PI_MD" "Существующие файлы в \`.github/ISSUE_TEMPLATE/\` не перезаписывай"
+check_ac_doc AC-6 "project-init.md: о расхождении существующего шаблона с генерируемым сообщается пользователю" \
+  "$PI_MD" "сообщи пользователю о расхождении"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
