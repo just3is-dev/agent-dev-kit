@@ -180,17 +180,27 @@ argument-hint: "[путь к проекту; по умолчанию текущ�
      приземления удаляет сервер (`--delete-branch` в командах остаётся
      страховкой для репозиториев без этой настройки);
    - **branch protection согласно `policies`**: merge только через PR с
-     зелёным required-чеком `gates`, прямые пуши и force push в main
-     запрещены — `gh api -X PUT repos/{owner}/{repo}/branches/main/protection`
-     с `required_status_checks.contexts=["gates"]`,
-     `allow_force_pushes=false`, `enforce_admins=false`. Если
-     `adk-config.sh policies.review.humanApprovalRequired false` даёт
-     `true` — добавь `required_pull_request_reviews` с
+     зелёным required-чеком `gates`, прямые пуши и force push в дефолтную
+     ветку запрещены. Имя ветки не литерал `main` — узнай фактическое:
+     `gh api repos/{owner}/{repo} -q .default_branch`, и подставь его в URL —
+     `gh api -X PUT repos/{owner}/{repo}/branches/<default_branch>/protection`.
+     GitHub требует в теле запроса все четыре верхнеуровневых ключа сразу,
+     иначе отвечает `422`: `required_status_checks.contexts=["gates"]`,
+     `enforce_admins=false`, `required_pull_request_reviews` (см. ниже) и
+     `restrictions=null` (список пользователей/команд с персональным
+     разрешением на пуш мы не ограничиваем — ключ обязателен, но всегда
+     `null`); отдельным полем — `allow_force_pushes=false`, запрет force
+     push. Если `adk-config.sh policies.review.humanApprovalRequired
+     false` даёт `true` — `required_pull_request_reviews` равен объекту с
      `required_approving_review_count=1` (обязательный человеческий approve;
      заодно GitHub начнёт заполнять `reviewDecision`, на который опирается
      политика merge `human-review-required` — см. `docs/config.md`); при
-     `false` — required reviews не включай, чтобы владелец мог мержить
-     без апрувов.
+     `false` — `required_pull_request_reviews=null` (владелец мог мержить
+     без апрувов), ключ в теле всё равно присутствует. Ответ `403` на этот
+     вызов — не сбой инициализации, а факт: настройками защиты веток под
+     текущими правами не владеем (например, в организации без admin-доступа
+     к репозиторию) — назови это пользователю в итоговом отчёте (шаг 10) и
+     переходи дальше, не прерывая инициализацию.
 
    **Существующий репозиторий — только сверка, без изменений.** Принцип
    SPEC-002 «существующее не перезаписывается»: настройки читаются,
@@ -201,9 +211,12 @@ argument-hint: "[путь к проекту; по умолчанию текущ�
      `gh api repos/{owner}/{repo}` — allowed merge methods
      (`allow_squash_merge` / `allow_rebase_merge` / `allow_merge_commit`)
      и `delete_branch_on_merge`;
-     `gh api repos/{owner}/{repo}/branches/main/protection` — branch
-     protection (ответ 404 — protection не настроена: не сбой, а факт для
-     сверки); наличие файлов `.github/ISSUE_TEMPLATE/` по типам из
+     `gh api repos/{owner}/{repo}/branches/<default_branch>/protection`
+     (имя ветки — то же `default_branch`, что и для нового репозитория, не
+     литерал `main`) — branch protection: ответ 404 — protection не
+     настроена, ответ 403 — под текущими правами доступа к настройкам
+     защиты нет (не admin репозитория); оба ответа — не сбой инициализации,
+     а факт для сверки; наличие файлов `.github/ISSUE_TEMPLATE/` по типам из
      `types.*`;
    - ожидаемое вычисли по конфигу тем же способом, что и для нового
      репозитория: метод приземления — `adk-config.sh --merge-method`,
