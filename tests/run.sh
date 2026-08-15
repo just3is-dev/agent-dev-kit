@@ -1491,7 +1491,7 @@ rm "$WIRE/scripts/ac-check"
 assert_exit "AC-4: contract check: без scripts/ac-check — прежнее поведение, непокрытый AC не блокирует" 0 $?
 
 # ── Шаблоны и project-init.md подключают ac-check (issue #7) ────────────────
-for t in nextjs nestjs python-service monorepo; do
+for t in nextjs nestjs python-service swift-ios monorepo; do
   check_content=$(cat "$KIT/templates/$t/scripts/check")
   assert_contains "AC-4: templates/$t/scripts/check содержит вызов ac-check в полном прогоне" "$check_content" 'scripts/ac-check'
 done

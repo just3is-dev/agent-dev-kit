@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit: статические проверки (линт + типы). Стек — Swift/Xcode.
+# Линтер и форматтер — swift-format из состава тулчейна Xcode (16+): ноль
+# внешних установок, локально и в CI одна и та же версия. SwiftLint и
+# SwiftFormat сознательно не используются — см. ADR кита по шаблону swift-ios.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+# Все .swift проекта, кроме артефактов сборки и зависимостей.
+sources() {
+    find . -name '*.swift' \
+        -not -path '*/.build/*' \
+        -not -path '*/DerivedData/*' \
+        -not -path '*/Pods/*' \
+        -not -path '*/.git/*'
+}
+
+# SPM-пакеты проекта (их может не быть или быть несколько).
+packages() {
+    find . -name Package.swift \
+        -not -path '*/.build/*' \
+        -not -path '*/DerivedData/*' \
+        -not -path '*/Pods/*' \
+        -not -path '*/.git/*'
+}
+
+if [ $# -gt 0 ]; then
+    targets=()
+    for f in "$@"; do
+        case "$f" in
+            *.swift) [ -f "$f" ] && targets+=("$f") ;;
+        esac
+    done
+    [ ${#targets[@]} -gt 0 ] || exit 0
+    # lint без --strict возвращает 0 даже при найденных нарушениях
+    swift format lint --strict "${targets[@]}"
+else
+    files=()
+    while IFS= read -r f; do files+=("$f"); done < <(sources)
+    [ ${#files[@]} -eq 0 ] || swift format lint --strict "${files[@]}"
+
+    # Проверка типов: сборка SPM-пакетов (секунды). Компиляция таргетов
+    # приложения — в scripts/test: ей нужны xcodegen/симулятор и минуты,
+    # а полный check должен оставаться быстрым гейтом.
+    while IFS= read -r pkg; do
+        swift build --package-path "$(dirname "$pkg")"
+    done < <(packages)
+
+    # scripts/ac-check копируется project-init'ом из agent-dev-kit
+    # (hooks/scripts/ac-check.sh); контракт — в документации кита.
+    if [ -x scripts/ac-check ]; then
+        scripts/ac-check .
+    fi
+fi
