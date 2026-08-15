@@ -95,3 +95,28 @@ adk_gh_pr_fields() {
   fi
   printf '%s\n' "$out"
 }
+
+# adk_gh_issue_fields <issue> <repo_flag> <git_root> <json-поля> <jq-выражение> —
+# один вызов `gh issue view` за нужные поля issue. Фолбэки — та же пара, что у
+# adk_gh_pr_fields (-R из команды → git-корень команды), и то же отсутствие
+# переключения между ветками: если указан -R и запрос по нему не удался,
+# на git-корень команды это не откатывается — issue #N чужого репозитория
+# нельзя искать в локальном по догадке, это дало бы labels другого issue и
+# ложный вердикт (см. pr-title-check.sh, сверка commitType issue с label).
+# Отличие от adk_gh_pr_fields: код возврата функции — это rc самого `gh`
+# (не всегда 0), а не только пустая строка на выходе. Вызывающему важно
+# различать «gh отработал, но нужных полей нет» (например, issue без единого
+# label — легитимный пустой результат, rc=0) от «прочитать не удалось» (gh
+# недоступен или issue не найден, rc≠0); adk_gh_pr_fields такое различие не
+# даёт, потому что его вызывающим оно не нужно — формат ответа
+# `\(.number) \(.title)` уже отличает пустой результат от данных по форме.
+adk_gh_issue_fields() {
+  local issue="$1" repo_flag="$2" git_root="$3" json_fields="$4" jq_q="$5" out="" rc=1
+  if [ -n "$repo_flag" ]; then
+    out=$(gh issue view "$issue" -R "$repo_flag" --json "$json_fields" -q "$jq_q" 2>/dev/null); rc=$?
+  elif [ -n "$git_root" ]; then
+    out=$(cd "$git_root" && gh issue view "$issue" --json "$json_fields" -q "$jq_q" 2>/dev/null); rc=$?
+  fi
+  printf '%s\n' "$out"
+  return $rc
+}
