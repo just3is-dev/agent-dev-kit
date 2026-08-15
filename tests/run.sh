@@ -762,6 +762,16 @@ check_ac_doc AC-7 "consolidate.md собирает баг-issues по label, а 
 check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPEC-002) не теряются молча" \
   "$KIT/commands/consolidate.md" "Переходное состояние: баг-issues"
 
+# ── Сверочный поиск «Сбежал от» использует те же параметры, что основная
+# выборка по label (issue #89): без --limit gh отдаёт первые 30 записей по
+# всему репозиторию, сверка расходится с основной выборкой (--limit 200 +
+# фильтр по вехе). Первая проверка — репро: старая форма без --limit сразу
+# за --search не матчится.
+check_ac_doc "issue #89" "consolidate.md: сверочный поиск «Сбежал от» содержит --limit 200" \
+  "$KIT/commands/consolidate.md" '--search "Сбежал от" --limit 200'
+check_ac_doc "issue #89" "consolidate.md: сверочный поиск «Сбежал от» фильтруется по вехе, как основная выборка" \
+  "$KIT/commands/consolidate.md" 'та же фильтрация по `$ARGUMENTS`, что и в основной выборке'
+
 # ── SPEC-002 AC-8: актуализация отставшей ветки перед ready/merge ────────────
 # /work (перед переводом PR в ready) и /autopilot (перед merge ready-PR)
 # проверяют состояние PR относительно main; неактуальная ветка
