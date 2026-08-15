@@ -406,12 +406,7 @@ mkdir -p "$TMP/tmpdir"
 NFILE="$TMP/notifications.log"
 
 printf '{"session_id":"sid1"}' | TMPDIR="$TMP/tmpdir" "$HOOKS/prompt-timestamp.sh"
-if [ -f "$NDIR/sid1" ] && grep -Eq '^[0-9]+$' "$NDIR/sid1"; then
-  echo "PASS: prompt-timestamp: время начала хода записано"
-else
-  echo "FAIL: prompt-timestamp: файл с меткой не создан"
-  fails=$((fails + 1))
-fi
+assert_contains "prompt-timestamp: время начала хода записано" "$(cat "$NDIR/sid1" 2>/dev/null)" '^[0-9][0-9]*$'
 
 printf '{"message":"Нужно разрешение на Bash"}' | ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/notification.sh"
 assert_contains "notification: запрос ввода порождает уведомление" "$(cat "$NFILE" 2>/dev/null)" "Нужно разрешение на Bash"
@@ -427,12 +422,8 @@ assert_contains "stop-test: долгий ход завершён — уведо�
 date +%s > "$NDIR/sid3"
 rm -f "$NFILE"
 printf '{"session_id":"sid3"}' | TMPDIR="$TMP/tmpdir" ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
-if [ -f "$NFILE" ]; then
-  echo "FAIL: stop-test: короткий ход не должен порождать уведомление"
-  fails=$((fails + 1))
-else
-  echo "PASS: stop-test: короткий ход — без уведомления"
-fi
+[ ! -f "$NFILE" ]
+assert_exit "stop-test: короткий ход — без уведомления" 0 $?
 
 # stop-test: провал тестов → БЕЗ уведомления «завершено» (работа продолжается)
 # правка файла инвалидирует кэш успешного прогона (.fail-tests гитигнорится и хэш не меняет)
@@ -443,12 +434,9 @@ rm -f "$NFILE"
 printf '{"session_id":"sid4"}' | TMPDIR="$TMP/tmpdir" ADK_NOTIFY_FILE="$NFILE" CLAUDE_PROJECT_DIR="$P" "$HOOKS/stop-test.sh" >/dev/null 2>&1
 st=$?
 rm "$P/.fail-tests"
-if [ "$st" -eq 2 ] && [ ! -f "$NFILE" ]; then
-  echo "PASS: stop-test: красные тесты — блок без уведомления о завершении"
-else
-  echo "FAIL: stop-test: при красных тестах exit=$st, уведомление: $([ -f "$NFILE" ] && echo да || echo нет)"
-  fails=$((fails + 1))
-fi
+assert_exit "stop-test: красные тесты — блок хода" 2 "$st"
+[ ! -f "$NFILE" ]
+assert_exit "stop-test: красные тесты — без уведомления о завершении" 0 $?
 
 # ── Журнал (adk-log.sh) ──────────────────────────────────────────────────────
 LOGP="$TMP/logproj"
@@ -457,23 +445,14 @@ mkdir -p "$LOGP"
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=start issue=1 >/dev/null 2>&1
 assert_exit "AC-1: adk-log: запись под дефолтным путём завершается успешно" 0 $?
-if [ -f "$LOGP/.adk/logs/issue-1.jsonl" ]; then
-  echo "PASS: AC-1: adk-log: запись создаёт файл в .adk/logs/"
-else
-  echo "FAIL: AC-1: adk-log: файл .adk/logs/issue-1.jsonl не создан"
-  fails=$((fails + 1))
-fi
+[ -f "$LOGP/.adk/logs/issue-1.jsonl" ]
+assert_exit "AC-1: adk-log: запись создаёт файл в .adk/logs/" 0 $?
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=review verdict=APPROVE >/dev/null 2>&1
 lines=$(count_lines "$LOGP/.adk/logs/issue-1.jsonl")
 assert_exit "AC-1: adk-log: повторная запись дописывает вторую строку, не трёт первую" 2 "$lines"
 first_event=$(sed -n '1p' "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("event",""))' 2>/dev/null)
-if [ "$first_event" = "start" ]; then
-  echo "PASS: AC-1: adk-log: первая строка не перезаписана вторым событием"
-else
-  echo "FAIL: AC-1: adk-log: первая строка изменилась (event=$first_event)"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: adk-log: первая строка не перезаписана вторым событием" "$first_event" '^start$'
 
 valid=$(jsonl_check "$LOGP/.adk/logs/issue-1.jsonl" 2 "$(printf 'event?\nevent?')")
 assert_exit "AC-1: adk-log: каждая строка — валидный JSON с timestamp и полями" 1 "$valid"
@@ -486,49 +465,29 @@ assert_exit "AC-1: adk-log: отклонённый аргумент не пиш�
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=spoof timestamp=bogus >/dev/null 2>&1
 last_ts=$(tail -n1 "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("timestamp",""))')
-if [ "$last_ts" = "bogus" ]; then
-  echo "FAIL: AC-1: adk-log: переданное поле timestamp затёрло служебное"
-  fails=$((fails + 1))
-else
-  echo "PASS: AC-1: adk-log: служебный timestamp не подменяется переданным полем"
-fi
+assert_not_contains "AC-1: adk-log: служебный timestamp не подменяется переданным полем" "$last_ts" '^bogus$'
 
 CUSTOM="$TMP/customlogs"
 rm -rf "$CUSTOM"
 ADK_LOGS_DIR="$CUSTOM" CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" autopilot-2026-08-07 event=run_start >/dev/null 2>&1
-if [ -f "$CUSTOM/autopilot-2026-08-07.jsonl" ] && [ ! -f "$LOGP/.adk/logs/autopilot-2026-08-07.jsonl" ]; then
-  echo "PASS: AC-1: adk-log: ADK_LOGS_DIR переопределяет путь"
-else
-  echo "FAIL: AC-1: adk-log: ADK_LOGS_DIR не переопределил путь"
-  fails=$((fails + 1))
-fi
+[ -f "$CUSTOM/autopilot-2026-08-07.jsonl" ]
+assert_exit "AC-1: adk-log: ADK_LOGS_DIR переопределяет путь — файл создан в нём" 0 $?
+[ ! -f "$LOGP/.adk/logs/autopilot-2026-08-07.jsonl" ]
+assert_exit "AC-1: adk-log: ADK_LOGS_DIR переопределяет путь — файл не создан под дефолтным" 0 $?
 
 gi_content=$(cat "$LOGP/.adk/.gitignore" 2>/dev/null)
-if [ "$gi_content" = "*" ]; then
-  echo "PASS: AC-1: adk-log: .adk/.gitignore создан с содержимым *"
-else
-  echo "FAIL: AC-1: adk-log: .adk/.gitignore отсутствует или содержит не *"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: adk-log: .adk/.gitignore создан с содержимым *" "$gi_content" '^\*$'
 
 adk_status=$(cd "$LOGP" && git status --porcelain -- .adk 2>/dev/null)
-if [ -z "$adk_status" ]; then
-  echo "PASS: AC-1: adk-log: git status пуст для .adk/ (самоигнорирующаяся папка)"
-else
-  echo "FAIL: AC-1: adk-log: .adk/ виден git status: $adk_status"
-  fails=$((fails + 1))
-fi
+[ -z "$adk_status" ]
+assert_exit "AC-1: adk-log: git status пуст для .adk/ (самоигнорирующаяся папка)" 0 $?
 
 CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" issue-1 event=merge >/dev/null 2>&1
 gi_lines_after=$(count_lines "$LOGP/.adk/.gitignore")
 assert_exit "AC-1: adk-log: повторная запись не дублирует .adk/.gitignore" 1 "$gi_lines_after"
 
-if grep -qx '\.adk/' "$KIT/templates/base/gitignore"; then
-  echo "PASS: AC-1: adk-log: templates/base/gitignore содержит .adk/"
-else
-  echo "FAIL: AC-1: adk-log: templates/base/gitignore не содержит .adk/"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: adk-log: templates/base/gitignore содержит .adk/" \
+  "$(cat "$KIT/templates/base/gitignore")" '^\.adk/$'
 
 # ── Сводка по журналу (adk-stats.sh, AC-3) ───────────────────────────────────
 # Схема событий — ADR-001 (docs/adr/001-journal-event-schema.md).
@@ -539,23 +498,13 @@ mkdir -p "$STATS_EMPTY"
 stats_out=$(ADK_LOGS_DIR="$STATS_EMPTY" "$HOOKS/adk-stats.sh" 2>&1)
 stats_st=$?
 assert_exit "AC-3: adk-stats: пустой каталог журнала — exit 0" 0 "$stats_st"
-if printf '%s' "$stats_out" | grep -qi "пуст"; then
-  echo "PASS: AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей"
-else
-  echo "FAIL: AC-3: adk-stats: нет сообщения о пустом журнале: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: пустой каталог — сообщение об отсутствии записей" "$stats_out" "пуст"
 assert_not_contains "AC-3: adk-stats: пустой журнал не выдумывает агрегаты" "$stats_out" "Всего задач"
 
 # каталог журнала вовсе не существует — тоже exit 0 с сообщением, не падение
 stats_out=$(ADK_LOGS_DIR="$TMP/stats-missing" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: несуществующий каталог журнала — exit 0" 0 $?
-if printf '%s' "$stats_out" | grep -qi "пуст"; then
-  echo "PASS: AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек"
-else
-  echo "FAIL: AC-3: adk-stats: несуществующий каталог не даёт понятного сообщения: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: несуществующий каталог — сообщение, не трейсбек" "$stats_out" "пуст"
 
 # каталог содержит только autopilot-*.jsonl (нет issue-*.jsonl) — журнал НЕ
 # пуст (записи прогонов есть), сообщение не должно врать про "пусто", и
@@ -569,12 +518,8 @@ EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_AP_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: каталог только с autopilot-файлом — exit 0" 0 $?
 assert_not_contains "AC-3: adk-stats: каталог только с autopilot-файлом — без агрегатов по задачам" "$stats_out" "Всего задач"
-if printf '%s' "$stats_out" | grep -qi "нет ни одной задачи" && printf '%s' "$stats_out" | grep -qi "autopilot"; then
-  echo "PASS: AC-3: adk-stats: сообщение честно отличает 'нет issue-записей' от 'журнал пуст'"
-else
-  echo "FAIL: AC-3: adk-stats: сообщение для каталога только с autopilot-файлом неинформативно: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: сообщение честно отличает 'нет issue-записей' от 'журнал пуст'" "$stats_out" "нет ни одной задачи"
+assert_contains "AC-3: adk-stats: сообщение про каталог только с autopilot-файлом называет autopilot" "$stats_out" "autopilot"
 
 # каталог содержит только незавершённую задачу (event=start/review, без
 # outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
@@ -589,12 +534,8 @@ EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_INPROGRESS_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: каталог только с незавершённой задачей — exit 0" 0 $?
 assert_not_contains "AC-3: adk-stats: незавершённая-только задача не спутана с пустым журналом" "$stats_out" "Журнал пуст"
-if printf '%s' "$stats_out" | grep -q "В работе" && printf '%s' "$stats_out" | grep -q "1"; then
-  echo "PASS: AC-3: adk-stats: незавершённая задача показана как «в работе»"
-else
-  echo "FAIL: AC-3: adk-stats: количество задач в работе не отражено в выводе: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: незавершённая задача показана как «в работе»" "$stats_out" "В работе"
+assert_contains "AC-3: adk-stats: количество задач в работе отражено в выводе" "$stats_out" "1"
 
 # строка, оборванная посреди multibyte UTF-8 (типичный исход обрыва процесса
 # при записи в журнал) — не должна ронять скрипт UnicodeDecodeError-ом;
@@ -720,12 +661,8 @@ assert_exit "AC-3: adk-stats: битая строка в одном из фай�
 # два разных вида битой строки в issue-12.jsonl — не JSON и JSON-не-объект —
 # оба должны попасть в предупреждения (два разных lineno)
 warn_lines=$(printf '%s' "$stats_err" | grep -ci "issue-12")
-if [ "$warn_lines" -ge 2 ]; then
-  echo "PASS: AC-3: adk-stats: оба вида битой строки (не-JSON и JSON-не-объект) порождают предупреждения"
-else
-  echo "FAIL: AC-3: adk-stats: ожидали 2+ предупреждения про issue-12, получили $warn_lines: $stats_err"
-  fails=$((fails + 1))
-fi
+[ "$warn_lines" -ge 2 ]
+assert_exit "AC-3: adk-stats: оба вида битой строки (не-JSON и JSON-не-объект) порождают предупреждения" 0 $?
 
 assert_contains "AC-3: adk-stats: всего задач — 3 завершённые (issue-13 без итога и autopilot-файл не задваивают)" "$stats_out" "Всего задач: 3"
 
@@ -733,42 +670,22 @@ assert_contains "AC-3: adk-stats: незавершённая задача (issue
 
 assert_contains "AC-3: adk-stats: средние круги ревью посчитаны верно ((2+1+2)/3 = 1.7, issue-13 не в счёте)" "$stats_out" "Средние круги ревью: 1\.7"
 
-if printf '%s' "$stats_out" | grep -q "33%" && printf '%s' "$stats_out" | grep -q "1/3"; then
-  echo "PASS: AC-3: adk-stats: доля застреваний — 33% (1/3)"
-else
-  echo "FAIL: AC-3: adk-stats: доля застреваний не совпадает с ожиданием: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: доля застреваний — 33%" "$stats_out" "33%"
+assert_contains "AC-3: adk-stats: доля застреваний — 1/3 задач" "$stats_out" "1/3"
 
 assert_contains "AC-3: adk-stats: причина застревания названа в выводе" "$stats_out" "ревьюер второй круг подряд REQUEST_CHANGES"
 
-if printf '%s' "$stats_out" | grep -q "2026-W31" && printf '%s' "$stats_out" | grep -q "2026-W32"; then
-  echo "PASS: AC-3: adk-stats: динамика по неделям показывает обе недели фикстуры"
-else
-  echo "FAIL: AC-3: adk-stats: динамика по неделям не найдена: $stats_out"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-3: adk-stats: динамика по неделям показывает неделю 2026-W31" "$stats_out" "2026-W31"
+assert_contains "AC-3: adk-stats: динамика по неделям показывает неделю 2026-W32" "$stats_out" "2026-W32"
 
 # команда /stats существует и обращается к скрипту агрегации, интерпретирует
 # пустой журнал явно, не выдумывая цифры
-if [ -f "$KIT/commands/stats.md" ]; then
-  echo "PASS: AC-3: commands/stats.md существует"
-else
-  echo "FAIL: AC-3: commands/stats.md отсутствует"
-  fails=$((fails + 1))
-fi
-if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "hooks/scripts/adk-stats.sh"; then
-  echo "PASS: AC-3: commands/stats.md вызывает hooks/scripts/adk-stats.sh"
-else
-  echo "FAIL: AC-3: commands/stats.md не упоминает hooks/scripts/adk-stats.sh"
-  fails=$((fails + 1))
-fi
-if tr '\n' ' ' < "$KIT/commands/stats.md" | tr -s ' ' | grep -qF "не выдумывай"; then
-  echo "PASS: AC-3: commands/stats.md: пустой журнал — не выдумывать цифры"
-else
-  echo "FAIL: AC-3: commands/stats.md не содержит правило не выдумывать цифры при пустом журнале"
-  fails=$((fails + 1))
-fi
+[ -f "$KIT/commands/stats.md" ]
+assert_exit "AC-3: commands/stats.md существует" 0 $?
+check_ac_doc AC-3 "commands/stats.md вызывает hooks/scripts/adk-stats.sh" \
+  "$KIT/commands/stats.md" "hooks/scripts/adk-stats.sh"
+check_ac_doc AC-3 "commands/stats.md: пустой журнал — не выдумывать цифры" \
+  "$KIT/commands/stats.md" "не выдумывай"
 
 # ── Тип задачи в журнале и разрез /stats по типам (AC-7 SPEC-002) ────────────
 # Схема: поле type в событиях журнала — расширение ADR-001 (issue #51).
@@ -958,12 +875,7 @@ stuck_lines=$(count_lines "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null)
 assert_exit "AC-1: work.md-смоук: result=stuck с пробелами в reason не роняет запись" 2 "${stuck_lines:-0}"
 
 stuck_reason=$(tail -n1 "$WORKP2/.adk/logs/issue-43.jsonl" 2>/dev/null | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("reason",""))' 2>/dev/null)
-if [ "$stuck_reason" = "тесты не проходят" ]; then
-  echo "PASS: AC-1: work.md-смоук: причина застревания сохраняется целиком, с пробелами"
-else
-  echo "FAIL: AC-1: work.md-смоук: причина застревания искажена или потеряна (reason=$stuck_reason)"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: work.md-смоук: причина застревания сохраняется целиком, с пробелами" "$stuck_reason" '^тесты не проходят$'
 
 stuck_stats_out=$(ADK_LOGS_DIR="$WORKP2/.adk/logs" "$HOOKS/adk-stats.sh" 2>&1)
 assert_contains "AC-1: work.md-смоук: adk-stats.sh на журнале с result=stuck считает застревание и называет причину (issue #21)" "$stuck_stats_out" "тесты не проходят"
@@ -981,21 +893,11 @@ assert_contains "AC-2: autopilot.md шаг 3 логирует event=task на к
 assert_contains "AC-2: autopilot.md «Завершение» логирует event=run_end (не run_finish, issue #21)" "$finish_section" 'adk-log\.sh.*event=run_end'
 
 for outcome_kind in 'result=merged' 'result=stuck' 'result=skipped'; do
-  if printf '%s' "$step3" | grep -qF "$outcome_kind"; then
-    echo "PASS: AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»"
-  else
-    echo "FAIL: AC-2: autopilot.md шаг 3 не упоминает исход «$outcome_kind»"
-    fails=$((fails + 1))
-  fi
+  assert_contains "AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»" "$step3" "$outcome_kind"
 done
 
 for agg_field in done= stuck= skipped=; do
-  if printf '%s' "$finish_section" | grep -qF "$agg_field"; then
-    echo "PASS: AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»"
-  else
-    echo "FAIL: AC-2: autopilot.md «Завершение» не пишет агрегат «$agg_field»"
-    fails=$((fails + 1))
-  fi
+  assert_contains "AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»" "$finish_section" "$agg_field"
 done
 
 for section_name in cycle_preamble step3 finish_section; do
@@ -1050,12 +952,8 @@ assert_contains "AC-3: autopilot.md читает policies.autopilot.maxTasksPerR
 # run_start логируется в преамбуле «## Цикл»
 policy_line=$(grep -n '^## Политика прогона' "$AUTOMD" | head -1 | cut -d: -f1)
 cycle_line=$(grep -n '^## Цикл' "$AUTOMD" | head -1 | cut -d: -f1)
-if [ -n "$policy_line" ] && [ -n "$cycle_line" ] && [ "$policy_line" -lt "$cycle_line" ]; then
-  echo "PASS: AC-3: autopilot.md читает политику до «## Цикл» (то есть до run_start)"
-else
-  echo "FAIL: AC-3: autopilot.md политика должна читаться до «## Цикл» (policy=$policy_line cycle=$cycle_line)"
-  fails=$((fails + 1))
-fi
+[ -n "$policy_line" ] && [ -n "$cycle_line" ] && [ "$policy_line" -lt "$cycle_line" ]
+assert_exit "AC-3: autopilot.md читает политику до «## Цикл» (то есть до run_start)" 0 $?
 
 # enabled=false — отказ старта с объяснением и без побочных эффектов
 check_ac_doc AC-3 "autopilot.md: enabled=false — отказ старта" \
@@ -1175,12 +1073,7 @@ rm -f "$M/.calls"
 (cd "$M" && ./scripts/check apps/web/src/page.tsx >/dev/null 2>&1)
 assert_exit "монорепа check: файл web проходит" 0 $?
 calls=$(cat "$M/.calls" 2>/dev/null)
-if [ "$calls" = "web-check:1" ]; then
-  echo "PASS: монорепа check: вызван только пакет web"
-else
-  echo "FAIL: монорепа check: ожидали только web-check, вызовы: $calls"
-  fails=$((fails + 1))
-fi
+assert_contains "монорепа check: вызван только пакет web" "$calls" '^web-check:1$'
 
 rm -f "$M/.calls"
 (cd "$M" && ./scripts/check >/dev/null 2>&1)
@@ -1191,8 +1084,8 @@ assert_exit "монорепа check: без аргументов вызваны 
 rm -f "$M/.calls"
 (cd "$M" && ./scripts/check README.md >/dev/null 2>&1)
 assert_exit "монорепа check: корневой файл вне пакетов проходит" 0 $?
-[ -f "$M/.calls" ] && { echo "FAIL: монорепа check: корневой файл не должен звать пакеты"; fails=$((fails + 1)); } \
-  || echo "PASS: монорепа check: корневой файл не зовёт пакеты"
+[ ! -f "$M/.calls" ]
+assert_exit "монорепа check: корневой файл не зовёт пакеты" 0 $?
 
 touch "$M/apps/api/src/fail.ts"
 (cd "$M" && ./scripts/check apps/api/src/fail.ts >/dev/null 2>&1)
@@ -1662,15 +1555,13 @@ assert_contains "кит: scripts/check без аргументов запуск�
 # способом, что и сам ac-check.sh) — а не как строковый литерал, чтобы сам
 # тест-страж не плодил новую самопокрывающуюся строку.
 guard_ac_check() {
-  local block_start block_end guard_out guard_st GUARD
+  local block_start block_end block_ok guard_out guard_st GUARD
   block_start=$(grep -n '^# ── AC-трассируемость' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
   block_end=$(grep -n '^# ── Конвенция AC-тегирования' "$KIT/tests/run.sh" | head -1 | cut -d: -f1)
-  if [ -z "${block_start:-}" ] || [ -z "${block_end:-}" ] || [ "$block_end" -le "$block_start" ]; then
-    echo "FAIL: AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены (block_start=$block_start block_end=$block_end)"
-    fails=$((fails + 1))
-    return
-  fi
-  echo "PASS: AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены"
+  block_ok=0
+  [ -n "${block_start:-}" ] && [ -n "${block_end:-}" ] && [ "$block_end" -gt "$block_start" ] || block_ok=1
+  assert_exit "AC-4: тест-страж: заголовки диапазона AC-4-тестов найдены и упорядочены" 0 "$block_ok"
+  [ "$block_ok" -eq 0 ] || return
   block_end=$((block_end - 1))
 
   GUARD="$TMP/ac-guard-proj"
@@ -1778,12 +1669,7 @@ PATHS_LIB="$HOOKS/lib/paths.sh"
 # adk_project_root: CLAUDE_PROJECT_DIR задан — используется как есть
 out=$(CLAUDE_PROJECT_DIR="/explicit/root" bash -c ". '$PATHS_LIB'; adk_project_root")
 assert_exit "AC-1: paths.sh: adk_project_root уважает CLAUDE_PROJECT_DIR" 0 $?
-if [ "$out" = "/explicit/root" ]; then
-  echo "PASS: AC-1: paths.sh: adk_project_root вернул явно заданный CLAUDE_PROJECT_DIR"
-else
-  echo "FAIL: AC-1: paths.sh: adk_project_root вернул '$out' вместо /explicit/root"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: paths.sh: adk_project_root вернул явно заданный CLAUDE_PROJECT_DIR" "$out" '^/explicit/root$'
 
 # adk_project_root: CLAUDE_PROJECT_DIR не задан, cwd внутри git-репо — git-фолбэк
 GITROOT="$TMP/paths-gitroot"
@@ -1791,12 +1677,8 @@ mkdir -p "$GITROOT/sub"
 (cd "$GITROOT" && git_c init -q -b main)
 out=$(cd "$GITROOT/sub" && env -u CLAUDE_PROJECT_DIR bash -c ". '$PATHS_LIB'; adk_project_root")
 GITROOT_REAL=$(cd "$GITROOT" && pwd -P)
-if [ "$out" = "$GITROOT_REAL" ]; then
-  echo "PASS: AC-1: paths.sh: adk_project_root — git-фолбэк находит toplevel из подкаталога"
-else
-  echo "FAIL: AC-1: paths.sh: adk_project_root git-фолбэк вернул '$out', ожидали '$GITROOT_REAL'"
-  fails=$((fails + 1))
-fi
+[ "$out" = "$GITROOT_REAL" ]
+assert_exit "AC-1: paths.sh: adk_project_root — git-фолбэк находит toplevel из подкаталога" 0 $?
 
 # adk_project_root: ни CLAUDE_PROJECT_DIR, ни git — $PWD
 NOTGIT="$TMP/paths-notgit"
@@ -1805,28 +1687,14 @@ out=$(cd "$NOTGIT" && env -u CLAUDE_PROJECT_DIR bash -c ". '$PATHS_LIB'; adk_pro
 # логический $PWD (без -P): скрипт использует голый "$PWD" как последний
 # фолбэк, не резолвя симлинки, поэтому и здесь сравниваем без резолва.
 NOTGIT_REAL=$(cd "$NOTGIT" && pwd)
-if [ "$out" = "$NOTGIT_REAL" ]; then
-  echo "PASS: AC-1: paths.sh: adk_project_root — без git и без CLAUDE_PROJECT_DIR отдаёт \$PWD"
-else
-  echo "FAIL: AC-1: paths.sh: adk_project_root вне git вернул '$out', ожидали '$NOTGIT_REAL'"
-  fails=$((fails + 1))
-fi
+[ "$out" = "$NOTGIT_REAL" ]
+assert_exit "AC-1: paths.sh: adk_project_root — без git и без CLAUDE_PROJECT_DIR отдаёт \$PWD" 0 $?
 
 # adk_logs_dir: ADK_LOGS_DIR переопределяет, иначе <root>/.adk/logs
 out=$(ADK_LOGS_DIR="/custom/logs" bash -c ". '$PATHS_LIB'; adk_logs_dir /some/root")
-if [ "$out" = "/custom/logs" ]; then
-  echo "PASS: AC-1: paths.sh: adk_logs_dir уважает ADK_LOGS_DIR"
-else
-  echo "FAIL: AC-1: paths.sh: adk_logs_dir вернул '$out' вместо /custom/logs"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: paths.sh: adk_logs_dir уважает ADK_LOGS_DIR" "$out" '^/custom/logs$'
 out=$(env -u ADK_LOGS_DIR bash -c ". '$PATHS_LIB'; adk_logs_dir /some/root")
-if [ "$out" = "/some/root/.adk/logs" ]; then
-  echo "PASS: AC-1: paths.sh: adk_logs_dir по умолчанию — <root>/.adk/logs"
-else
-  echo "FAIL: AC-1: paths.sh: adk_logs_dir без ADK_LOGS_DIR вернул '$out'"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: paths.sh: adk_logs_dir по умолчанию — <root>/.adk/logs" "$out" '^/some/root/\.adk/logs$'
 
 # Эквивалентность: adk-log.sh пишет в git-toplevel/.adk/logs, если
 # CLAUDE_PROJECT_DIR не задан, а cwd — вложенный подкаталог git-репо
@@ -1837,12 +1705,8 @@ mkdir -p "$LOGFB/nested/deeper"
 (cd "$LOGFB" && git_c init -q -b main)
 (cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-log.sh" issue-fb event=start issue=1 >/dev/null 2>&1)
 LOGFB_REAL=$(cd "$LOGFB" && pwd -P)
-if [ -f "$LOGFB_REAL/.adk/logs/issue-fb.jsonl" ]; then
-  echo "PASS: AC-1: adk-log.sh: git-фолбэк для корня по-прежнему пишет в toplevel/.adk/logs"
-else
-  echo "FAIL: AC-1: adk-log.sh: git-фолбэк не сработал — файл не найден в $LOGFB_REAL/.adk/logs"
-  fails=$((fails + 1))
-fi
+[ -f "$LOGFB_REAL/.adk/logs/issue-fb.jsonl" ]
+assert_exit "AC-1: adk-log.sh: git-фолбэк для корня по-прежнему пишет в toplevel/.adk/logs" 0 $?
 
 # Эквивалентность: adk-stats.sh читает тот же git-toplevel/.adk/logs
 stats_fb=$(cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-stats.sh" 2>&1)
@@ -1861,12 +1725,8 @@ assert_contains "notification.sh: правило корня не унифици�
 
 # Дублирующийся резолв notify-send.sh убран из обоих мест — обе точки
 # вызова используют общий adk_notify_send из lib/paths.sh.
-if grep -q 'adk_notify_send' "$HOOKS/stop-test.sh" && grep -q 'adk_notify_send' "$HOOKS/notification.sh"; then
-  echo "PASS: stop-test.sh/notification.sh: используют общий adk_notify_send вместо дублирующегося резолва пути"
-else
-  echo "FAIL: stop-test.sh/notification.sh: не используют общий adk_notify_send"
-  fails=$((fails + 1))
-fi
+assert_contains "stop-test.sh: использует общий adk_notify_send вместо дублирующегося резолва пути" "$stop_test_content" 'adk_notify_send'
+assert_contains "notification.sh: использует общий adk_notify_send вместо дублирующегося резолва пути" "$notification_content" 'adk_notify_send'
 
 # ── Конфиг процесса: lib/config.sh + adk-config.sh (issue #41, AC-1) ────────
 # Модель — SPEC-002 (docs/specs/002-process-config.md): плоские атрибуты,
@@ -1878,62 +1738,32 @@ mkdir -p "$CONFP"
 # Нет файла adk.config.json → дефолт, exit 0 (и через lib, и через CLI)
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
 assert_exit "AC-1: config.sh: нет файла — adk_config_get завершается успешно" 0 $?
-if [ "$out" = "agent-after-approve" ]; then
-  echo "PASS: AC-1: config.sh: нет файла — вернулся дефолт"
-else
-  echo "FAIL: AC-1: config.sh: нет файла — вернулось '$out' вместо дефолта"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: нет файла — вернулся дефолт" "$out" '^agent-after-approve$'
 cli_out=$(CLAUDE_PROJECT_DIR="$CONFP" "$HOOKS/adk-config.sh" policies.merge agent-after-approve)
 assert_exit "AC-1: adk-config.sh: нет файла — CLI завершается успешно" 0 $?
-if [ "$cli_out" = "agent-after-approve" ]; then
-  echo "PASS: AC-1: adk-config.sh: нет файла — CLI вернул дефолт"
-else
-  echo "FAIL: AC-1: adk-config.sh: нет файла — CLI вернул '$cli_out' вместо дефолта"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: adk-config.sh: нет файла — CLI вернул дефолт" "$cli_out" '^agent-after-approve$'
 
 # Файл есть, атрибута нет → дефолт
 cat > "$CONFP/adk.config.json" <<'EOF'
 {"policies": {"merge": "human-only"}}
 EOF
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.review.maxRounds 2")
-if [ "$out" = "2" ]; then
-  echo "PASS: AC-1: config.sh: файл есть, атрибута нет — вернулся дефолт"
-else
-  echo "FAIL: AC-1: config.sh: файл есть, атрибута нет — вернулось '$out' вместо дефолта"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: файл есть, атрибута нет — вернулся дефолт" "$out" '^2$'
 
 # Атрибут задан → его значение (в т.ч. вложенный путь через точку)
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
-if [ "$out" = "human-only" ]; then
-  echo "PASS: AC-1: config.sh: атрибут задан — вернулось значение из файла"
-else
-  echo "FAIL: AC-1: config.sh: атрибут задан — вернулось '$out' вместо human-only"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: атрибут задан — вернулось значение из файла" "$out" '^human-only$'
 
 # Путь уходит глубже, чем есть данных (промежуточный узел — не объект) → дефолт
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge.extra fallback")
-if [ "$out" = "fallback" ]; then
-  echo "PASS: AC-1: config.sh: путь глубже данных — вернулся дефолт, не упал"
-else
-  echo "FAIL: AC-1: config.sh: путь глубже данных — вернулось '$out' вместо дефолта"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: путь глубже данных — вернулся дефолт, не упал" "$out" '^fallback$'
 
 # Битый JSON → дефолт и exit 0 (конфиг не роняет хук)
 printf '{broken' > "$CONFP/adk.config.json"
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
 status=$?
 assert_exit "AC-1: config.sh: битый JSON — exit 0, конфиг не роняет хук" 0 "$status"
-if [ "$out" = "agent-after-approve" ]; then
-  echo "PASS: AC-1: config.sh: битый JSON — вернулся дефолт"
-else
-  echo "FAIL: AC-1: config.sh: битый JSON — вернулось '$out' вместо дефолта"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: битый JSON — вернулся дефолт" "$out" '^agent-after-approve$'
 
 # Неизвестное значение атрибута (не входит в allowed-csv) — дефолт напечатан,
 # но откат громкий: exit 1 и предупреждение в stderr, не то же самое, что
@@ -1942,12 +1772,7 @@ printf '{"policies": {"merge": "typo-value"}}' > "$CONFP/adk.config.json"
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve agent-after-approve,human-review-required,human-only" 2>"$TMP/config-stderr")
 status=$?
 assert_exit "AC-1: config.sh: неизвестное значение — exit 1 (не совпадает с 'атрибута нет')" 1 "$status"
-if [ "$out" = "agent-after-approve" ]; then
-  echo "PASS: AC-1: config.sh: неизвестное значение — на stdout всё равно дефолт (не роняет вызывающего)"
-else
-  echo "FAIL: AC-1: config.sh: неизвестное значение — вернулось '$out' вместо дефолта"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: неизвестное значение — на stdout всё равно дефолт (не роняет вызывающего)" "$out" '^agent-after-approve$'
 stderr_content=$(cat "$TMP/config-stderr")
 assert_contains "AC-1: config.sh: неизвестное значение — предупреждение в stderr, откат не молчаливый" "$stderr_content" "typo-value"
 
@@ -1955,42 +1780,22 @@ assert_contains "AC-1: config.sh: неизвестное значение — п
 printf '{"policies": {"merge": "human-only"}}' > "$CONFP/adk.config.json"
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve agent-after-approve,human-review-required,human-only")
 assert_exit "AC-1: config.sh: значение из allowed-csv — exit 0" 0 $?
-if [ "$out" = "human-only" ]; then
-  echo "PASS: AC-1: config.sh: значение из allowed-csv вернулось как есть"
-else
-  echo "FAIL: AC-1: config.sh: значение из allowed-csv вернулось '$out' вместо human-only"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: значение из allowed-csv вернулось как есть" "$out" '^human-only$'
 
 # ADK_CONFIG_FILE переопределяет путь к файлу конфига (по образцу ADK_LOGS_DIR)
 CUSTOM_CFG="$TMP/custom-adk.config.json"
 printf '{"policies": {"merge": "human-review-required"}}' > "$CUSTOM_CFG"
 out=$(ADK_CONFIG_FILE="$CUSTOM_CFG" CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.merge agent-after-approve")
-if [ "$out" = "human-review-required" ]; then
-  echo "PASS: AC-1: config.sh: ADK_CONFIG_FILE переопределяет путь к конфигу"
-else
-  echo "FAIL: AC-1: config.sh: ADK_CONFIG_FILE не переопределил путь (вернулось '$out')"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: ADK_CONFIG_FILE переопределяет путь к конфигу" "$out" '^human-review-required$'
 
 # Bool-атрибут печатается строчными true/false — и заданный в файле, и
 # взятый как дефолт (issue #41 review: python-репрезентация "True"/"False"
 # ломала бы потребителей, сравнивающих строку с "true"/"false").
 printf '{"policies": {"autopilot": {"enabled": false}}}' > "$CONFP/adk.config.json"
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.autopilot.enabled true")
-if [ "$out" = "false" ]; then
-  echo "PASS: AC-1: config.sh: bool-значение из файла — строчное 'false', не 'False'"
-else
-  echo "FAIL: AC-1: config.sh: bool-значение из файла — вернулось '$out' вместо 'false'"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: bool-значение из файла — строчное 'false', не 'False'" "$out" '^false$'
 out=$(CLAUDE_PROJECT_DIR="$CONFP" bash -c ". '$CONFIG_LIB'; adk_config_get policies.autopilot.canMerge true")
-if [ "$out" = "true" ]; then
-  echo "PASS: AC-1: config.sh: bool-дефолт — строчное 'true' (атрибута нет в файле)"
-else
-  echo "FAIL: AC-1: config.sh: bool-дефолт — вернулось '$out' вместо 'true'"
-  fails=$((fails + 1))
-fi
+assert_contains "AC-1: config.sh: bool-дефолт — строчное 'true' (атрибута нет в файле)" "$out" '^true$'
 
 # adk-config.sh без пути атрибута — понятная ошибка использования, не тихий сбой
 "$HOOKS/adk-config.sh" >/dev/null 2>"$TMP/config-usage-stderr"
