@@ -544,7 +544,7 @@ stats_out=$(ADK_LOGS_DIR="$STATS_INPROGRESS_ONLY" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: каталог только с незавершённой задачей — exit 0" 0 $?
 assert_not_contains "AC-3: adk-stats: незавершённая-только задача не спутана с пустым журналом" "$stats_out" "Журнал пуст"
 assert_contains "AC-3: adk-stats: незавершённая задача показана как «в работе»" "$stats_out" "В работе"
-assert_contains "AC-3: adk-stats: количество задач в работе отражено в выводе" "$stats_out" "1"
+assert_contains "AC-3: adk-stats: количество задач в работе отражено в выводе" "$stats_out" "В работе (без итога): 1"
 
 # строка, оборванная посреди multibyte UTF-8 (типичный исход обрыва процесса
 # при записи в журнал) — не должна ронять скрипт UnicodeDecodeError-ом;
