@@ -80,7 +80,10 @@ argument-hint: "[номер issue; по умолчанию следующий н
    ревью): `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N>
    event=review round=<номер круга> verdict=<APPROVE|REQUEST_CHANGES> ||
    true`. APPROVE — перед переводом в ready проверь актуальность ветки
-   (AC-8 SPEC-002). Факт отставания бери из git, а не из GitHub-статусов
+   (AC-8 SPEC-002). Рецепт актуализации ниже — канонический: `/autopilot`
+   (перед merge) и `/review` (перед ready) ссылаются на него и описывают
+   только свои отличия, целиком он живёт здесь. Факт отставания бери из
+   git, а не из GitHub-статусов
    (`mergeStateStatus=BEHIND` GitHub отдаёт только при включённом
    `required_status_checks.strict`): `git fetch origin &&
    git rev-list --count HEAD..origin/main` — счётчик больше нуля значит

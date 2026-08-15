@@ -79,40 +79,42 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
    `type` — тип задачи по label issue, правило определения — шаг 1
    `/work`, оно здесь не дублируется).
    - **PR ready, `canMerge=true`** → сперва проверь актуальность ветки
-     (AC-8 SPEC-002). Факт отставания бери из git, а не из
-     GitHub-статусов (`mergeStateStatus=BEHIND` GitHub отдаёт только при
-     включённом `required_status_checks.strict`): `git fetch origin &&
-     git rev-list --count origin/<ветка PR>..origin/main` — счётчик
-     больше нуля значит BEHIND, ветка отстала (`<ветка PR>` бери из того
-     же `gh pr view <PR> --json mergeable,headRefName`). `CONFLICTING`
-     (mergeable) — конфликт с main требует человека: обработай задачу
-     как застрявшую (метка needs-human, уведомление, `result=stuck
-     reason="конфликт с main"`), merge не выполняй, следующая итерация;
-     `UNKNOWN` — GitHub ещё считает mergeability, повтори запрос.
-     Отставшую ветку актуализируй только в явном checkout ветки PR
-     (`gh pr checkout <PR>` — текущий checkout дерева в этот момент не
-     определён: субагент шага 2 оставляет дерево на своей ветке, на main
-     его возвращает лишь merge с `--delete-branch`) способом из конфига
-     (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
-     conventions.branchUpdate rebase rebase,merge`; ненулевой exit =
-     опечатка в конфиге, обработай как застрявшую; fetch уже сделан):
-     `rebase` (дефолт) — перебазируй (`git rebase origin/main`), затем
-     `git push --force-with-lease origin <ветка PR>` (refspec обязателен
-     — push с force-флагом без него применился бы к текущему checkout);
-     `merge` — влей main в ветку (`git merge origin/main`), затем
-     `git push origin <ветка PR>`. Отказы самой актуализации — тоже
-     застревание: конфликт при rebase/merge (возможен и при
-     `mergeable=MERGEABLE` — rebase проигрывает коммиты по одному) —
-     прерви её (`git rebase --abort` / `git merge --abort`), вернись на
-     main и обработай задачу как застрявшую (`reason="конфликт при
-     актуализации"`); красные гейты после актуализации (см. ниже) — то
-     же самое (`reason="гейты красные после актуализации"`) — дерево не
-     бросай в rebase-in-progress и не оставляй на ветке PR. После
-     актуализации обязательно перегони гейты (`./scripts/check`,
-     `./scripts/test`) и вернись на main (`git checkout main`): merge
-     без перегона гейтов после актуализации запрещён — зелёные проверки
-     отставшей ветки относятся к устаревшему состоянию кода. Ветка
-     актуальна и гейты зелёные — `gh pr merge <PR> --squash
+     (AC-8 SPEC-002). Канонический рецепт — шаг 6 `/work`: отставание
+     фактом из git, конфликтность через `gh pr view <PR> --json
+     mergeable` (`CONFLICTING` — человек, `UNKNOWN` — повтори запрос),
+     способ актуализации из `conventions.branchUpdate`, обязательный
+     перегон гейтов (`./scripts/check`, `./scripts/test`) после неё —
+     merge без перегона гейтов после актуализации запрещён, зелёные
+     проверки отставшей ветки относятся к устаревшему состоянию кода.
+     Здесь — только отличия автопилота от канона:
+     - **checkout**: актуализируй ветку PR только в явном
+       `gh pr checkout <PR>` — текущий checkout дерева в этот момент не
+       определён (субагент шага 2 оставляет дерево на своей ветке, на
+       main его возвращает лишь merge с `--delete-branch`);
+     - **счёт отставания**: до этого checkout HEAD — не ветка PR, поэтому
+       считай от неё явно: `git fetch origin && git rev-list --count
+       origin/<ветка PR>..origin/main` (счётчик больше нуля значит
+       BEHIND, ветка отстала); `<ветка PR>` бери из того же
+       `gh pr view <PR> --json mergeable,headRefName`;
+     - **push**: refspec обязателен (`git push --force-with-lease origin
+       <ветка PR>` после rebase, `git push origin <ветка PR>` после
+       merge) — push с force-флагом без него применился бы к текущему
+       checkout;
+     - **исход отказа — застревание, а не вопрос человеку**: конфликт с
+       main требует человека, но останавливается не прогон, а задача —
+       метка needs-human, уведомление, `result=stuck reason="конфликт с
+       main"`, merge не выполняй, следующая итерация. Так же обрабатывай
+       конфликт при самой актуализации (возможен и при
+       `mergeable=MERGEABLE` — rebase проигрывает коммиты по одному:
+       прерви её, `git rebase --abort` / `git merge --abort`,
+       `reason="конфликт при актуализации"`), ненулевой exit
+       `adk-config.sh` (опечатка в конфиге) и красные гейты после
+       актуализации (`reason="гейты красные после актуализации"`);
+     - **возврат дерева**: в любом исходе вернись на main
+       (`git checkout main`) — дерево не бросай в rebase-in-progress и не
+       оставляй на ветке PR.
+
+     Ветка актуальна и гейты зелёные — `gh pr merge <PR> --squash
      --delete-branch` (squash: один issue = один коммит в main,
      заголовок PR становится сообщением коммита); если настроен CI —
      дождись зелёного перед merge (`gh pr checks --watch`; это же
