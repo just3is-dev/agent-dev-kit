@@ -97,13 +97,14 @@
 
 ### Enforcement — три слоя
 
-1. **Хуки читают конфиг** (жёстко): bash-guard — политика merge
-   (`human-only` → блок всегда; `human-review-required` → merge только при
-   `reviewDecision == APPROVED`); при `commitStyle=conventional` —
-   валидация заголовка PR на `gh pr create`/`gh pr edit` по шаблону
-   `<commitType>[(scope)]: <суть> (#N)` с commitType, соответствующим
-   label'у issue. Внутриветочные коммиты не валидируются — squash их
-   схлопывает, точка контроля одна: заголовок PR.
+1. **Хуки читают конфиг** (жёстко): bash-guard (PreToolUse) — политика
+   merge (`human-only` → блок всегда; `human-review-required` → merge
+   только при `reviewDecision == APPROVED`); pr-title-check (PostToolUse,
+   ADR-004) — при `commitStyle=conventional` после `gh pr create`/`gh pr
+   edit` сверяет фактический заголовок PR с шаблоном
+   `<commitType>[(scope)]: <суть> (#N)` и label'ом issue и требует
+   исправить через `gh pr edit`. Внутриветочные коммиты не валидируются —
+   squash их схлопывает, точка контроля одна: заголовок PR.
 2. **Сервер** (жёстче всех): `/project-init` для нового репозитория
    настраивает allowed merge methods по mergeStrategy,
    `delete_branch_on_merge=true`, branch protection по профилю,
@@ -118,7 +119,11 @@
 - Никаких расписаний, ночных прогонов и параллельности — это SPEC-003
   «Автономия»; здесь только конфиг-поля, которые она будет читать.
 - Существующие issues задним числом не типизируются; валидация заголовков
-  применяется к новым PR.
+  применяется к PR текущей ветки (или явно указанному в команде) после
+  любой команды, упоминающей `gh pr create`/`gh pr edit` (ADR-004):
+  включение `conventional` посреди вехи не требует массово переписывать
+  старые PR — хук не видит нетронутых веток, — но PR ветки, на которой
+  агент работает, потребуется привести к конвенции.
 - Серверные линтеры (commit-lint, PR-title-check) не переизобретаем:
   если они есть, локальная валидация отключается полем конфига.
 - Конфиг per-project; глобального пользовательского уровня нет.
@@ -145,11 +150,13 @@
 - [ ] AC-4: `/plan` создаёт issues с label типа task (labels в репо
       создаются при отсутствии); `/work` определяет тип по label и
       применяет правила типа; issue без label обрабатывается как task.
-- [ ] AC-5 (ждёт #47): при `commitStyle=conventional` bash-guard отклоняет
-      `gh pr create` с заголовком, не соответствующим
-      `<commitType>[(scope)]: <суть> (#N)` или с commitType, не
-      соответствующим label'у issue; при `plain` и без конфига — не
-      вмешивается.
+- [ ] AC-5: при `commitStyle=conventional` PostToolUse-хук после
+      `gh pr create`/`gh pr edit` сверяет фактический заголовок PR и
+      требует исправить (через `gh pr edit`) заголовок, не
+      соответствующий `<commitType>[(scope)]: <суть> (#N)` или с
+      commitType, не соответствующим label'у issue; при `plain` и без
+      конфига — не вмешивается. Валидируется состояние PR, а не текст
+      команды (ADR-004: PreToolUse-парсинг shell-команд отклонён).
 - [ ] AC-6 (ждёт #48): `/project-init` в новом репозитории настраивает сервер по
       конфигу: allowed merge method выводится из пары `squash` ×
       `branchUpdate` (true→squash-merge; false+rebase→rebase-merge;

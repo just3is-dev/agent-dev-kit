@@ -206,6 +206,7 @@ issue → ветка issue-N-слаг → падающие тесты из DoD �
 | `post-edit-check` | После каждого Edit/Write | `scripts/check <файл>`; ошибки возвращаются агенту с требованием исправить |
 | `stop-test` | Агент завершает работу | `scripts/test`; красные тесты не дают закончить. Бегут только при изменениях в рабочем дереве; успешный прогон кэшируется по хэшу диффа |
 | `bash-guard` | Перед каждой Bash-командой | Запрещает `git commit --no-verify`, force push в main/master и `gh pr merge` вопреки `policies.merge` (дефолт `agent-after-approve`: merge только для ready-PR, т.е. после APPROVE; `human-review-required` — плюс человеческий approve на PR; `human-only` — запрет всегда; непроверяемый статус или неизвестное значение политики = запрет). Перед `git commit` сканирует изменения на секреты (ключи AWS/GitHub/Slack/Google, `sk-*`, приватные ключи) и блокирует коммит `.env` |
+| `pr-title-check` | После `gh pr create`/`gh pr edit` | При `conventions.commitStyle=conventional` сверяет фактический заголовок PR (`gh pr view`) с форматом `<commitType>[(scope)]: <суть> (#N)` и label'ом issue (`types.*` конфига); нарушение возвращается агенту с требованием исправить через `gh pr edit`. Выключается `conventions.externalTitleLint=true` |
 
 Плюс серверный гейт: `/project-init` предлагает включить branch protection —
 merge в main только через PR с зелёным CI, прямые пуши запрещены. Его не

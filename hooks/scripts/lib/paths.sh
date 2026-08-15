@@ -43,3 +43,38 @@ adk_logs_dir() {
 adk_notify_send() {
   "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" "$@"
 }
+
+# adk_command_git_root <cmd> <hook_cwd> — git toplevel репозитория, к которому
+# относится Bash-команда хука. Кандидаты в порядке достоверности: явный `cd`
+# в самой команде → cwd сессии из payload хука → корень сессии → PWD хука
+# (корень сессии может не быть репозиторием: сессия открыта выше, проект
+# подключён дополнительной директорией). До этой правки блок был продублирован
+# в bash-guard.sh и pr-title-check.sh (ADR-002: общее — в lib). Печатает
+# пустую строку, если репозиторий не найден.
+adk_command_git_root() {
+  local cmd="$1" hook_cwd="$2" cd_prefix="" d="" root=""
+  case "$cmd" in
+    cd\ *) cd_prefix=$(printf '%s' "$cmd" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'') ;;
+  esac
+  for d in "$cd_prefix" "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    if root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [ -n "$root" ]; then
+      printf '%s\n' "$root"
+      return 0
+    fi
+  done
+  printf '%s\n' ""
+}
+
+# adk_command_repo_flag <cmd> — значение первого -R/--repo в команде (пусто,
+# если флага нет). Текстовая эвристика: ложное совпадение (например, grep -R)
+# даёт нерабочее значение repo, и вызывающие фейлятся открыто — приемлемо.
+adk_command_repo_flag() {
+  printf '%s' "$1" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//'
+}
+
+# adk_command_pr_number <cmd> <подкоманды-ERE> — явный номер PR сразу после
+# `gh pr <подкоманда>` (пусто, если команда без номера, например gh pr create).
+adk_command_pr_number() {
+  printf '%s' "$1" | grep -Eo "gh +pr +($2) +[0-9]+" | grep -Eo '[0-9]+' | head -1
+}
