@@ -101,7 +101,9 @@ SPEC-002). `types.task.label` читает `/plan`: при создании issu
 issue #45). `/work` читает labels issue, определяет тип по совпадению с
 `types.<имя>.label` (нет label или label неизвестен — тип `task`),
 применяет правила типа на реализации и ставит `commitType` типа в
-заголовок PR (AC-4, issue #46).
+заголовок PR (AC-4, issue #46). `types.<имя>.requiredFields` читает
+`/project-init`: из них генерируются тела шаблонов
+`.github/ISSUE_TEMPLATE/*` (AC-6, issue #49).
 
 | Тип | `label` | `commitType` | `requiredFields` |
 |---|---|---|---|
