@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Контракт agent-dev-kit: автоформат. Молча правит что может;
+# оставшееся — забота scripts/check.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+
+sources() {
+  find . -name '*.swift' \
+    -not -path '*/.build/*' \
+    -not -path '*/DerivedData/*' \
+    -not -path '*/Pods/*' \
+    -not -path '*/.git/*'
+}
+
+targets=()
+if [ $# -gt 0 ]; then
+  for f in "$@"; do
+    case "$f" in
+      *.swift) [ -f "$f" ] && targets+=("$f") ;;
+    esac
+  done
+else
+  while IFS= read -r f; do targets+=("$f"); done < <(sources)
+fi
+
+[ ${#targets[@]} -gt 0 ] || exit 0
+swift format --in-place "${targets[@]}"

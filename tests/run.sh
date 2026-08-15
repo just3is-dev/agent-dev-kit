@@ -1491,13 +1491,105 @@ rm "$WIRE/scripts/ac-check"
 assert_exit "AC-4: contract check: без scripts/ac-check — прежнее поведение, непокрытый AC не блокирует" 0 $?
 
 # ── Шаблоны и project-init.md подключают ac-check (issue #7) ────────────────
-for t in nextjs nestjs python-service monorepo; do
+for t in nextjs nestjs python-service swift-ios monorepo; do
   check_content=$(cat "$KIT/templates/$t/scripts/check")
   assert_contains "AC-4: templates/$t/scripts/check содержит вызов ac-check в полном прогоне" "$check_content" 'scripts/ac-check'
 done
 
 project_init_content=$(cat "$KIT/commands/project-init.md")
 assert_contains "AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check" "$project_init_content" 'scripts/ac-check'
+
+# ── Шаблон swift-ios: поведение контрактных скриптов (issue #70) ────────────
+# Стаб swift на PATH — тесты гоняются без тулчейна Xcode; PATH сужен до
+# системных директорий, чтобы xcodegen с машины не подмешивался.
+SIOS="$TMP/swiftios-proj"
+SBIN="$TMP/swiftios-bin"
+mkdir -p "$SIOS" "$SBIN"
+cp -R "$KIT/templates/swift-ios/scripts" "$SIOS/scripts"
+cat > "$SBIN/swift" <<'EOF'
+#!/usr/bin/env bash
+echo "SWIFT_STUB $*"
+case "$1" in
+  test)
+    case "${SWIFT_STUB_TEST_MODE:-pass}" in
+      notests) echo "error: no tests found; create a target in the 'Tests' directory"; exit 1 ;;
+      fail) echo "Test Case 'X' failed"; exit 1 ;;
+      *) exit 0 ;;
+    esac ;;
+  build)
+    if [ "${SWIFT_STUB_BUILD_MODE:-pass}" = "fail" ]; then
+      echo "error: cannot convert value"
+      exit 1
+    fi ;;
+esac
+exit 0
+EOF
+chmod +x "$SBIN/swift"
+SPATH="$SBIN:/usr/bin:/bin"
+
+# голый проект: нет исходников, пакетов и .xcodeproj — check/test молча зелёные
+(cd "$SIOS" && PATH="$SPATH" ./scripts/check >/dev/null 2>&1)
+assert_exit "issue #70: swift-ios: check на голом проекте — exit 0" 0 $?
+(cd "$SIOS" && PATH="$SPATH" ./scripts/test >/dev/null 2>&1)
+assert_exit "issue #70: swift-ios: test на голом проекте — exit 0" 0 $?
+
+# падающие тесты пакета роняют гейт независимо от раскладки каталогов
+# (репро блокера круга 1 PR #71: пакет без каталога Tests/ молча пропускался)
+mkdir -p "$SIOS/Packages/Engine/Sources"
+echo "// manifest" > "$SIOS/Packages/Engine/Package.swift"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=fail ./scripts/test 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: падающие тесты пакета роняют scripts/test (без каталога Tests/)" 1 "$sios_st"
+assert_contains "issue #70: swift-ios: вывод упавших тестов доходит до гейта" "$sios_out" "failed"
+
+# пакет без тест-таргетов: «no tests found» — не провал (контракт)
+(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=notests ./scripts/test >/dev/null 2>&1)
+assert_exit "issue #70: swift-ios: «no tests found» пакета — не провал, exit 0" 0 $?
+
+# check по файлу пакета собирает этот пакет — ошибка типов ловится
+# PostToolUse-гейтом, а не только полным прогоном (круг 1 PR #71)
+echo "let x = 1" > "$SIOS/Packages/Engine/Sources/E.swift"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_BUILD_MODE=fail ./scripts/check Packages/Engine/Sources/E.swift 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: check <файл пакета> — ошибка типов пакета роняет гейт" 1 "$sios_st"
+assert_contains "issue #70: swift-ios: собирается именно пакет переданного файла" "$sios_out" "build --package-path Packages/Engine"
+
+# файл вне пакетов: только линт, сборка не зовётся (типы таргетов — ADR-006)
+mkdir -p "$SIOS/App"
+echo "let y = 2" > "$SIOS/App/A.swift"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_BUILD_MODE=fail ./scripts/check App/A.swift 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: check <файл вне пакетов> — линт без сборки, exit 0" 0 "$sios_st"
+assert_not_contains "issue #70: swift-ios: для файла вне пакетов swift build не вызывается" "$sios_out" "build --package-path"
+
+# project.yml без xcodegen на PATH — громкая ошибка, не молчаливый пропуск smoke
+touch "$SIOS/project.yml"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" ./scripts/test 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: project.yml без xcodegen — громкая ошибка" 1 "$sios_st"
+assert_contains "issue #70: swift-ios: ошибка называет xcodegen" "$sios_out" "xcodegen"
+rm "$SIOS/project.yml"
+
+# шум xcodebuild в stderr на успешном пути не ломает разбор списка схем
+# (круг 2 PR #71: 2>&1 подмешивал stderr в JSON → JSONDecodeError на
+# здоровом проекте)
+mkdir -p "$SIOS/Demo.xcodeproj"
+cat > "$SBIN/xcodebuild" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *-list*)
+    echo '{"project":{"schemes":["Demo"]}}'
+    echo "DVTPlugInLoading: Requested but did not find extension point" >&2
+    exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$SBIN/xcodebuild"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" ./scripts/test 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: stderr-шум xcodebuild -list не ломает smoke здорового проекта" 0 "$sios_st"
+assert_not_contains "issue #70: swift-ios: разбор схем не падает JSONDecodeError от шума" "$sios_out" "JSONDecodeError"
+rm -rf "$SIOS/Demo.xcodeproj" "$SBIN/xcodebuild"
 
 # scripts/check самого кита (dogfood, issue #9) — по образцу проверки выше
 # для templates/*/scripts/check; раньше не было теста, что строка вызова

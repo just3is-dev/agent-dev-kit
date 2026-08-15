@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# macOS-минуты тарифицируются с множителем 10× (бесплатного пула приватного
+# репозитория хватает на ~200 macOS-минут в месяц) — устаревшие прогоны той
+# же ветки отменяются, чтобы не платить за неактуальные сборки.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode
+        # Версия НЕ фиксируется намеренно: GitHub держит рантаймы симуляторов
+        # только для Xcode по умолчанию в образе — переключение xcode-select
+        # на другую версию оставляет сборку без симуляторных рантаймов.
+        # Плата: тулчейн CI может разъехаться с локальным; фактическая версия
+        # печатается в лог, расхождение видно по правилам swift-format.
+        run: xcodebuild -version
+
+      - name: XcodeGen
+        if: ${{ hashFiles('project.yml') != '' }}
+        run: brew install xcodegen
+
+      - run: ./scripts/check
+      - run: ./scripts/test

@@ -49,7 +49,8 @@
 
 Запускается в пустой директории или поверх существующего проекта:
 
-- спросит стек (`nextjs` / `nestjs` / `python-service` / другой) и описание;
+- спросит стек (`nextjs` / `nestjs` / `python-service` / `swift-ios` /
+  другой) и описание;
 - спросит, как устроен процесс, и запишет плоские атрибуты процесса в
   `adk.config.json` в корне проекта (перечень и дефолты —
   [docs/config.md](docs/config.md)). Пресеты «личный» / «командный» /
@@ -270,6 +271,8 @@ templates/
   nextjs/         scripts/check|test|fix (tsc, eslint, vitest) + ci.yml
   nestjs/         то же, тесты через jest
   python-service/ ruff, mypy, pytest (окружение uv) + ci.yml
+  swift-ios/      swift format (lint+fix, Xcode 16+), swift build/test по
+                  SPM-пакетам, smoke xcodebuild + ci.yml (macOS) и .swift-format
   monorepo/       корневые скрипты-диспетчеры по пакетам + ci.yml
 docs/contract.md  контракт команд проекта
 docs/config.md    таблица атрибутов adk.config.json и их дефолтов; сам
@@ -289,7 +292,7 @@ scripts/, tests/  собственный контракт кита: смоук-�
 ## Статус (roadmap)
 
 - [x] Фаза 1: контракт команд + хуки-гейты
-- [x] Фаза 2: `/project-init`, шаблоны стеков (nextjs / nestjs / python-service), spec/adr-шаблоны, CI
+- [x] Фаза 2: `/project-init`, шаблоны стеков (nextjs / nestjs / python-service; позже — swift-ios, обкатан на живом iOS-проекте), spec/adr-шаблоны, CI
 - [x] Фаза 3: скиллы (decompose, tdd, adr, stack-choice), агенты planner / reviewer, `/spec` `/plan` `/work` с GitHub issues
 - [x] Фаза 4: e2e-обкатка — `claude plugin validate` чистый; на живом TS-проекте (tsc+eslint+vitest) проверено: контрактные скрипты работают, хук ловит ошибку типов после правки, Stop-гейт блокирует завершение с падающим тестом
 - [x] Фаза 5: монорепа — корневой контракт-диспетчер (`templates/monorepo/`), ветка `monorepo` в `/project-init`; проверено на фейковой монорепе: маршрутизация по пакетам, падения пробрасываются, хуки работают без изменений
