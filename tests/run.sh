@@ -884,6 +884,7 @@ assert_contains "AC-8: review.md перед ready определяет отст�
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
 assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'без перегона гейтов'
 assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
+assert_contains "AC-8: review.md — дерево возвращается на исходную ветку в любом исходе" "$review_ready" 'верни рабочее дерево на исходную ветку'
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
