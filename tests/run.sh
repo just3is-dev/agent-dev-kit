@@ -801,6 +801,9 @@ check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация �
 check_ac_doc AC-8 "work.md: шаг 6 объявлен каноническим рецептом актуализации" \
   "$KIT/commands/work.md" "Рецепт актуализации ниже — канонический"
 assert_contains "AC-8: autopilot.md ссылается на канонический рецепт шага 6 /work" "$ap_merge" 'рецепт — шаг 6 `/work`'
+# AC-8 называет /autopilot поимённо: способ актуализации остаётся привязан к
+# conventions.branchUpdate и в нём — якорь на текст, чтение конфига — в каноне
+assert_contains "AC-8: autopilot.md актуализирует способом из conventions.branchUpdate" "$ap_merge" 'conventions\.branchUpdate'
 assert_not_contains "AC-8: autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$ap_merge" 'conventions\.branchUpdate rebase rebase,merge'
 check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
   "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
@@ -815,7 +818,7 @@ assert_contains "AC-8: review.md ссылается на канонически�
 assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <PR>'
 assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
-assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'обязательный перегон гейтов'
+assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'переводить в ready без него запрещено'
 assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
 assert_contains "AC-8: review.md — дерево возвращается на исходную ветку в любом исходе" "$review_ready" 'верни рабочее дерево на исходную ветку'
 
