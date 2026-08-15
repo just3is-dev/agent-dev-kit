@@ -1941,11 +1941,17 @@ check_ac_doc AC-6 "README описывает производный метод �
 # люди в команде создают issues в том же формате, что и агенты; иначе /work,
 # читающий тип по label и ожидающий обязательные поля типа, их не найдёт.
 check_ac_doc AC-6 "project-init.md генерирует .github/ISSUE_TEMPLATE/* из блока types" \
-  "$PI_MD" ".github/ISSUE_TEMPLATE/"
-check_ac_doc AC-6 "project-init.md: имя и label шаблона — из types.<имя>.label" \
+  "$PI_MD" "одному шаблону на каждый тип из \`types.*\`"
+check_ac_doc AC-6 "project-init.md читает атрибуты типов через adk-config.sh, а не переписывает из доков" \
+  "$PI_MD" "adk-config.sh types.bug.label type:bug"
+check_ac_doc AC-6 "project-init.md: имя файла шаблона — имя типа, а не label с двоеточием" \
+  "$PI_MD" "имя файла — имя типа"
+check_ac_doc AC-6 "project-init.md: name и labels во front matter — из types.<имя>.label" \
   "$PI_MD" "types.<имя>.label"
 check_ac_doc AC-6 "project-init.md: тело шаблона — из полей types.<имя>.requiredFields" \
   "$PI_MD" "types.<имя>.requiredFields"
+check_ac_doc AC-6 "project-init.md: пустой requiredFields (дефолтный consolidate) — свободная секция, не пустой шаблон" \
+  "$PI_MD" "пустой или отсутствующий \`requiredFields\`"
 check_ac_doc AC-6 "project-init.md: шаблон bug содержит строку «Сбежал от: <гейт>» (её агрегирует /consolidate)" \
   "$PI_MD" "Сбежал от: <гейт>"
 
