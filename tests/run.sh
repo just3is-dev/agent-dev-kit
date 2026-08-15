@@ -767,6 +767,9 @@ check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPE
 # проверяют состояние PR относительно main; неактуальная ветка
 # актуализируется способом из conventions.branchUpdate, после чего гейты
 # перегоняются обязательно — merge/ready без перегона запрещён инструкцией.
+# Рецепт канонизирован в шаге 6 work.md (issue #75): якоря самого рецепта
+# проверяются на work.md, у /autopilot и /review — только их отличия
+# (checkout, refspec, ветки отказа, возврат дерева) плюс ссылка на канон.
 work_ready=$(md_section "$KIT/commands/work.md" '^6\. \*\*' '^7\. \*\*')
 ap_merge=$(md_section "$KIT/commands/autopilot.md" '^3\. \*\*' '^4\. \*\*')
 assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$work_ready" 'BEHIND'
@@ -774,10 +777,10 @@ assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" 
 assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$ap_merge" 'BEHIND'
 assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICTING" "$ap_merge" 'CONFLICTING'
 # Якоря механики (круг 2 ревью PR #67: фиксы без якорей переживают откат):
-# отставание — фактом из git, не mergeStateStatus (BEHIND у GitHub виден
-# только при required_status_checks.strict); в автопилоте — явный checkout
-# и refspec; fetch без «origin main» (текст в одной команде с force-push
-# ложно триггерит гейт bash-guard); отказы актуализации определены.
+# отставание — фактом из git, не mergeStateStatus (обоснование — в каноне,
+# work.md шаг 6); в автопилоте — явный checkout и refspec; fetch без
+# «origin main» (текст в одной команде с force-push ложно триггерит гейт
+# bash-guard); отказы актуализации определены.
 assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_ready" 'git rev-list --count HEAD\.\.origin/main'
 assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$ap_merge" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
 assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$ap_merge" 'gh pr checkout <PR>'
@@ -791,11 +794,17 @@ assert_contains "AC-8: autopilot.md — конфликт при актуализ
 assert_contains "AC-8: autopilot.md — конфликт при актуализации — застревание с причиной" "$ap_merge" 'reason="конфликт при актуализации"'
 assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание с причиной" "$ap_merge" 'reason="гейты красные после актуализации"'
 assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_ready" 'conventions\.branchUpdate rebase'
-assert_contains "AC-8: autopilot.md читает conventions.branchUpdate с дефолтом rebase" "$ap_merge" 'conventions\.branchUpdate rebase'
 check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
   "$KIT/commands/work.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
-check_ac_doc AC-8 "autopilot.md: при branchUpdate=merge актуализация через git merge, не rebase" \
-  "$KIT/commands/autopilot.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
+# Канон живёт в одном месте: work.md называет себя каноном, autopilot.md и
+# review.md ссылаются на него, а не переписывают чтение конфига заново
+check_ac_doc AC-8 "work.md: шаг 6 объявлен каноническим рецептом актуализации" \
+  "$KIT/commands/work.md" "Рецепт актуализации ниже — канонический"
+assert_contains "AC-8: autopilot.md ссылается на канонический рецепт шага 6 /work" "$ap_merge" 'рецепт — шаг 6 `/work`'
+# AC-8 называет /autopilot поимённо: способ актуализации остаётся привязан к
+# conventions.branchUpdate и в нём — якорь на текст, чтение конфига — в каноне
+assert_contains "AC-8: autopilot.md актуализирует способом из conventions.branchUpdate" "$ap_merge" 'conventions\.branchUpdate'
+assert_not_contains "AC-8: autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$ap_merge" 'conventions\.branchUpdate rebase rebase,merge'
 check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
   "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
 check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
@@ -805,10 +814,11 @@ assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) �
 # /review — второй путь в ready: та же проверка актуальности (issue #68,
 # fast-follow из вердикта PR #67)
 review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
+assert_contains "AC-8: review.md ссылается на канонический рецепт шага 6 /work" "$review_ready" 'каноническому рецепту шага 6'
 assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <PR>'
 assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
-assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'без перегона гейтов'
+assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'переводить в ready без него запрещено'
 assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
 assert_contains "AC-8: review.md — дерево возвращается на исходную ветку в любом исходе" "$review_ready" 'верни рабочее дерево на исходную ветку'
 
