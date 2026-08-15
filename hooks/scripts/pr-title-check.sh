@@ -36,7 +36,6 @@ fix_required() {
   exit 2
 }
 
-. "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
 hook_cwd=$(json_field "$payload" "cwd" "")
 git_root=$(adk_command_git_root "$cmd" "$hook_cwd")
 

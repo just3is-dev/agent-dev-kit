@@ -805,7 +805,7 @@ assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) �
 # /review — второй путь в ready: та же проверка актуальности (issue #68,
 # fast-follow из вердикта PR #67)
 review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
-assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <N>'
+assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <PR>'
 assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
 assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'без перегона гейтов'
@@ -1859,6 +1859,36 @@ for typ in "type:task" "type:bug" "type:fast-follow" "type:consolidate"; do
 done
 check_ac_doc AC-1 "docs/config.md документирует поведение при неизвестном значении атрибута (откат не молчаливый)" \
   "$CONFIG_DOC" "молча использует дефолт как ни в чём не бывало"
+
+# Карта дефолтных типов живёт и в таблице docs/config.md, и в python-словаре
+# pr-title-check.sh. Инструкции команд сшиты с таблицей doc-тестами выше,
+# словарь хука — нет: разъехавшись, он требовал бы один commitType, пока доки
+# и /work обещают другой. Сверяем все четыре пары label/commitType.
+type_map_diff=$(python3 -c '
+import re, sys
+doc_path, hook_path = sys.argv[1:3]
+doc = {}
+for line in open(doc_path, encoding="utf-8"):
+    m = re.match(r"^\| `(\w+)` \| `([^`]+)` \| `([^`]+)` \|", line)
+    if m:
+        doc[m.group(1)] = (m.group(2), m.group(3))
+hook = {}
+block = re.search(r"^types = \{$(.*?)^\}$", open(hook_path, encoding="utf-8").read(), re.M | re.S)
+if block:
+    for name, label, ctype in re.findall(
+            r"\"(\w+)\": \{\"label\": \"([^\"]+)\", \"commitType\": \"([^\"]+)\"\}", block.group(1)):
+        hook[name] = (label, ctype)
+for name in ("task", "bug", "fastFollow", "consolidate"):
+    d, h = doc.get(name), hook.get(name)
+    if d is None or h is None or d != h:
+        print("%s: docs/config.md %s, pr-title-check.sh %s;" % (name, d, h))
+' "$CONFIG_DOC" "$HOOKS/pr-title-check.sh")
+if [ -z "$type_map_diff" ]; then
+  echo "PASS: AC-5: карта дефолтных типов docs/config.md совпадает со словарём pr-title-check.sh"
+else
+  echo "FAIL: AC-5: карта дефолтных типов разошлась — $type_map_diff"
+  fails=$((fails + 1))
+fi
 
 # ── /project-init заполняет adk.config.json пресетами-ярлыками (issue #42, AC-1) ─
 # Пресеты — только наборы готовых ответов в диалоге init (SPEC-002): в файл

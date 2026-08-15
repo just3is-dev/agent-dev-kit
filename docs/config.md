@@ -7,6 +7,9 @@
 
 Читатель — `hooks/scripts/lib/config.sh` (sourceable для хуков) и его
 CLI-обёртка `hooks/scripts/adk-config.sh` (для инструкций команд).
+Переменная окружения `ADK_CONFIG_FILE` задаёт файл конфига явным путём и
+сильнее корня проекта (`<корень>/adk.config.json`): она нужна тестам и
+случаю, когда `/project-init` работает по чужому пути, а не из корня.
 **Отсутствие файла или отдельного атрибута = дефолт этого атрибута.**
 Это не просто дефолт по вкусу — каждый дефолт ниже осознанно выбран так,
 чтобы воспроизводить сегодняшнее поведение кита. Проект без
@@ -37,12 +40,19 @@ exit-код; тот, кому не важна (значение не из зак
 
 ## Таблица атрибутов
 
+Часть атрибутов помечена «зарезервирован спекой, потребителя пока нет»:
+они объявлены в SPEC-002, читатель их отдаёт, но ни одна команда и ни один
+хук их не спрашивает — соответствующее поведение сегодня зашито в текст
+инструкций. Менять значение такого атрибута в `adk.config.json`
+бессмысленно: на поведение кита это не влияет. Подключение — отдельными
+задачами.
+
 ### `policies` — кто и что может
 
 | Атрибут | Тип / допустимые значения | Дефолт | Какое сегодняшнее поведение воспроизводит |
 |---|---|---|---|
 | `policies.merge` | `agent-after-approve` \| `human-review-required` \| `human-only` | `agent-after-approve` | Ready-PR мержит кто угодно, включая `/autopilot`, — сегодня ничего это не ограничивает. |
-| `policies.review.maxRounds` | число | `2` | `/work` и `/autopilot` останавливаются и зовут человека после двух кругов ревью без APPROVE (см. `commands/work.md`, шаг 6). |
+| `policies.review.maxRounds` | число | `2` | Зарезервирован спекой, потребителя пока нет. Сегодняшний лимит «два круга ревью без APPROVE → зовём человека» зашит текстом в `commands/work.md` (шаг 6) и `commands/autopilot.md`; атрибут не читается. |
 | `policies.review.humanApprovalRequired` | bool | `false` | Вердикт даёт reviewer-агент; человек не обязан approve'ить PR отдельно. |
 | `policies.autopilot.enabled` | bool | `true` | `/autopilot` стартует без ограничений; `false` — отказ старта без побочных эффектов (читается в `commands/autopilot.md`, «Политика прогона»). |
 | `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge --squash --delete-branch`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). |
@@ -69,9 +79,9 @@ CODEOWNERS) — без этого поле пустое даже при живо
 | `conventions.squash` | bool | `true` | Squash уже внедрён как дефолт в командах и серверно (см. «Решённые вопросы» SPEC-002). |
 | `conventions.branchUpdate` | `rebase` \| `merge` | `rebase` | Способ актуализации отставшей ветки (AC-8, issue #52): `/work` перед переводом PR в ready и `/autopilot` перед merge определяют отставание фактом из git (`git rev-list --count` до `origin/main`; `mergeStateStatus=BEHIND` GitHub отдаёт лишь при `required_status_checks.strict`, поэтому статусам не доверяем); отставшая ветка → rebase (дефолт) или merge из этого атрибута, затем обязательный перегон гейтов; конфликт (`mergeable=CONFLICTING` или конфликт при самой актуализации) → человек. Участвует и в производной allowed merge methods (см. ниже). |
 | `conventions.commitStyle` | `conventional` \| `plain` | `plain` | Заголовки PR сегодня — «глагол + результат (#N)», не формат `<type>(scope): summary` (`commands/work.md`, шаг 5). |
-| `conventions.language` | строка (код языка) | `ru` | Промпты и коммуникация кита сегодня на русском. |
-| `conventions.branchPattern` | строка-шаблон с `{n}`/`{slug}` | `issue-{n}-{slug}` | Дефолт из самой спеки; совпадает с сегодняшним `commands/work.md` (шаг 2). |
-| `conventions.attribution` | bool | `true` | Trailer `Co-Authored-By` сегодня добавляется в коммиты по умолчанию (стандартное поведение агента), конфиг не отключает это неявно. |
+| `conventions.language` | строка (код языка) | `ru` | Зарезервирован спекой, потребителя пока нет. Промпты и коммуникация кита сегодня на русском текстом самих команд и скиллов; атрибут не читается. |
+| `conventions.branchPattern` | строка-шаблон с `{n}`/`{slug}` | `issue-{n}-{slug}` | Зарезервирован спекой, потребителя пока нет. Имя ветки задаёт текст `commands/work.md` (шаг 2), и оно совпадает с этим дефолтом; атрибут не читается. |
+| `conventions.attribution` | bool | `true` | Зарезервирован спекой, потребителя пока нет. Trailer `Co-Authored-By` добавляется стандартным поведением агента, а не китом; атрибут не читается и ничего не отключает. |
 | `conventions.externalTitleLint` | bool | `false` | Отключает локальную валидацию заголовка PR (PostToolUse-хук `pr-title-check`, ADR-004) при `commitStyle=conventional` (issue #47, AC-5), если у проекта уже есть серверный линтер (commit-lint, PR-title-check) — переизобретать его не нужно (раздел «Границы» SPEC-002). Дефолт `false`: локальная валидация включена. |
 
 Серверный метод приземления GitHub — производная пары `conventions.squash`
