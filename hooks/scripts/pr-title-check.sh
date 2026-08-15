@@ -126,20 +126,17 @@ case "$verdict" in
     fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует формат «<commitType>[(scope)]: <суть> (#N)», где commitType — один из: ${verdict#format }. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально)." ;;
 esac
 
-# Labels issue: env-обход → -R из команды (без отката на локальный
-# репозиторий: issue #N чужого repo нельзя искать в локальном — labels
-# другого issue дали бы ложный mismatch) → репозиторий команды.
-# Недоступность = сверка с label пропускается (формат уже проверен).
+# Labels issue: env-обход → adk_gh_issue_fields (-R из команды → git-корень
+# команды, без отката на локальный репозиторий при явном -R — issue #N
+# чужого repo нельзя искать в локальном, labels другого issue дали бы
+# ложный mismatch — см. комментарий у adk_gh_issue_fields в lib/paths.sh).
+# Код возврата функции различает «issue без labels» (rc=0, пустой список →
+# ниже трактуется как task) от «прочитать не удалось» (rc≠0 → unavailable,
+# сверка с label пропускается — формат уже проверен). Перевод в CSV
+# остаётся здесь же, в хуке.
 if [ -n "${ADK_GUARD_ISSUE_LABELS+x}" ]; then
   labels="$ADK_GUARD_ISSUE_LABELS"
-elif [ -n "$repo_flag" ]; then
-  if labels_raw=$(gh issue view "$issue_n" -R "$repo_flag" --json labels -q '.labels[].name' 2>/dev/null); then
-    labels=$(printf '%s' "$labels_raw" | tr '\n' ',')
-  else
-    labels="unavailable"
-  fi
-elif [ -n "$git_root" ] \
-  && labels_raw=$(cd "$git_root" && gh issue view "$issue_n" --json labels -q '.labels[].name' 2>/dev/null); then
+elif labels_raw=$(adk_gh_issue_fields "$issue_n" "$repo_flag" "$git_root" labels '.labels[].name'); then
   labels=$(printf '%s' "$labels_raw" | tr '\n' ',')
 else
   labels="unavailable"
