@@ -50,6 +50,15 @@ check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <ис�
   fi
 }
 
+md_section() { # md_section <файл> <начало-ERE> <конец-ERE, либо $ — до конца файла>
+  # Срез куска markdown-инструкции (шага, раздела) с той же нормализацией
+  # переносов, что и в check_ac_doc: результат ищут через assert_contains.
+  # Нижняя граница обязательна — срез без неё тянет файл до конца (PR #69).
+  local end="$3"
+  [ "$end" = '$' ] || end="/$3/"
+  sed -nE "/$2/,${end}p" "$1" | tr '\n' ' ' | tr -s ' '
+}
+
 count_lines() { # count_lines <файл> — обёртка над wc -l для сравнения через assert_exit
   wc -l < "$1" | tr -d ' '
 }
@@ -758,8 +767,8 @@ check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPE
 # проверяют состояние PR относительно main; неактуальная ветка
 # актуализируется способом из conventions.branchUpdate, после чего гейты
 # перегоняются обязательно — merge/ready без перегона запрещён инструкцией.
-work_ready=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$KIT/commands/work.md" | tr '\n' ' ' | tr -s ' ')
-ap_merge=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$KIT/commands/autopilot.md" | tr '\n' ' ' | tr -s ' ')
+work_ready=$(md_section "$KIT/commands/work.md" '^6\. \*\*' '^7\. \*\*')
+ap_merge=$(md_section "$KIT/commands/autopilot.md" '^3\. \*\*' '^4\. \*\*')
 assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$work_ready" 'BEHIND'
 assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" "$work_ready" 'CONFLICTING'
 assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$ap_merge" 'BEHIND'
@@ -795,7 +804,7 @@ assert_contains "AC-8: work.md — конфликт при актуализац�
 assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$ap_merge" 'конфликт с main требует человека.*needs-human'
 # /review — второй путь в ready: та же проверка актуальности (issue #68,
 # fast-follow из вердикта PR #67)
-review_ready=$(sed -n '/^5\. \*\*/,/^6\. \*\*/p' "$KIT/commands/review.md" | tr '\n' ' ' | tr -s ' ')
+review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
 assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <N>'
 assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
@@ -805,9 +814,9 @@ assert_contains "AC-8: review.md — дерево возвращается на 
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
-step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
-step6=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
-step7=$(sed -n '/^7\. \*\*/,$p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+step1=$(md_section "$WORKMD" '^1\. \*\*' '^2\. \*\*')
+step6=$(md_section "$WORKMD" '^6\. \*\*' '^7\. \*\*')
+step7=$(md_section "$WORKMD" '^7\. \*\*' '$')
 
 assert_contains "AC-1: work.md шаг 1 логирует event=start" "$step1" 'adk-log\.sh.*event=start'
 
@@ -836,7 +845,7 @@ assert_contains "AC-2: work.md шаг 7 — при human-политиках от
 autopilot_text=$(tr '\n' ' ' < "$KIT/commands/autopilot.md" | tr -s ' ')
 assert_contains "AC-2: autopilot.md сверяет формулировку сводки с policies.merge" "$autopilot_text" 'policies\.merge'
 assert_contains "AC-2: autopilot.md — заблокированные политикой ready-PR идут в сводку как «ждут человека», не «смержено»" "$autopilot_text" 'ждут человека'
-autopilot_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$KIT/commands/autopilot.md" | tr '\n' ' ' | tr -s ' ')
+autopilot_step3=$(md_section "$KIT/commands/autopilot.md" '^3\. \*\*' '^4\. \*\*')
 assert_contains "AC-2: autopilot.md шаг 3 — при human-политиках ready-PR не мержится (исключение названо в самом шаге)" "$autopilot_step3" 'policies\.merge'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает work.md
@@ -882,9 +891,9 @@ assert_contains "AC-1: work.md-смоук: adk-stats.sh на журнале с r
 
 # ── /autopilot: события журнала (AC-2) ───────────────────────────────────────
 AUTOMD="$KIT/commands/autopilot.md"
-cycle_preamble=$(sed -n '/^## Цикл/,/^1\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
-step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
-finish_section=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+cycle_preamble=$(md_section "$AUTOMD" '^## Цикл' '^1\. \*\*')
+step3=$(md_section "$AUTOMD" '^3\. \*\*' '^4\. \*\*')
+finish_section=$(md_section "$AUTOMD" '^## Завершение' '$')
 
 assert_contains "AC-2: autopilot.md логирует event=run_start перед циклом (issue #21: раньше не логировался вовсе)" "$cycle_preamble" 'adk-log\.sh.*event=run_start'
 
@@ -938,8 +947,8 @@ assert_exit "AC-2: autopilot.md-смоук: записи содержат issue/
 # конфига через adk-config.sh с дефолтами спеки (отсутствие конфига =
 # сегодняшнее поведение: лимит 5, merge ready-PR) и все три ветки
 # политики: отказ старта, «ждут человека» вместо merge, лимит из конфига.
-policy_section=$(sed -n '/^## Политика прогона/,/^## Параметры/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
-params_section=$(sed -n '/^## Параметры/,/^## Цикл/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+policy_section=$(md_section "$AUTOMD" '^## Политика прогона' '^## Параметры')
+params_section=$(md_section "$AUTOMD" '^## Параметры' '^## Цикл')
 
 assert_contains "AC-3: autopilot.md читает policies.autopilot.enabled через adk-config.sh (дефолт true — без конфига автопилот работает)" \
   "$policy_section" 'adk-config\.sh policies\.autopilot\.enabled true'
@@ -964,8 +973,8 @@ check_ac_doc AC-3 "autopilot.md: enabled=false — отказ объясняет
   "$AUTOMD" "policies.autopilot.enabled=false"
 
 # canMerge=false — ready-PR не мержатся, а собираются в список «ждут человека»
-step3_ac3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
-finish_ac3=$(sed -n '/^## Завершение/,$p' "$AUTOMD" | tr '\n' ' ' | tr -s ' ')
+step3_ac3=$(md_section "$AUTOMD" '^3\. \*\*' '^4\. \*\*')
+finish_ac3=$(md_section "$AUTOMD" '^## Завершение' '$')
 assert_contains "AC-3: autopilot.md шаг 3 мержит только при canMerge=true" "$step3_ac3" 'canMerge=true'
 assert_contains "AC-3: autopilot.md шаг 3: canMerge=false — ready-PR не мержится, а попадает в «ждут человека»" "$step3_ac3" 'canMerge=false.*ждут человека'
 assert_contains "AC-3: autopilot.md шаг 3: ready-PR без merge логируется result=ready (ADR-003)" "$step3_ac3" 'result=ready'
@@ -993,7 +1002,7 @@ check_ac_doc AC-3 "autopilot.md запрещает обходить блокир
 # отсутствующий label в репо и вешает его на создаваемые issues; тип
 # задаётся только label'ом, из текста issue не выводится.
 PLANMD="$KIT/commands/plan.md"
-plan_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$PLANMD" | tr '\n' ' ' | tr -s ' ')
+plan_step3=$(md_section "$PLANMD" '^3\. \*\*' '^4\. \*\*')
 
 assert_contains "AC-4: plan.md шаг 3 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
   "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
@@ -1012,9 +1021,9 @@ check_ac_doc AC-4 "plan.md: перепланирование не перекле
 # Команда — markdown-инструкция; проверяем, что шаг 1 читает labels issue и
 # сопоставляет их с types.* конфига, шаг 3 применяет правила каждого
 # дефолтного типа, а шаг 5 ставит commitType типа в заголовок PR.
-work_type_step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
-work_type_step3=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
-work_type_step5=$(sed -n '/^5\. \*\*/,/^6\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
+work_type_step1=$(md_section "$WORKMD" '^1\. \*\*' '^2\. \*\*')
+work_type_step3=$(md_section "$WORKMD" '^3\. \*\*' '^4\. \*\*')
+work_type_step5=$(md_section "$WORKMD" '^5\. \*\*' '^6\. \*\*')
 
 assert_contains "AC-4: work.md шаг 1 читает labels issue (gh issue view --json labels)" \
   "$work_type_step1" 'gh issue view.*--json labels'
