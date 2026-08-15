@@ -78,3 +78,20 @@ adk_command_repo_flag() {
 adk_command_pr_number() {
   printf '%s' "$1" | grep -Eo "gh +pr +($2) +[0-9]+" | grep -Eo '[0-9]+' | head -1
 }
+
+# adk_gh_pr_fields <prnum> <repo_flag> <git_root> <json-поля> <jq-выражение> —
+# один вызов `gh pr view` за нужные поля PR. Репозиторий: -R из команды →
+# git-корень команды → ни того, ни другого = запроса нет. Пустой <prnum> —
+# PR текущей ветки. Печатает вывод jq-выражения; пустая строка — «прочитать
+# не удалось» (gh недоступен, PR не найден, репозиторий не определён), что
+# каждый вызывающий трактует по своему правилу. До этой правки блок был
+# продублирован в bash-guard.sh и pr-title-check.sh (ADR-002: общее — в lib).
+adk_gh_pr_fields() {
+  local prnum="$1" repo_flag="$2" git_root="$3" json_fields="$4" jq_q="$5" out=""
+  if [ -n "$repo_flag" ]; then
+    out=$(gh pr view ${prnum:+"$prnum"} -R "$repo_flag" --json "$json_fields" -q "$jq_q" 2>/dev/null) || out=""
+  elif [ -n "$git_root" ]; then
+    out=$(cd "$git_root" && gh pr view ${prnum:+"$prnum"} --json "$json_fields" -q "$jq_q" 2>/dev/null) || out=""
+  fi
+  printf '%s\n' "$out"
+}
