@@ -836,6 +836,47 @@ check_ac_doc AC-7 "consolidate.md собирает баг-issues по label, а 
 check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPEC-002) не теряются молча" \
   "$KIT/commands/consolidate.md" "Переходное состояние: баг-issues"
 
+# ── SPEC-002 AC-8: актуализация отставшей ветки перед ready/merge ────────────
+# /work (перед переводом PR в ready) и /autopilot (перед merge ready-PR)
+# проверяют состояние PR относительно main; неактуальная ветка
+# актуализируется способом из conventions.branchUpdate, после чего гейты
+# перегоняются обязательно — merge/ready без перегона запрещён инструкцией.
+work_ready=$(sed -n '/^6\. \*\*/,/^7\. \*\*/p' "$KIT/commands/work.md" | tr '\n' ' ' | tr -s ' ')
+ap_merge=$(sed -n '/^3\. \*\*/,/^4\. \*\*/p' "$KIT/commands/autopilot.md" | tr '\n' ' ' | tr -s ' ')
+assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$work_ready" 'BEHIND'
+assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" "$work_ready" 'CONFLICTING'
+assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$ap_merge" 'BEHIND'
+assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICTING" "$ap_merge" 'CONFLICTING'
+# Якоря механики (круг 2 ревью PR #67: фиксы без якорей переживают откат):
+# отставание — фактом из git, не mergeStateStatus (BEHIND у GitHub виден
+# только при required_status_checks.strict); в автопилоте — явный checkout
+# и refspec; fetch без «origin main» (текст в одной команде с force-push
+# ложно триггерит гейт bash-guard); отказы актуализации определены.
+assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_ready" 'git rev-list --count HEAD\.\.origin/main'
+assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$ap_merge" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
+assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$ap_merge" 'gh pr checkout <PR>'
+assert_contains "AC-8: autopilot.md — push после rebase с обязательным refspec" "$ap_merge" 'force-with-lease origin <ветка PR>'
+assert_not_contains "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" "$work_ready" 'git fetch origin main'
+assert_not_contains "AC-8: autopilot.md — fetch без «origin main» (тот же ложный триггер)" "$ap_merge" 'git fetch origin main'
+# Якоря семантики, не только команд: остановка/застревание, а не «разберись сам»
+assert_contains "AC-8: work.md — конфликт при самой актуализации прерывается (--abort)" "$work_ready" 'git rebase --abort'
+assert_contains "AC-8: work.md — конфликт при актуализации — остановка и человек, не самодеятельность" "$work_ready" 'остановись и позови пользователя, как при'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации прерывается (--abort)" "$ap_merge" 'git rebase --abort'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации — застревание с причиной" "$ap_merge" 'reason="конфликт при актуализации"'
+assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание с причиной" "$ap_merge" 'reason="гейты красные после актуализации"'
+assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_ready" 'conventions\.branchUpdate rebase'
+assert_contains "AC-8: autopilot.md читает conventions.branchUpdate с дефолтом rebase" "$ap_merge" 'conventions\.branchUpdate rebase'
+check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
+  "$KIT/commands/work.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
+check_ac_doc AC-8 "autopilot.md: при branchUpdate=merge актуализация через git merge, не rebase" \
+  "$KIT/commands/autopilot.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
+check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
+  "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
+check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
+  "$KIT/commands/autopilot.md" "merge без перегона гейтов после актуализации запрещён"
+assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке (не «разреши сам»)" "$work_ready" 'конфликт с main, остановись и позови пользователя'
+assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$ap_merge" 'конфликт с main требует человека.*needs-human'
+
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
 step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
