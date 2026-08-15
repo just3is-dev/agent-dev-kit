@@ -78,21 +78,27 @@ argument-hint: "[номер issue; по умолчанию следующий н
    ревью): `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh issue-<N>
    event=review round=<номер круга> verdict=<APPROVE|REQUEST_CHANGES> ||
    true`. APPROVE — перед переводом в ready проверь актуальность ветки
-   (AC-8 SPEC-002): `gh pr view <PR> --json mergeable,mergeStateStatus`.
-   `mergeStateStatus=BEHIND` (ветка отстала от main) — актуализируй её
-   способом из конфига (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
-   conventions.branchUpdate rebase`): `rebase` (дефолт) — перебазируй
-   (`git fetch origin main && git rebase origin/main`, затем `git push
-   --force-with-lease`); `merge` — влей main в ветку
+   (AC-8 SPEC-002). Факт отставания бери из git, а не из GitHub-статусов
+   (`mergeStateStatus=BEHIND` GitHub отдаёт только при включённом
+   `required_status_checks.strict`): `git fetch origin main &&
+   git rev-list --count HEAD..origin/main` — счётчик больше нуля значит
+   BEHIND, ветка отстала. Конфликтность — `gh pr view <PR> --json
+   mergeable`: `CONFLICTING` — конфликт с main, остановись и позови
+   пользователя, конфликт разрешает человек; `UNKNOWN` — GitHub ещё
+   считает mergeability, повтори запрос. Отставшую ветку актуализируй
+   способом из конфига
+   (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
+   conventions.branchUpdate rebase rebase,merge`; ненулевой exit = опечатка
+   в конфиге, остановись; fetch уже сделан выше): `rebase` (дефолт) —
+   перебазируй (`git rebase origin/main`), затем `git push
+   --force-with-lease origin <ветка PR>`; `merge` — влей main в ветку
    (`git merge origin/main`), затем `git push`. После актуализации
    обязательно перегони гейты (`./scripts/check`, `./scripts/test`) и
    дождись зелёного CI: переводить PR в ready без перегона гейтов после
    актуализации запрещено — зелёные проверки отставшей ветки относятся
-   к устаревшему состоянию кода. `mergeable=CONFLICTING` — конфликт с
-   main: остановись и позови пользователя, конфликт разрешает человек.
-   Ветка актуальна и гейты зелёные — переведи PR из черновика:
-   `gh pr ready <N>`; только этот шаг делает merge возможным.
-   REQUEST_CHANGES — PR остаётся draft:
+   к устаревшему состоянию кода. Ветка актуальна и гейты зелёные —
+   переведи PR из черновика: `gh pr ready <PR>`; только этот шаг делает
+   merge возможным. REQUEST_CHANGES — PR остаётся draft:
    исправь блокеры и «важно», прогони гейты, запусти ревью повторно
    (залогировав второй круг тем же способом); после двух кругов без
    APPROVE — остановись и позови пользователя (PR оставь черновиком —

@@ -77,25 +77,35 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
    `type` — тип задачи по label issue, правило определения — шаг 1
    `/work`, оно здесь не дублируется).
    - **PR ready, `canMerge=true`** → сперва проверь актуальность ветки
-     (AC-8 SPEC-002): `gh pr view <PR> --json mergeable,mergeStateStatus`.
-     `mergeStateStatus=BEHIND` — актуализируй ветку способом из конфига
+     (AC-8 SPEC-002). Факт отставания бери из git, а не из
+     GitHub-статусов (`mergeStateStatus=BEHIND` GitHub отдаёт только при
+     включённом `required_status_checks.strict`): `git fetch origin &&
+     git rev-list --count origin/<ветка PR>..origin/main` — счётчик
+     больше нуля значит BEHIND, ветка отстала. Конфликтность —
+     `gh pr view <PR> --json mergeable`: `CONFLICTING` — конфликт с main
+     требует человека: обработай задачу как застрявшую (метка
+     needs-human, уведомление, `result=stuck reason="конфликт с main"`),
+     merge не выполняй, следующая итерация; `UNKNOWN` — GitHub ещё
+     считает mergeability, повтори запрос. Отставшую ветку актуализируй
+     только в явном checkout ветки PR (`gh pr checkout <PR>` — твоё
+     рабочее дерево между итерациями стоит на main) способом из конфига
      (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
-     conventions.branchUpdate rebase`): `rebase` (дефолт) — перебазируй
-     (`git fetch origin main && git rebase origin/main`, затем `git push
-     --force-with-lease`); `merge` — влей main в ветку
-     (`git merge origin/main`), затем `git push`. После актуализации
-     обязательно перегони гейты (`./scripts/check`, `./scripts/test`) и
-     дождись зелёного CI: merge без перегона гейтов после актуализации
-     запрещён — зелёные проверки отставшей ветки относятся к устаревшему
-     состоянию кода. `mergeable=CONFLICTING` — конфликт с main требует
-     человека: обработай задачу как застрявшую (метка needs-human,
-     уведомление, `result=stuck reason="конфликт с main"`), merge не
-     выполняй, следующая итерация. Ветка актуальна и гейты зелёные —
-     `gh pr merge <PR> --squash --delete-branch` (squash: один issue =
-     один коммит в main, заголовок PR становится сообщением коммита);
-     если настроен CI — дождись зелёного перед merge
-     (`gh pr checks --watch`); после merge — залогируй `result=merged`,
-     следующая итерация;
+     conventions.branchUpdate rebase rebase,merge`; ненулевой exit =
+     опечатка в конфиге, обработай как застрявшую; fetch уже сделан):
+     `rebase` (дефолт) — перебазируй (`git rebase origin/main`), затем
+     `git push --force-with-lease origin <ветка PR>` (refspec обязателен
+     — push с force-флагом без него применился бы к текущему checkout);
+     `merge` — влей main в ветку (`git merge origin/main`), затем
+     `git push origin <ветка PR>`. После актуализации обязательно
+     перегони гейты (`./scripts/check`, `./scripts/test`), дождись
+     зелёного CI и вернись на main (`git checkout main`): merge без
+     перегона гейтов после актуализации запрещён — зелёные проверки
+     отставшей ветки относятся к устаревшему состоянию кода. Ветка
+     актуальна и гейты зелёные — `gh pr merge <PR> --squash
+     --delete-branch` (squash: один issue = один коммит в main,
+     заголовок PR становится сообщением коммита); если настроен CI —
+     дождись зелёного перед merge (`gh pr checks --watch`); после
+     merge — залогируй `result=merged`, следующая итерация;
    - **PR ready, но merge не твой** — `canMerge=false` либо merge
      заблокировал хук по `policies.merge` → PR не мержи, добавь его в
      список «ждут человека», залогируй `result=ready` (ADR-003). Задача
