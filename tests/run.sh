@@ -1499,6 +1499,77 @@ done
 project_init_content=$(cat "$KIT/commands/project-init.md")
 assert_contains "AC-4: project-init.md содержит шаг копирования ac-check.sh в scripts/ac-check" "$project_init_content" 'scripts/ac-check'
 
+# ── Шаблон swift-ios: поведение контрактных скриптов (issue #70) ────────────
+# Стаб swift на PATH — тесты гоняются без тулчейна Xcode; PATH сужен до
+# системных директорий, чтобы xcodegen с машины не подмешивался.
+SIOS="$TMP/swiftios-proj"
+SBIN="$TMP/swiftios-bin"
+mkdir -p "$SIOS" "$SBIN"
+cp -R "$KIT/templates/swift-ios/scripts" "$SIOS/scripts"
+cat > "$SBIN/swift" <<'EOF'
+#!/usr/bin/env bash
+echo "SWIFT_STUB $*"
+case "$1" in
+  test)
+    case "${SWIFT_STUB_TEST_MODE:-pass}" in
+      notests) echo "error: no tests found; create a target in the 'Tests' directory"; exit 1 ;;
+      fail) echo "Test Case 'X' failed"; exit 1 ;;
+      *) exit 0 ;;
+    esac ;;
+  build)
+    if [ "${SWIFT_STUB_BUILD_MODE:-pass}" = "fail" ]; then
+      echo "error: cannot convert value"
+      exit 1
+    fi ;;
+esac
+exit 0
+EOF
+chmod +x "$SBIN/swift"
+SPATH="$SBIN:/usr/bin:/bin"
+
+# голый проект: нет исходников, пакетов и .xcodeproj — check/test молча зелёные
+(cd "$SIOS" && PATH="$SPATH" ./scripts/check >/dev/null 2>&1)
+assert_exit "issue #70: swift-ios: check на голом проекте — exit 0" 0 $?
+(cd "$SIOS" && PATH="$SPATH" ./scripts/test >/dev/null 2>&1)
+assert_exit "issue #70: swift-ios: test на голом проекте — exit 0" 0 $?
+
+# падающие тесты пакета роняют гейт независимо от раскладки каталогов
+# (репро блокера круга 1 PR #71: пакет без каталога Tests/ молча пропускался)
+mkdir -p "$SIOS/Packages/Engine/Sources"
+echo "// manifest" > "$SIOS/Packages/Engine/Package.swift"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=fail ./scripts/test 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: падающие тесты пакета роняют scripts/test (без каталога Tests/)" 1 "$sios_st"
+assert_contains "issue #70: swift-ios: вывод упавших тестов доходит до гейта" "$sios_out" "failed"
+
+# пакет без тест-таргетов: «no tests found» — не провал (контракт)
+(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=notests ./scripts/test >/dev/null 2>&1)
+assert_exit "issue #70: swift-ios: «no tests found» пакета — не провал, exit 0" 0 $?
+
+# check по файлу пакета собирает этот пакет — ошибка типов ловится
+# PostToolUse-гейтом, а не только полным прогоном (круг 1 PR #71)
+echo "let x = 1" > "$SIOS/Packages/Engine/Sources/E.swift"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_BUILD_MODE=fail ./scripts/check Packages/Engine/Sources/E.swift 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: check <файл пакета> — ошибка типов пакета роняет гейт" 1 "$sios_st"
+assert_contains "issue #70: swift-ios: собирается именно пакет переданного файла" "$sios_out" "build --package-path Packages/Engine"
+
+# файл вне пакетов: только линт, сборка не зовётся (типы таргетов — ADR-006)
+mkdir -p "$SIOS/App"
+echo "let y = 2" > "$SIOS/App/A.swift"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_BUILD_MODE=fail ./scripts/check App/A.swift 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: check <файл вне пакетов> — линт без сборки, exit 0" 0 "$sios_st"
+assert_not_contains "issue #70: swift-ios: для файла вне пакетов swift build не вызывается" "$sios_out" "build --package-path"
+
+# project.yml без xcodegen на PATH — громкая ошибка, не молчаливый пропуск smoke
+touch "$SIOS/project.yml"
+sios_out=$(cd "$SIOS" && PATH="$SPATH" ./scripts/test 2>&1)
+sios_st=$?
+assert_exit "issue #70: swift-ios: project.yml без xcodegen — громкая ошибка" 1 "$sios_st"
+assert_contains "issue #70: swift-ios: ошибка называет xcodegen" "$sios_out" "xcodegen"
+rm "$SIOS/project.yml"
+
 # scripts/check самого кита (dogfood, issue #9) — по образцу проверки выше
 # для templates/*/scripts/check; раньше не было теста, что строка вызова
 # ac-check.sh не была случайно удалена (issue #28 K8, хвост ревью PR #19)

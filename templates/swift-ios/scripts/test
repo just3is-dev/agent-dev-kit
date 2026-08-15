@@ -1,52 +1,68 @@
 #!/usr/bin/env bash
 # Контракт agent-dev-kit: все тесты проекта.
+# Тесты живут в SPM-пакетах (конвенция кита). XCTest-таргеты .xcodeproj шаблон
+# не запускает — ограничение названо в ADR-006; проект с такими таргетами
+# расширяет этот скрипт по месту (xcodebuild test).
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
-# Тесты каждого SPM-пакета. Пакет без Tests/ пропускается: «пустой набор
-# тестов — не провал» (контракт), а swift test на пакете без тест-таргетов
-# сам по себе завершается ошибкой «no tests found».
+# Тесты каждого SPM-пакета. «Пустой набор тестов — не провал» (контракт):
+# swift test на пакете без тест-таргетов сам падает с «no tests found» —
+# этот и только этот провал считается успехом.
 while IFS= read -r pkg; do
-    dir=$(dirname "$pkg")
-    [ -d "$dir/Tests" ] || continue
-    swift test --package-path "$dir"
+  dir=$(dirname "$pkg")
+  if out=$(swift test --package-path "$dir" 2>&1); then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$out"
+    case "$out" in
+      *"no tests found"*) ;;
+      *) exit 1 ;;
+    esac
+  fi
 done < <(find . -name Package.swift \
-    -not -path '*/.build/*' \
-    -not -path '*/DerivedData/*' \
-    -not -path '*/Pods/*' \
-    -not -path '*/.git/*')
+  -not -path '*/.build/*' \
+  -not -path '*/DerivedData/*' \
+  -not -path '*/Pods/*' \
+  -not -path '*/.git/*')
 
 # Smoke «приложение собирается» — аналог bootstrap-теста сервиса из
 # docs/contract.md: тесты пакетов не трогают таргеты приложения и не поймают
 # сломанный project.yml, отсутствующий ресурс или расхождение с SwiftUI API.
 # XcodeGen условен: у проектов, хранящих .xcodeproj в git, генерации нет.
 if [ -f project.yml ]; then
-    if ! command -v xcodegen >/dev/null 2>&1; then
-        # Гейт не деградирует молча: без xcodegen smoke-сборка невозможна.
-        echo "scripts/test: есть project.yml, но xcodegen не найден (brew install xcodegen)" >&2
-        exit 1
-    fi
-    xcodegen generate --quiet
+  if ! command -v xcodegen >/dev/null 2>&1; then
+    # Гейт не деградирует молча: без xcodegen smoke-сборка невозможна.
+    echo "scripts/test: есть project.yml, но xcodegen не найден (brew install xcodegen)" >&2
+    exit 1
+  fi
+  xcodegen generate --quiet
 fi
 
-# Проект и схема выводятся из содержимого корня. Проектов несколько — берётся
-# первый по алфавиту; схема — одноимённая проекту, иначе первая из списка.
+# Проект и схема выводятся из содержимого корня; workspace-проекты (CocoaPods)
+# шаблон не поддерживает — ADR-006. Проектов несколько — первый по алфавиту;
+# схема — одноимённая проекту, иначе первая из списка.
 proj=$(find . -maxdepth 1 -name '*.xcodeproj' | sort | head -n 1)
 if [ -n "$proj" ]; then
-    name=$(basename "$proj" .xcodeproj)
-    scheme=$(xcodebuild -list -json -project "$proj" 2>/dev/null | python3 -c '
+  name=$(basename "$proj" .xcodeproj)
+  if ! list_json=$(xcodebuild -list -json -project "$proj" 2>&1); then
+    echo "scripts/test: xcodebuild -list не смог прочитать $proj:" >&2
+    printf '%s\n' "$list_json" >&2
+    exit 1
+  fi
+  scheme=$(printf '%s' "$list_json" | python3 -c '
 import json, sys
 schemes = json.load(sys.stdin).get("project", {}).get("schemes") or []
 name = sys.argv[1]
 print(name if name in schemes else (schemes[0] if schemes else ""))
 ' "$name")
-    if [ -z "$scheme" ]; then
-        echo "scripts/test: у $proj нет ни одной схемы — smoke-сборка невозможна" >&2
-        exit 1
-    fi
-    xcodebuild build \
-        -project "$proj" \
-        -scheme "$scheme" \
-        -destination 'generic/platform=iOS Simulator' \
-        -quiet
+  if [ -z "$scheme" ]; then
+    echo "scripts/test: у $proj нет ни одной схемы — smoke-сборка невозможна" >&2
+    exit 1
+  fi
+  xcodebuild build \
+    -project "$proj" \
+    -scheme "$scheme" \
+    -destination 'generic/platform=iOS Simulator' \
+    -quiet
 fi

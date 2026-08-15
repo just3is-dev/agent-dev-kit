@@ -1,54 +1,67 @@
 #!/usr/bin/env bash
-# Контракт agent-dev-kit: статические проверки (линт + типы). Стек — Swift/Xcode.
-# Линтер и форматтер — swift-format из состава тулчейна Xcode (16+): ноль
-# внешних установок, локально и в CI одна и та же версия. SwiftLint и
-# SwiftFormat сознательно не используются — см. ADR кита по шаблону swift-ios.
+# Контракт agent-dev-kit: статические проверки (линт + типы). Стек — Swift/Xcode
+# (тулчейн Xcode 16+: линт и формат — swift format из его состава, ноль внешних
+# установок; SwiftLint/SwiftFormat сознательно не используются — ADR-005).
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
-# Все .swift проекта, кроме артефактов сборки и зависимостей.
-sources() {
-    find . -name '*.swift' \
-        -not -path '*/.build/*' \
-        -not -path '*/DerivedData/*' \
-        -not -path '*/Pods/*' \
-        -not -path '*/.git/*'
+# Файлы проекта по имени, без артефактов сборки и зависимостей.
+find_clean() {
+  find . -name "$1" \
+    -not -path '*/.build/*' \
+    -not -path '*/DerivedData/*' \
+    -not -path '*/Pods/*' \
+    -not -path '*/.git/*'
 }
 
-# SPM-пакеты проекта (их может не быть или быть несколько).
-packages() {
-    find . -name Package.swift \
-        -not -path '*/.build/*' \
-        -not -path '*/DerivedData/*' \
-        -not -path '*/Pods/*' \
-        -not -path '*/.git/*'
+# Ближайший родительский SPM-пакет файла (пусто — файл вне пакетов).
+package_of() {
+  d=$(dirname "$1")
+  while :; do
+    if [ -f "$d/Package.swift" ]; then
+      printf '%s\n' "$d"
+      return
+    fi
+    if [ "$d" = "/" ] || [ "$d" = "." ]; then
+      return
+    fi
+    d=$(dirname "$d")
+  done
 }
 
 if [ $# -gt 0 ]; then
-    targets=()
-    for f in "$@"; do
-        case "$f" in
-            *.swift) [ -f "$f" ] && targets+=("$f") ;;
-        esac
-    done
-    [ ${#targets[@]} -gt 0 ] || exit 0
-    # lint без --strict возвращает 0 даже при найденных нарушениях
-    swift format lint --strict "${targets[@]}"
+  targets=()
+  for f in "$@"; do
+    case "$f" in
+      *.swift) [ -f "$f" ] && targets+=("$f") ;;
+    esac
+  done
+  [ ${#targets[@]} -gt 0 ] || exit 0
+  # lint без --strict возвращает 0 даже при найденных нарушениях
+  swift format lint --strict "${targets[@]}"
+  # Типы: инкрементальная сборка пакетов, которым принадлежат переданные
+  # файлы. Файлы вне пакетов (таргеты приложения) компилируются только в
+  # scripts/test — ADR-006.
+  pkgs=$(for f in "${targets[@]}"; do package_of "$f"; done | sort -u)
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    swift build --package-path "$d"
+  done < <(printf '%s\n' "$pkgs")
 else
-    files=()
-    while IFS= read -r f; do files+=("$f"); done < <(sources)
-    [ ${#files[@]} -eq 0 ] || swift format lint --strict "${files[@]}"
+  files=()
+  while IFS= read -r f; do files+=("$f"); done < <(find_clean '*.swift')
+  [ ${#files[@]} -eq 0 ] || swift format lint --strict "${files[@]}"
 
-    # Проверка типов: сборка SPM-пакетов (секунды). Компиляция таргетов
-    # приложения — в scripts/test: ей нужны xcodegen/симулятор и минуты,
-    # а полный check должен оставаться быстрым гейтом.
-    while IFS= read -r pkg; do
-        swift build --package-path "$(dirname "$pkg")"
-    done < <(packages)
+  # Типы: сборка всех SPM-пакетов (секунды). Компиляция таргетов приложения —
+  # в scripts/test: ей нужны xcodegen/симулятор и минуты, а полный check
+  # должен оставаться быстрым гейтом (ADR-006).
+  while IFS= read -r pkg; do
+    swift build --package-path "$(dirname "$pkg")"
+  done < <(find_clean 'Package.swift')
 
-    # scripts/ac-check копируется project-init'ом из agent-dev-kit
-    # (hooks/scripts/ac-check.sh); контракт — в документации кита.
-    if [ -x scripts/ac-check ]; then
-        scripts/ac-check .
-    fi
+  # scripts/ac-check копируется project-init'ом из agent-dev-kit
+  # (hooks/scripts/ac-check.sh); контракт — в документации кита.
+  if [ -x scripts/ac-check ]; then
+    scripts/ac-check .
+  fi
 fi

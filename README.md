@@ -271,8 +271,8 @@ templates/
   nextjs/         scripts/check|test|fix (tsc, eslint, vitest) + ci.yml
   nestjs/         то же, тесты через jest
   python-service/ ruff, mypy, pytest (окружение uv) + ci.yml
-  swift-ios/      swift format (lint+fix), swift build/test по SPM-пакетам,
-                  smoke xcodebuild + ci.yml (macOS) и конфиг .swift-format
+  swift-ios/      swift format (lint+fix, Xcode 16+), swift build/test по
+                  SPM-пакетам, smoke xcodebuild + ci.yml (macOS) и .swift-format
   monorepo/       корневые скрипты-диспетчеры по пакетам + ci.yml
 docs/contract.md  контракт команд проекта
 docs/config.md    таблица атрибутов adk.config.json и их дефолтов; сам

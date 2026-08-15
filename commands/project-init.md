@@ -75,7 +75,11 @@ argument-hint: "[путь к проекту; по умолчанию текущ�
    - `templates/<стек>/ci.yml` → `.github/workflows/ci.yml`;
    - для `swift-ios` дополнительно `templates/swift-ios/swift-format` →
      `.swift-format` в корень проекта (в шаблоне имя без точки, чтобы
-     файл не терялся в листингах и архивах);
+     файл не терялся в листингах и архивах). Контракту нужен тулчейн
+     Xcode 16+ (`swift format` — его сабкоманда). Существующий проект
+     с тестами в XCTest-таргетах `.xcodeproj` или с workspace
+     (CocoaPods) — расширь `scripts/test` по месту: шаблон гоняет
+     тесты только SPM-пакетов и собирает только `-project` (ADR-006);
    - `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ac-check.sh` → `scripts/ac-check`, сделай исполняемым —
      хелпер AC-трассируемости; шаблонный `scripts/check` уже вызывает его
      хвостом в полном прогоне (без аргументов-файлов), если он исполняем.
