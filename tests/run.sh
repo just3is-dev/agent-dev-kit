@@ -856,11 +856,14 @@ assert_contains "AC-8: work.md — отставание фактом из git (r
 assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$ap_merge" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
 assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$ap_merge" 'gh pr checkout <PR>'
 assert_contains "AC-8: autopilot.md — push после rebase с обязательным refspec" "$ap_merge" 'force-with-lease origin <ветка PR>'
-printf '%s' "$work_ready" | grep -q 'git fetch origin main' && ac8_fom=1 || ac8_fom=0
-assert_exit "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" 0 $ac8_fom
+assert_not_contains "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" "$work_ready" 'git fetch origin main'
+assert_not_contains "AC-8: autopilot.md — fetch без «origin main» (тот же ложный триггер)" "$ap_merge" 'git fetch origin main'
+# Якоря семантики, не только команд: остановка/застревание, а не «разберись сам»
 assert_contains "AC-8: work.md — конфликт при самой актуализации прерывается (--abort)" "$work_ready" 'git rebase --abort'
-assert_contains "AC-8: autopilot.md — конфликт при актуализации: --abort и застревание" "$ap_merge" 'git rebase --abort'
-assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание" "$ap_merge" 'гейты красные после актуализации'
+assert_contains "AC-8: work.md — конфликт при актуализации — остановка и человек, не самодеятельность" "$work_ready" 'остановись и позови пользователя, как при'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации прерывается (--abort)" "$ap_merge" 'git rebase --abort'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации — застревание с причиной" "$ap_merge" 'reason="конфликт при актуализации"'
+assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание с причиной" "$ap_merge" 'reason="гейты красные после актуализации"'
 assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_ready" 'conventions\.branchUpdate rebase'
 assert_contains "AC-8: autopilot.md читает conventions.branchUpdate с дефолтом rebase" "$ap_merge" 'conventions\.branchUpdate rebase'
 check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
@@ -872,7 +875,7 @@ check_ac_doc AC-8 "work.md: после актуализации гейты пе�
 check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
   "$KIT/commands/autopilot.md" "merge без перегона гейтов после актуализации запрещён"
 assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке (не «разреши сам»)" "$work_ready" 'конфликт с main, остановись и позови пользователя'
-assert_contains "AC-8: autopilot.md — конфликт при актуализации ведёт к needs-human (как застрявшая задача)" "$ap_merge" 'конфликт.*needs-human\|CONFLICTING.*застряв'
+assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$ap_merge" 'конфликт с main требует человека.*needs-human'
 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
