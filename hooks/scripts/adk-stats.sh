@@ -3,7 +3,7 @@
 # единицу работы, см. adk-log.sh). Использование: adk-stats.sh
 # Читает $ADK_LOGS_DIR либо <корень проекта>/.adk/logs/. Схема событий,
 # которую ожидает агрегация (event=start/review/outcome, поля round/verdict/
-# result/reason/timestamp) — docs/adr/001-journal-event-schema.md; её же
+# result/reason/type/timestamp) — docs/adr/001-journal-event-schema.md; её же
 # обязаны писать /work и /autopilot.
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
 # агрегатов. Битые строки (невалидный JSON, JSON не-объект, оборванная
@@ -54,6 +54,10 @@ for path in paths:
     outcome = None
     last_ts = None
     valid_any = False
+    # тип задачи — последнее непустое поле type среди событий файла
+    # (обычно совпадает в start и outcome); строки без поля — старая
+    # схема до расширения ADR-001, такие задачи считаются task
+    task_type = "task"
     # errors="replace": строка, оборванная посреди multibyte UTF-8 (типичный
     # исход обрыва процесса при записи в журнал), не должна ронять скрипт
     # UnicodeDecodeError-ом — она станет невалидным JSON и будет пропущена
@@ -84,6 +88,9 @@ for path in paths:
                     pass
             elif event == "outcome":
                 outcome = ev
+            ev_type = ev.get("type")
+            if isinstance(ev_type, str) and ev_type:
+                task_type = ev_type
             ts = ev.get("timestamp")
             if ts:
                 last_ts = ts
@@ -116,6 +123,7 @@ for path in paths:
             "rounds": round_count,
             "result": result,
             "reason": reason,
+            "type": task_type,
             "week": week,
         }
     )
@@ -169,6 +177,15 @@ if reasons:
     print("Причины застреваний:")
     for reason, count in reasons.most_common():
         print(f"  - {reason}: {count}")
+
+by_type = collections.defaultdict(lambda: {"tasks": 0, "rounds": 0})
+for t in tasks:
+    by_type[t["type"]]["tasks"] += 1
+    by_type[t["type"]]["rounds"] += t["rounds"]
+print("Разрез по типам (количество / средние круги ревью):")
+for typ in sorted(by_type):
+    d = by_type[typ]
+    print(f"  - {typ}: задач {d['tasks']}, среднее кругов {d['rounds'] / d['tasks']:.1f}")
 print("Динамика по неделям (задач / средние круги ревью):")
 for week in sorted(weekly):
     d = weekly[week]

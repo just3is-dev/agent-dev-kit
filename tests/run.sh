@@ -770,6 +770,72 @@ else
   fails=$((fails + 1))
 fi
 
+# ── Тип задачи в журнале и разрез /stats по типам (AC-7 SPEC-002) ────────────
+# Схема: поле type в событиях журнала — расширение ADR-001 (issue #51).
+# Смесь типов: issue-70 (type=task), issue-71 (без поля type — старая запись,
+# считается task), issue-72 (type=bug), issue-73 (type=bug только в event=start,
+# outcome без поля — тип должен подхватиться из start).
+STATS_TYPES="$TMP/stats-types"
+mkdir -p "$STATS_TYPES"
+cat > "$STATS_TYPES/issue-70.jsonl" <<'EOF'
+{"event":"start","issue":"70","type":"task","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"70","round":"1","verdict":"APPROVE","timestamp":"2026-08-05T09:30:00Z"}
+{"event":"outcome","issue":"70","type":"task","result":"merged","timestamp":"2026-08-05T09:35:00Z"}
+EOF
+cat > "$STATS_TYPES/issue-71.jsonl" <<'EOF'
+{"event":"start","issue":"71","timestamp":"2026-08-05T10:00:00Z"}
+{"event":"review","issue":"71","round":"1","verdict":"APPROVE","timestamp":"2026-08-05T10:30:00Z"}
+{"event":"outcome","issue":"71","result":"merged","timestamp":"2026-08-05T10:35:00Z"}
+EOF
+cat > "$STATS_TYPES/issue-72.jsonl" <<'EOF'
+{"event":"start","issue":"72","type":"bug","timestamp":"2026-08-06T09:00:00Z"}
+{"event":"review","issue":"72","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-06T09:30:00Z"}
+{"event":"review","issue":"72","round":"2","verdict":"APPROVE","timestamp":"2026-08-06T10:00:00Z"}
+{"event":"outcome","issue":"72","type":"bug","result":"merged","timestamp":"2026-08-06T10:05:00Z"}
+EOF
+cat > "$STATS_TYPES/issue-73.jsonl" <<'EOF'
+{"event":"start","issue":"73","type":"bug","timestamp":"2026-08-07T09:00:00Z"}
+{"event":"review","issue":"73","round":"1","verdict":"REQUEST_CHANGES","timestamp":"2026-08-07T09:30:00Z"}
+{"event":"review","issue":"73","round":"2","verdict":"REQUEST_CHANGES","timestamp":"2026-08-07T10:00:00Z"}
+{"event":"review","issue":"73","round":"3","verdict":"REQUEST_CHANGES","timestamp":"2026-08-07T10:30:00Z"}
+{"event":"outcome","issue":"73","result":"stuck","reason":"ревьюер не согласен","timestamp":"2026-08-07T10:35:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_TYPES" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-7: adk-stats: журнал со смесью типов — exit 0" 0 $?
+assert_contains "AC-7: adk-stats: разрез по типам присутствует отдельной секцией" \
+  "$stats_out" "Разрез по типам"
+assert_contains "AC-7: adk-stats: задачи — количество и средние круги ревью (issue-71 без поля type посчитан как task)" \
+  "$stats_out" "task: задач 2, среднее кругов 1.0"
+assert_contains "AC-7: adk-stats: баги — количество и средние круги ревью ((2+3)/2, тип issue-73 подхвачен из event=start)" \
+  "$stats_out" "bug: задач 2, среднее кругов 2.5"
+assert_contains "AC-7: adk-stats: общие агрегаты не изменились от появления типов" \
+  "$stats_out" "Всего задач: 4"
+
+# писатели журнала передают тип задачи в adk-log.sh
+check_ac_doc AC-7 "work.md логирует тип задачи в event=start" \
+  "$KIT/commands/work.md" "event=start issue=<N> type=<тип>"
+check_ac_doc AC-7 "work.md логирует тип задачи в event=outcome" \
+  "$KIT/commands/work.md" "event=outcome type=<тип>"
+check_ac_doc AC-7 "autopilot.md логирует тип задачи в event=task" \
+  "$KIT/commands/autopilot.md" "event=task issue=<N> type=<тип>"
+
+# схема поля зафиксирована как расширение ADR-001
+check_ac_doc AC-7 "ADR-001 описывает поле type" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "type=<тип>"
+check_ac_doc AC-7 "ADR-001: записи без поля type считаются task" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "считается \`task\`"
+
+# читатели: /stats передаёт разрез как есть, /consolidate считает
+# «Сбежал от» по label баг-типа, а не поиском по всем issues
+check_ac_doc AC-7 "stats.md упоминает разрез по типам" \
+  "$KIT/commands/stats.md" "разрез по типам"
+check_ac_doc AC-7 "consolidate.md читает label баг-типа из конфига" \
+  "$KIT/commands/consolidate.md" "types.bug.label type:bug"
+check_ac_doc AC-7 "consolidate.md собирает баг-issues по label, а не поиском по тексту" \
+  "$KIT/commands/consolidate.md" "--label"
+check_ac_doc AC-7 "consolidate.md: баг-issues без label типа (до SPEC-002) не теряются молча" \
+  "$KIT/commands/consolidate.md" "Переходное состояние: баг-issues"
+
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
 step1=$(sed -n '/^1\. \*\*/,/^2\. \*\*/p' "$WORKMD" | tr '\n' ' ' | tr -s ' ')
