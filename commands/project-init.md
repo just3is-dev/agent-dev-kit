@@ -109,14 +109,36 @@ argument-hint: "[путь к проекту; по умолчанию текущ�
    `── check: <пакет>` для каждого). Не завершай инициализацию с падающим
    контрактом — это фундамент всех гейтов.
 
-9. **Git.** Если репозитория нет — `git init -b main` и первый коммит.
-   Спроси про GitHub: если нужен remote — предложи `gh repo create`.
-   После создания remote предложи включить защиту main (серверный гейт,
-   который не обойти локально): merge только через PR с зелёным
-   required-чеком `gates`, прямые пуши и force push в main запрещены —
-   `gh api -X PUT repos/{owner}/{repo}/branches/main/protection` с
-   `required_status_checks.contexts=["gates"]`, `allow_force_pushes=false`,
-   `enforce_admins=false` (чтобы владелец мог мержить без апрувов).
+9. **Git и сервер нового репозитория.** Если репозитория нет —
+   `git init -b main` и первый коммит. Спроси про GitHub: если нужен
+   remote — предложи `gh repo create`. Сразу после создания remote настрой
+   сервер по конфигу (SPEC-002 AC-6) — серверный гейт, который не обойти
+   локально:
+   - **allowed merge methods** — по производному методу приземления:
+     `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh --merge-method`
+     выводит его из пары `conventions.squash` × `conventions.branchUpdate`
+     (сам метод в конфиге не хранится — не пытайся вычислить его сам,
+     используй вывод скрипта). Разреши только этот метод, запрети два
+     остальных: `gh api -X PATCH repos/{owner}/{repo}` с полями
+     `allow_squash_merge` / `allow_rebase_merge` / `allow_merge_commit`,
+     где `true` — ровно у одного, соответствующего выводу
+     (`squash-merge` → `allow_squash_merge`, `rebase-merge` →
+     `allow_rebase_merge`, `merge-commit` → `allow_merge_commit`);
+   - тем же вызовом — `delete_branch_on_merge=true`: ветки после
+     приземления удаляет сервер (`--delete-branch` в командах остаётся
+     страховкой для репозиториев без этой настройки);
+   - **branch protection согласно `policies`**: merge только через PR с
+     зелёным required-чеком `gates`, прямые пуши и force push в main
+     запрещены — `gh api -X PUT repos/{owner}/{repo}/branches/main/protection`
+     с `required_status_checks.contexts=["gates"]`,
+     `allow_force_pushes=false`, `enforce_admins=false`. Если
+     `adk-config.sh policies.review.humanApprovalRequired false` даёт
+     `true` — добавь `required_pull_request_reviews` с
+     `required_approving_review_count=1` (обязательный человеческий approve;
+     заодно GitHub начнёт заполнять `reviewDecision`, на который опирается
+     политика merge `human-review-required` — см. `docs/config.md`); при
+     `false` — required reviews не включай, чтобы владелец мог мержить
+     без апрувов.
 
 10. **Итог пользователю:** что создано; создан ли `adk.config.json` или
     существующий оставлен нетронутым (шаг 3); гейты уже активны (проверки
