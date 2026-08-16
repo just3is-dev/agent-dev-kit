@@ -20,23 +20,61 @@ assert_exit() { # assert_exit <описание> <ожидаемый_код> <ф
 
 git_c() { git -c user.email=t@t -c user.name=t "$@"; }
 
+truncate_actual() { # truncate_actual <текст> — усечённое (~200 симв.) однострочное
+  # представление фактического значения для FAIL-диагностики: переводы строк
+  # схлопнуты в пробелы (issue #96), длинные значения обрезаны с многоточием.
+  local t
+  t="$(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"
+  if [ "${#t}" -gt 200 ]; then
+    printf '%s…' "${t:0:200}"
+  else
+    printf '%s' "$t"
+  fi
+}
+
 assert_contains() { # assert_contains <описание> <текст> <подстрока>
   if printf '%s' "$2" | grep -q -- "$3"; then
     echo "PASS: $1"
   else
-    echo "FAIL: $1 (не найдено: $3)"
+    echo "FAIL: $1 (не найдено: $3; вернулось: '$(truncate_actual "$2")')"
     fails=$((fails + 1))
   fi
 }
 
 assert_not_contains() { # assert_not_contains <описание> <текст> <подстрока>
   if printf '%s' "$2" | grep -q -- "$3"; then
-    echo "FAIL: $1 (неожиданно найдено: $3)"
+    echo "FAIL: $1 (неожиданно найдено: $3; вернулось: '$(truncate_actual "$2")')"
     fails=$((fails + 1))
   else
     echo "PASS: $1"
   fi
 }
+
+# ── Само-тест assert_contains / assert_not_contains: FAIL-ветка показывает
+# фактическое значение (issue #96, K9 хвост ревью PR #83) ────────────────────
+# Каждый вызов ниже — в подстановке команд (`$(...)`), то есть в подоболочке:
+# намеренно спровоцированный FAIL инкрементирует $fails только внутри неё и
+# не портит счётчик реального прогона.
+meta_out=$(assert_contains "meta" "actual-value-xyz" "no-such-substring")
+assert_contains "assert_contains: FAIL показывает фактическое значение" "$meta_out" "actual-value-xyz"
+meta_out=$(assert_contains "meta" "actual-value-xyz" "actual")
+assert_not_contains "assert_contains: PASS-вывод не изменился" "$meta_out" "actual-value-xyz"
+
+meta_out=$(assert_not_contains "meta" "actual-value-abc" "actual")
+assert_contains "assert_not_contains: FAIL показывает фактическое значение" "$meta_out" "actual-value-abc"
+meta_out=$(assert_not_contains "meta" "actual-value-abc" "no-such-substring")
+assert_not_contains "assert_not_contains: PASS-вывод не изменился" "$meta_out" "actual-value-abc"
+
+long_val=$(printf 'x%.0s' $(seq 1 500))
+meta_out=$(assert_contains "meta" "$long_val" "no-such-substring")
+assert_contains "assert_contains: FAIL показывает начало длинного значения" "$meta_out" "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+[ "${#meta_out}" -lt 300 ]
+assert_exit "assert_contains: FAIL усекает длинное фактическое значение (не выводит все 500 символов)" 0 $?
+
+multiline_val="$(printf 'line1\nline2\nline3')"
+meta_out=$(assert_contains "meta" "$multiline_val" "no-such-substring")
+nl_count=$(printf '%s' "$meta_out" | wc -l | tr -d ' ')
+assert_exit "assert_contains: FAIL схлопывает переводы строк в диагностике (однострочный вывод)" 0 "$nl_count"
 
 check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <искомая подстрока>
   # Markdown-прозу переносит по словам — схлопываем переводы строк и
