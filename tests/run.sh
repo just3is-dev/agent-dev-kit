@@ -914,9 +914,10 @@ assert_contains "AC-8: autopilot.md — красные гейты после а�
 # только при зелёных»); порядок «гейты → push» — старый порядок «push
 # сразу после rebase/merge, гейты перегоняются потом» публиковал бы
 # переписанную голову PR раньше, чем стало известно, что она красная.
-assert_contains "AC-8: work.md — красные гейты после актуализации ведут к остановке, симметрично autopilot.md (issue #80)" "$work_step6" 'Гейты красные после актуализации — тот же исход, что и'
+assert_contains "AC-8: work.md — красные гейты после актуализации ведут к остановке, симметрично autopilot.md (issue #80)" "$work_step6" 'тот же исход, что и конфликт: остановись и позови пользователя'
 assert_contains "AC-8: work.md — порядок «гейты → push»: гейты перегоняются локально до публикации (issue #80)" "$work_step6" 'Порядок «гейты → push»'
 assert_not_contains "AC-8: work.md — старый порядок «push сразу после rebase, гейты потом» не возвращается (issue #80)" "$work_step6" 'rebase origin/main`), затем `git push'
+assert_not_contains "AC-8: work.md — старый порядок не возвращается и для merge-ветки (issue #80, круг 1)" "$work_step6" 'merge origin/main`), затем `git push origin'
 assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_step6" 'conventions\.branchUpdate rebase'
 check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
   "$KIT/commands/work.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
@@ -945,13 +946,19 @@ assert_contains "AC-8: review.md — актуализация по conventions.b
 assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'переводить в ready без него запрещено'
 assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
 assert_contains "AC-8: review.md — дерево возвращается на исходную ветку в любом исходе" "$review_ready" 'верни рабочее дерево на исходную ветку'
+# Круг 1 ревью PR #112: возврат теперь один раз в конце всей команды и
+# явно покрывает REQUEST_CHANGES, а не только APPROVE-исходы актуализации
+assert_contains "AC-8: review.md — возврат дерева покрывает REQUEST_CHANGES, а не только APPROVE-исходы (issue #80, круг 1)" "$review_ready" 'в любом исходе всей команды (ready, REQUEST_CHANGES'
 # issue #80: шаг 3 (доработка) коммитит правки в ветку PR — без явного
 # checkout правки могут уйти в чужую ветку (checkout дерева в момент
 # вызова /review не определён, как и в шаге 5). Дерево возвращается,
 # иначе следующий /work начнёт git pull не на той ветке.
 review_step3=$(md_section "$KIT/commands/review.md" '^3\. \*\*' '^4\. \*\*')
 assert_contains "AC-8: review.md шаг 3 — явный checkout ветки PR перед доработкой (issue #80)" "$review_step3" 'gh pr checkout <PR>'
-assert_contains "AC-8: review.md шаг 3 — дерево возвращается на исходную ветку после доработки (issue #80)" "$review_step3" 'git checkout -'
+# Круг 1 ревью PR #112: возврат дерева в конце шага 3 (до правки) уводил
+# дерево с ветки PR раньше шага 4 (ревью), который должен видеть именно
+# её — единый возврат перенесён в конец шага 5, после решения по вердикту.
+assert_not_contains "AC-8: review.md шаг 3 не возвращает дерево преждевременно — шаг 4 (ревью) должен идти по ветке PR (issue #80, круг 1)" "$review_step3" 'git checkout -'
 check_ac_doc AC-8 "002-process-config.md: AC-8 называет исполнителем актуализации и /review, не только /work и /autopilot (issue #80)" \
   "$KIT/docs/specs/002-process-config.md" "\`/work\`, \`/autopilot\` и \`/review\`"
 
