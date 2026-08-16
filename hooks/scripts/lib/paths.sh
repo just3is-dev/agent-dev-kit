@@ -60,18 +60,40 @@ adk_notify_send() {
   "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" "$title" "$msg"
 }
 
+# adk_command_cd_prefix <cmd> — печатает явный `cd`-префикс в начале
+# команды (аргумент до первого &&/;/|, без кавычек), пустая строка, если
+# команда не начинается с `cd`. Общая часть adk_command_git_root и
+# adk_command_cwd — до issue #78 разбор был продублирован построчно в
+# каждой из них.
+adk_command_cd_prefix() {
+  case "$1" in
+    cd\ *) printf '%s' "$1" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'' ;;
+  esac
+}
+
+# adk_command_cwd <cmd> <hook_cwd> — печатает cwd самой команды: явный `cd`
+# в начале команды (adk_command_cd_prefix) побеждает, иначе cwd сессии из
+# payload хука. Пустая строка, если ни того ни другого нет. Не ходит в
+# git — в отличие от adk_command_git_root (которая идёт дальше, до
+# toplevel), эта функция нужна там, где важен именно «сырой» кандидат, а
+# не репозиторий, к которому он относится (adk_hook_config_root,
+# lib/config.sh, issue #78).
+adk_command_cwd() {
+  local cmd="$1" hook_cwd="$2" cd_prefix
+  cd_prefix=$(adk_command_cd_prefix "$cmd")
+  printf '%s\n' "${cd_prefix:-$hook_cwd}"
+}
+
 # adk_command_git_root <cmd> <hook_cwd> — git toplevel репозитория, к которому
 # относится Bash-команда хука. Кандидаты в порядке достоверности: явный `cd`
 # в самой команде → cwd сессии из payload хука → корень сессии → PWD хука
 # (корень сессии может не быть репозиторием: сессия открыта выше, проект
-# подключён дополнительной директорией). До этой правки блок был продублирован
+# подключён дополнительной директорией). До issue #78 блок был продублирован
 # в bash-guard.sh и pr-title-check.sh (ADR-002: общее — в lib). Печатает
 # пустую строку, если репозиторий не найден.
 adk_command_git_root() {
-  local cmd="$1" hook_cwd="$2" cd_prefix="" d="" root=""
-  case "$cmd" in
-    cd\ *) cd_prefix=$(printf '%s' "$cmd" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'') ;;
-  esac
+  local cmd="$1" hook_cwd="$2" cd_prefix d="" root=""
+  cd_prefix=$(adk_command_cd_prefix "$cmd")
   for d in "$cd_prefix" "$hook_cwd" "${CLAUDE_PROJECT_DIR:-}" "$PWD"; do
     [ -n "$d" ] && [ -d "$d" ] || continue
     if root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [ -n "$root" ]; then

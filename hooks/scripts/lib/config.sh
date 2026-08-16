@@ -39,6 +39,61 @@ adk_config_file() {
   fi
 }
 
+# adk_hook_config_root <cmd> <hook_cwd> — корень, из которого хук читает
+# adk.config.json: первый кандидат, где файл реально есть — (1) cwd самой
+# команды буквально (adk_command_cwd, lib/paths.sh); (2) git toplevel ИМЕННО
+# этой cwd (не полный кандидатный список adk_command_git_root — тот способен
+# откатиться на CLAUDE_PROJECT_DIR/PWD сессии, а не репозитория команды, и
+# это здесь неприемлемо, см. ниже); (3) CLAUDE_PROJECT_DIR сессии буквально;
+# и только если файла нет нигде из трёх — (4) git toplevel безусловно
+# (adk_command_git_root, полный кандидатный список), как и раньше:
+# мейнстрим-раскладка «конфиг на корне репозитория» не меняется, даже если
+# файла там тоже нет — тогда adk_config_get вернёт дефолт, это его контракт,
+# не этой функции.
+#
+# Почему CLAUDE_PROJECT_DIR — только третий кандидат, а не второй (круг 1
+# ревью PR issue #78 подряд ловил регрессию на обратном порядке): сессия
+# может быть открыта в проекте A (свой adk.config.json), а конкретная
+# команда — идти из подкаталога совсем другого репозитория B со своим более
+# строгим конфигом (например policies.merge=human-only). Если бы
+# CLAUDE_PROJECT_DIR стоял раньше git toplevel команды, конфиг A подменял бы
+# конфиг B молча — ровно тот fail-open в жёстком слое, ради устранения
+# которого заведён #78, только с другой стороны. Repository команды (шаги
+# 1–2) обязаны выигрывать у корня сессии всегда, когда у них вообще есть
+# свой файл.
+#
+# До issue #78 оба хука безусловно предпочитали шаг (4) — git toplevel
+# команды, включая CLAUDE_PROJECT_DIR/PWD как candidates внутри неё, но БЕЗ
+# проверки наличия файла: проект, оказавшийся подкаталогом более крупного
+# репозитория со своим adk.config.json, свой конфиг не находил. Печатает
+# пустую строку, если ни один кандидат не существует как каталог вовсе (нет
+# ни git-репозитория, ни CLAUDE_PROJECT_DIR) — вызывающий откатывается на
+# свой прежний финальный фолбэк (${CLAUDE_PROJECT_DIR:-$PWD}), как и раньше.
+adk_hook_config_root() {
+  local cmd="$1" hook_cwd="$2" cmd_cwd cmd_git_root
+  cmd_cwd=$(adk_command_cwd "$cmd" "$hook_cwd")
+
+  if [ -n "$cmd_cwd" ] && [ -f "$cmd_cwd/adk.config.json" ]; then
+    printf '%s\n' "$cmd_cwd"
+    return 0
+  fi
+
+  if [ -n "$cmd_cwd" ] && [ -d "$cmd_cwd" ]; then
+    cmd_git_root=$(git -C "$cmd_cwd" rev-parse --show-toplevel 2>/dev/null) || cmd_git_root=""
+    if [ -n "$cmd_git_root" ] && [ -f "$cmd_git_root/adk.config.json" ]; then
+      printf '%s\n' "$cmd_git_root"
+      return 0
+    fi
+  fi
+
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "${CLAUDE_PROJECT_DIR}/adk.config.json" ]; then
+    printf '%s\n' "$CLAUDE_PROJECT_DIR"
+    return 0
+  fi
+
+  adk_command_git_root "$cmd" "$hook_cwd"
+}
+
 # Серверный метод приземления GitHub — производная пары conventions.squash ×
 # conventions.branchUpdate, не самостоятельная настройка (SPEC-002, AC-6):
 # squash=true → squash-merge; false+rebase → rebase-merge; false+merge →
