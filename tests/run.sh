@@ -324,9 +324,10 @@ rm "$P/adk.config.json"
 
 # issue #78: проект — подкаталог более крупного репозитория со своим
 # adk.config.json (toplevel репозитория без конфига); корень конфига —
-# первый кандидат, где файл реально есть (cwd команды → CLAUDE_PROJECT_DIR
-# → git toplevel), а не безусловный toplevel — до фикса toplevel побеждал
-# всегда, свой конфиг подкаталога не находился, human-only не срабатывал.
+# первый кандидат, где файл реально есть (cwd команды → git toplevel этой
+# cwd → CLAUDE_PROJECT_DIR → git toplevel безусловно), а не безусловный
+# toplevel — до фикса toplevel побеждал всегда, свой конфиг подкаталога не
+# находился, human-only не срабатывал.
 MONOROOT="$TMP/monorepo"
 mkdir -p "$MONOROOT/proj"
 (cd "$MONOROOT" && git_c init -q -b main)
@@ -335,6 +336,36 @@ printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$MONOROOT/proj" 
   | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$MONOROOT" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
 assert_exit "issue #78: bash-guard находит конфиг подкаталога-проекта, а не безусловный toplevel репозитория" 2 $?
 rm -rf "$MONOROOT"
+
+# issue #78, круг 2 ревью: git toplevel КОМАНДЫ обязан выигрывать у
+# CLAUDE_PROJECT_DIR сессии, а не наоборот — сессия открыта в проекте с
+# разрешающим конфигом, а сама команда идёт из подкаталога другого
+# репозитория со своим более строгим конфигом; конфиг сессии не должен
+# молча подменять конфиг репозитория команды (иначе новый fail-open в том
+# же жёстком слое, который #78 и чинил).
+MONOROOT2="$TMP/monorepo2"
+mkdir -p "$MONOROOT2/sub"
+(cd "$MONOROOT2" && git_c init -q -b main)
+printf '{"policies": {"merge": "human-only"}}' > "$MONOROOT2/adk.config.json"
+SESSIONPROJ="$TMP/session-proj"
+mkdir -p "$SESSIONPROJ"
+printf '{"policies": {"merge": "agent-after-approve"}}' > "$SESSIONPROJ/adk.config.json"
+printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$MONOROOT2/sub" \
+  | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$SESSIONPROJ" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "issue #78 круг 2: git toplevel команды выигрывает у CLAUDE_PROJECT_DIR сессии, а не наоборот" 2 $?
+rm -rf "$MONOROOT2" "$SESSIONPROJ"
+
+# CLAUDE_PROJECT_DIR остаётся кандидатом (третьим): команда идёт не из
+# git-репозитория вовсе — тогда побеждает конфиг сессии.
+NONGIT="$TMP/nongit-scratch"
+mkdir -p "$NONGIT"
+SESSIONPROJ2="$TMP/session-proj2"
+mkdir -p "$SESSIONPROJ2"
+printf '{"policies": {"merge": "human-only"}}' > "$SESSIONPROJ2/adk.config.json"
+printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$NONGIT" \
+  | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$SESSIONPROJ2" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "issue #78: CLAUDE_PROJECT_DIR — третий кандидат, побеждает, когда у команды нет своего git-репозитория" 2 $?
+rm -rf "$NONGIT" "$SESSIONPROJ2"
 
 # bash-guard: секрет-гейт (фейковый ключ собирается конкатенацией,
 # чтобы литерал не лежал в исходниках кита)
@@ -465,8 +496,9 @@ assert_exit "AC-5: без конфига любой заголовок прох�
 
 # issue #78: проект — подкаталог более крупного репозитория со своим
 # adk.config.json (toplevel репозитория без конфига); корень конфига —
-# первый кандидат, где файл реально есть (cwd команды → CLAUDE_PROJECT_DIR
-# → git toplevel), а не безусловный toplevel.
+# первый кандидат, где файл реально есть (cwd команды → git toplevel этой
+# cwd → CLAUDE_PROJECT_DIR → git toplevel безусловно), а не безусловный
+# toplevel.
 MONOTITLE="$TMP/monorepo-title"
 mkdir -p "$MONOTITLE/proj"
 (cd "$MONOTITLE" && git_c init -q -b main)

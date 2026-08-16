@@ -38,12 +38,12 @@ fi
 # ADK_GUARD_PR_REVIEW_DECISION=<reviewDecision, например APPROVED>.
 if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
   . "$(cd "$(dirname "$0")" && pwd)/lib/config.sh"
-  # Конфиг ищем от корня, где реально лежит adk.config.json — не безусловно
-  # от репозитория команды: проект может быть подкаталогом более крупного
-  # репозитория со своим конфигом (adk_hook_config_root, issue #78).
-  cfg_root=$(adk_hook_config_root "$cmd" "$hook_cwd")
+  # Корень конфига — правило и обоснование в adk_hook_config_root
+  # (lib/config.sh, issue #78); финальный фолбэк здесь не изменился.
+  hook_cfg_root=$(adk_hook_config_root "$cmd" "$hook_cwd")
+  cfg_root="${hook_cfg_root:-${CLAUDE_PROJECT_DIR:-$PWD}}"
   merge_policy_rc=0
-  merge_policy=$(CLAUDE_PROJECT_DIR="${cfg_root:-${CLAUDE_PROJECT_DIR:-$PWD}}" \
+  merge_policy=$(CLAUDE_PROJECT_DIR="$cfg_root" \
     adk_config_get "policies.merge" "agent-after-approve" \
     "agent-after-approve,human-review-required,human-only") || merge_policy_rc=$?
   # Ненулевой exit читателя = в конфиге неизвестное значение. Дефолт
