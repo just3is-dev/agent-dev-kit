@@ -944,18 +944,19 @@ assert_contains "AC-8: review.md перед ready определяет отст�
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
 assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'переводить в ready без него запрещено'
 assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
-assert_contains "AC-8: review.md — дерево возвращается на исходную ветку в любом исходе" "$review_ready" 'верни рабочее дерево на исходную ветку'
+assert_contains "AC-8: review.md — дерево возвращается на исходный ref в любом исходе (issue #80, круг 4: ref вместо ветки — устойчиво к detached HEAD)" "$review_ready" 'верни рабочее дерево на ref, запомненный в шаге 1'
 # Круг 1 ревью PR #112: возврат теперь один раз в конце всей команды и
 # явно покрывает REQUEST_CHANGES, а не только APPROVE-исходы актуализации
 assert_contains "AC-8: review.md — возврат дерева покрывает REQUEST_CHANGES, а не только APPROVE-исходы (issue #80, круг 1)" "$review_ready" 'в любом исходе всей команды (ready, REQUEST_CHANGES'
-# Круг 2 ревью PR #112: `git checkout -` ненадёжен, когда `gh pr checkout`
-# зовётся дважды за команду (шаг 3 и повторно неявно в шаге 5 через уже
-# выбранную ветку) — gh всё равно пишет reflog-запись, и `@{-1}` перестаёт
-# указывать на настоящую исходную ветку. Возврат — по имени, захваченному
-# в шаге 1, до первого checkout.
+# Круг 2 ревью PR #112: `git checkout -` ненадёжен для этого рецепта —
+# при отставании шаг 5 перебазирует ветку (`git rebase origin/main`),
+# rebase сам делает внутренний checkout и переписывает `@{-1}` на main,
+# так что к моменту возврата reflog уже не хранит настоящую исходную
+# ветку. Возврат — по значению ref, захваченному в шаге 1 (круг 4: ref,
+# а не имя ветки — на detached HEAD у имени пустой вывод).
 step1_review=$(md_section "$KIT/commands/review.md" '^1\. \*\*' '^2\. \*\*')
-assert_contains "AC-8: review.md шаг 1 — запоминает исходную ветку по имени до первого checkout (issue #80, круг 2)" "$step1_review" 'git branch --show-current'
-assert_contains "AC-8: review.md — возврат дерева по имени, захваченному в шаге 1, а не через git checkout - (issue #80, круг 2)" "$review_ready" 'git checkout <исходная ветка>'
+assert_contains "AC-8: review.md шаг 1 — запоминает исходный ref до первого checkout, устойчиво к detached HEAD (issue #80, круг 4)" "$step1_review" 'git symbolic-ref --short -q HEAD'
+assert_contains "AC-8: review.md — возврат дерева по ref, захваченному в шаге 1, а не через git checkout - (issue #80, круг 4)" "$review_ready" 'git checkout <исходный ref>'
 # issue #80: шаг 3 (доработка) коммитит правки в ветку PR — без явного
 # checkout правки могут уйти в чужую ветку. Круг 2: checkout в шаге 3
 # безусловен (даже если чинить нечего) — шаг 4 (ревью) должен видеть
@@ -966,7 +967,14 @@ assert_contains "AC-8: review.md шаг 3 — checkout безусловен, д�
 # Круг 1 ревью PR #112: возврат дерева в конце шага 3 (до правки) уводил
 # дерево с ветки PR раньше шага 4 (ревью), который должен видеть именно
 # её — единый возврат перенесён в конец шага 5, после решения по вердикту.
-assert_not_contains "AC-8: review.md шаг 3 не возвращает дерево преждевременно — шаг 4 (ревью) должен идти по ветке PR (issue #80, круг 1)" "$review_step3" 'git checkout -'
+# Круг 3: старый якорь ('git checkout -') не пинил инвариант — мутация,
+# вернувшая преждевременный возврат в НОВОМ словаре («verni... на
+# исходный ref»), проходила незамеченной. Якорь теперь позитивный (шаг 3
+# явно говорит не возвращать) и по обоим словам, которыми возврат мог бы
+# быть выражен.
+assert_contains "AC-8: review.md шаг 3 — явно откладывает возврат до шага 5 (issue #80, круг 3)" "$review_step3" 'Дерево пока не возвращай'
+assert_not_contains "AC-8: review.md шаг 3 не возвращает дерево преждевременно — шаг 4 (ревью) должен идти по ветке PR (issue #80, круг 1/3)" "$review_step3" 'исходный ref'
+assert_not_contains "AC-8: review.md шаг 3 не возвращает дерево преждевременно (старая формулировка «исходная ветка») (issue #80, круг 1/3)" "$review_step3" 'исходную ветку'
 check_ac_doc AC-8 "002-process-config.md: AC-8 называет исполнителем актуализации и /review, не только /work и /autopilot (issue #80)" \
   "$KIT/docs/specs/002-process-config.md" "\`/work\`, \`/autopilot\` и \`/review\`"
 
