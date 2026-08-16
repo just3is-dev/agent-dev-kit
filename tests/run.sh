@@ -860,7 +860,7 @@ assert_contains "AC-8: autopilot.md ссылается на каноническ
 # AC-8 называет /autopilot поимённо: способ актуализации остаётся привязан к
 # conventions.branchUpdate и в нём — якорь на текст, чтение конфига — в каноне
 assert_contains "AC-8: autopilot.md актуализирует способом из conventions.branchUpdate" "$autopilot_step3" 'conventions\.branchUpdate'
-assert_not_contains "AC-8: autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$autopilot_step3" 'conventions\.branchUpdate rebase rebase,merge'
+assert_not_contains "K19 (issue #99): анти-дубль — autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$autopilot_step3" 'conventions\.branchUpdate rebase rebase,merge'
 check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
   "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
 check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
