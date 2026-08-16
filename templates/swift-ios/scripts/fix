@@ -2,15 +2,9 @@
 # Контракт agent-dev-kit: автоформат. Молча правит что может;
 # оставшееся — забота scripts/check.
 set -eo pipefail
-cd "$(dirname "$0")/.."
-
-sources() {
-  find . -name '*.swift' \
-    -not -path '*/.build/*' \
-    -not -path '*/DerivedData/*' \
-    -not -path '*/Pods/*' \
-    -not -path '*/.git/*'
-}
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+source "$script_dir/lib.sh"
+cd "$script_dir/.."
 
 targets=()
 if [ $# -gt 0 ]; then
@@ -20,7 +14,7 @@ if [ $# -gt 0 ]; then
     esac
   done
 else
-  while IFS= read -r f; do targets+=("$f"); done < <(sources)
+  while IFS= read -r f; do targets+=("$f"); done < <(find_clean '*.swift')
 fi
 
 [ ${#targets[@]} -gt 0 ] || exit 0
