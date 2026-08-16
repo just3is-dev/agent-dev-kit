@@ -322,6 +322,20 @@ printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$P/sub" | ADK_GU
 assert_exit "AC-2: human-only действует из подкаталога репозитория (конфиг от toplevel)" 2 $?
 rm "$P/adk.config.json"
 
+# issue #78: проект — подкаталог более крупного репозитория со своим
+# adk.config.json (toplevel репозитория без конфига); корень конфига —
+# первый кандидат, где файл реально есть (cwd команды → CLAUDE_PROJECT_DIR
+# → git toplevel), а не безусловный toplevel — до фикса toplevel побеждал
+# всегда, свой конфиг подкаталога не находился, human-only не срабатывал.
+MONOROOT="$TMP/monorepo"
+mkdir -p "$MONOROOT/proj"
+(cd "$MONOROOT" && git_c init -q -b main)
+printf '{"policies": {"merge": "human-only"}}' > "$MONOROOT/proj/adk.config.json"
+printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$MONOROOT/proj" \
+  | ADK_GUARD_PR_STATE=ready CLAUDE_PROJECT_DIR="$MONOROOT" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+assert_exit "issue #78: bash-guard находит конфиг подкаталога-проекта, а не безусловный toplevel репозитория" 2 $?
+rm -rf "$MONOROOT"
+
 # bash-guard: секрет-гейт (фейковый ключ собирается конкатенацией,
 # чтобы литерал не лежал в исходниках кита)
 FAKE_AWS="AKIA""IOSFODNN7EXAMPLE"
@@ -448,6 +462,20 @@ rm "$TITLEP/adk.config.json"
 printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="любой заголовок без конвенции" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: без конфига любой заголовок проходит (дефолт plain)" 0 $?
+
+# issue #78: проект — подкаталог более крупного репозитория со своим
+# adk.config.json (toplevel репозитория без конфига); корень конфига —
+# первый кандидат, где файл реально есть (cwd команды → CLAUDE_PROJECT_DIR
+# → git toplevel), а не безусловный toplevel.
+MONOTITLE="$TMP/monorepo-title"
+mkdir -p "$MONOTITLE/proj"
+(cd "$MONOTITLE" && git_c init -q -b main)
+printf '{"conventions": {"commitStyle": "conventional"}}' > "$MONOTITLE/proj/adk.config.json"
+printf '{"tool_input":{"command":"gh pr create --draft --body x"},"cwd":"%s"}' "$MONOTITLE/proj" \
+  | ADK_GUARD_PR_TITLE="без формата вовсе" CLAUDE_PROJECT_DIR="$MONOTITLE" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
+assert_exit "issue #78: pr-title-check находит conventions.commitStyle подкаталога-проекта, а не безусловный toplevel репозитория" 2 $?
+rm -rf "$MONOTITLE"
+
 # Хук зарегистрирован в hooks.json именно как PostToolUse с matcher Bash
 title_reg=$(python3 -c 'import json, sys
 entries = json.load(open(sys.argv[1]))["hooks"].get("PostToolUse", [])
