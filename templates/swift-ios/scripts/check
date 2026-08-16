@@ -3,16 +3,9 @@
 # (тулчейн Xcode 16+: линт и формат — swift format из его состава, ноль внешних
 # установок; SwiftLint/SwiftFormat сознательно не используются — ADR-005).
 set -eo pipefail
-cd "$(dirname "$0")/.."
-
-# Файлы проекта по имени, без артефактов сборки и зависимостей.
-find_clean() {
-  find . -name "$1" \
-    -not -path '*/.build/*' \
-    -not -path '*/DerivedData/*' \
-    -not -path '*/Pods/*' \
-    -not -path '*/.git/*'
-}
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+source "$script_dir/lib.sh"
+cd "$script_dir/.."
 
 # Ближайший родительский SPM-пакет файла (пусто — файл вне пакетов).
 package_of() {
