@@ -940,7 +940,6 @@ assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) �
 # fast-follow из вердикта PR #67)
 review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
 assert_contains "AC-8: review.md ссылается на канонический рецепт шага 6 /work" "$review_ready" 'каноническому рецепту шага 6'
-assert_contains "AC-8: review.md — сперва явный checkout ветки PR (checkout дерева не определён)" "$review_ready" 'gh pr checkout <PR>'
 assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
 assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'переводить в ready без него запрещено'
@@ -949,12 +948,21 @@ assert_contains "AC-8: review.md — дерево возвращается на 
 # Круг 1 ревью PR #112: возврат теперь один раз в конце всей команды и
 # явно покрывает REQUEST_CHANGES, а не только APPROVE-исходы актуализации
 assert_contains "AC-8: review.md — возврат дерева покрывает REQUEST_CHANGES, а не только APPROVE-исходы (issue #80, круг 1)" "$review_ready" 'в любом исходе всей команды (ready, REQUEST_CHANGES'
+# Круг 2 ревью PR #112: `git checkout -` ненадёжен, когда `gh pr checkout`
+# зовётся дважды за команду (шаг 3 и повторно неявно в шаге 5 через уже
+# выбранную ветку) — gh всё равно пишет reflog-запись, и `@{-1}` перестаёт
+# указывать на настоящую исходную ветку. Возврат — по имени, захваченному
+# в шаге 1, до первого checkout.
+step1_review=$(md_section "$KIT/commands/review.md" '^1\. \*\*' '^2\. \*\*')
+assert_contains "AC-8: review.md шаг 1 — запоминает исходную ветку по имени до первого checkout (issue #80, круг 2)" "$step1_review" 'git branch --show-current'
+assert_contains "AC-8: review.md — возврат дерева по имени, захваченному в шаге 1, а не через git checkout - (issue #80, круг 2)" "$review_ready" 'git checkout <исходная ветка>'
 # issue #80: шаг 3 (доработка) коммитит правки в ветку PR — без явного
-# checkout правки могут уйти в чужую ветку (checkout дерева в момент
-# вызова /review не определён, как и в шаге 5). Дерево возвращается,
-# иначе следующий /work начнёт git pull не на той ветке.
+# checkout правки могут уйти в чужую ветку. Круг 2: checkout в шаге 3
+# безусловен (даже если чинить нечего) — шаг 4 (ревью) должен видеть
+# ветку PR независимо от того, было ли что фиксить.
 review_step3=$(md_section "$KIT/commands/review.md" '^3\. \*\*' '^4\. \*\*')
 assert_contains "AC-8: review.md шаг 3 — явный checkout ветки PR перед доработкой (issue #80)" "$review_step3" 'gh pr checkout <PR>'
+assert_contains "AC-8: review.md шаг 3 — checkout безусловен, даже если чинить нечего (issue #80, круг 2)" "$review_step3" 'безусловно, даже если чинить нечего'
 # Круг 1 ревью PR #112: возврат дерева в конце шага 3 (до правки) уводил
 # дерево с ветки PR раньше шага 4 (ревью), который должен видеть именно
 # её — единый возврат перенесён в конец шага 5, после решения по вердикту.
