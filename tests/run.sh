@@ -92,9 +92,12 @@ md_section() { # md_section <файл> <начало-ERE> <конец-ERE, ли�
   # Срез куска markdown-инструкции (шага, раздела) с той же нормализацией
   # переносов, что и в check_ac_doc: результат ищут через assert_contains.
   # Нижняя граница обязательна — срез без неё тянет файл до конца (PR #69).
+  # Адреса sed используют `|` вместо `/` как разделитель (issue #98, K11):
+  # паттерны шагов могут содержать `/` (например, `origin/main`), а `/`-разделитель
+  # ломается на первом же таком паттерне с "unknown command".
   local end="$3"
-  [ "$end" = '$' ] || end="/$3/"
-  sed -nE "/$2/,${end}p" "$1" | tr '\n' ' ' | tr -s ' '
+  [ "$end" = '$' ] || end="\\|$3|"
+  sed -nE "\\|$2|,${end}p" "$1" | tr '\n' ' ' | tr -s ' '
 }
 
 count_lines() { # count_lines <файл> — обёртка над wc -l для сравнения через assert_exit
@@ -146,6 +149,13 @@ if ok:
 print("1" if ok else "0")
 ' "$1" "$2" "$3"
 }
+
+# Общие срезы markdown-шагов команд, переиспользуемые в нескольких блоках
+# тестов ниже (issue #98, K16): раньше вычислялись повторно под разными
+# именами (work_ready/step6; ap_merge/autopilot_step3/step3/step3_ac3) —
+# по одной переменной на срез, вычисленной один раз рядом с хелперами.
+work_step6=$(md_section "$KIT/commands/work.md" '^6\. \*\*' '^7\. \*\*')
+autopilot_step3=$(md_section "$KIT/commands/autopilot.md" '^3\. \*\*' '^4\. \*\*')
 
 # ── Одиночный проект с контрактом ────────────────────────────────────────────
 P="$TMP/proj"
@@ -818,47 +828,45 @@ check_ac_doc "issue #89" "consolidate.md: сверочный поиск «Сбе
 # Рецепт канонизирован в шаге 6 work.md (issue #75): якоря самого рецепта
 # проверяются на work.md, у /autopilot и /review — только их отличия
 # (checkout, refspec, ветки отказа, возврат дерева) плюс ссылка на канон.
-work_ready=$(md_section "$KIT/commands/work.md" '^6\. \*\*' '^7\. \*\*')
-ap_merge=$(md_section "$KIT/commands/autopilot.md" '^3\. \*\*' '^4\. \*\*')
-assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$work_ready" 'BEHIND'
-assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" "$work_ready" 'CONFLICTING'
-assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$ap_merge" 'BEHIND'
-assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICTING" "$ap_merge" 'CONFLICTING'
+assert_contains "AC-8: work.md перед ready проверяет BEHIND" "$work_step6" 'BEHIND'
+assert_contains "AC-8: work.md перед ready проверяет CONFLICTING" "$work_step6" 'CONFLICTING'
+assert_contains "AC-8: autopilot.md перед merge проверяет BEHIND" "$autopilot_step3" 'BEHIND'
+assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICTING" "$autopilot_step3" 'CONFLICTING'
 # Якоря механики (круг 2 ревью PR #67: фиксы без якорей переживают откат):
 # отставание — фактом из git, не mergeStateStatus (обоснование — в каноне,
 # work.md шаг 6); в автопилоте — явный checkout и refspec; fetch без
 # «origin main» (текст в одной команде с force-push ложно триггерит гейт
 # bash-guard); отказы актуализации определены.
-assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_ready" 'git rev-list --count HEAD\.\.origin/main'
-assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$ap_merge" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
-assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$ap_merge" 'gh pr checkout <PR>'
-assert_contains "AC-8: autopilot.md — push после rebase с обязательным refspec" "$ap_merge" 'force-with-lease origin <ветка PR>'
-assert_not_contains "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" "$work_ready" 'git fetch origin main'
-assert_not_contains "AC-8: autopilot.md — fetch без «origin main» (тот же ложный триггер)" "$ap_merge" 'git fetch origin main'
+assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_step6" 'git rev-list --count HEAD\.\.origin/main'
+assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$autopilot_step3" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
+assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$autopilot_step3" 'gh pr checkout <PR>'
+assert_contains "AC-8: autopilot.md — push после rebase с обязательным refspec" "$autopilot_step3" 'force-with-lease origin <ветка PR>'
+assert_not_contains "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" "$work_step6" 'git fetch origin main'
+assert_not_contains "AC-8: autopilot.md — fetch без «origin main» (тот же ложный триггер)" "$autopilot_step3" 'git fetch origin main'
 # Якоря семантики, не только команд: остановка/застревание, а не «разберись сам»
-assert_contains "AC-8: work.md — конфликт при самой актуализации прерывается (--abort)" "$work_ready" 'git rebase --abort'
-assert_contains "AC-8: work.md — конфликт при актуализации — остановка и человек, не самодеятельность" "$work_ready" 'остановись и позови пользователя, как при'
-assert_contains "AC-8: autopilot.md — конфликт при актуализации прерывается (--abort)" "$ap_merge" 'git rebase --abort'
-assert_contains "AC-8: autopilot.md — конфликт при актуализации — застревание с причиной" "$ap_merge" 'reason="конфликт при актуализации"'
-assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание с причиной" "$ap_merge" 'reason="гейты красные после актуализации"'
-assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_ready" 'conventions\.branchUpdate rebase'
+assert_contains "AC-8: work.md — конфликт при самой актуализации прерывается (--abort)" "$work_step6" 'git rebase --abort'
+assert_contains "AC-8: work.md — конфликт при актуализации — остановка и человек, не самодеятельность" "$work_step6" 'остановись и позови пользователя, как при'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации прерывается (--abort)" "$autopilot_step3" 'git rebase --abort'
+assert_contains "AC-8: autopilot.md — конфликт при актуализации — застревание с причиной" "$autopilot_step3" 'reason="конфликт при актуализации"'
+assert_contains "AC-8: autopilot.md — красные гейты после актуализации — застревание с причиной" "$autopilot_step3" 'reason="гейты красные после актуализации"'
+assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_step6" 'conventions\.branchUpdate rebase'
 check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
   "$KIT/commands/work.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
 # Канон живёт в одном месте: work.md называет себя каноном, autopilot.md и
 # review.md ссылаются на него, а не переписывают чтение конфига заново
 check_ac_doc AC-8 "work.md: шаг 6 объявлен каноническим рецептом актуализации" \
   "$KIT/commands/work.md" "Рецепт актуализации ниже — канонический"
-assert_contains "AC-8: autopilot.md ссылается на канонический рецепт шага 6 /work" "$ap_merge" 'рецепт — шаг 6 `/work`'
+assert_contains "AC-8: autopilot.md ссылается на канонический рецепт шага 6 /work" "$autopilot_step3" 'рецепт — шаг 6 `/work`'
 # AC-8 называет /autopilot поимённо: способ актуализации остаётся привязан к
 # conventions.branchUpdate и в нём — якорь на текст, чтение конфига — в каноне
-assert_contains "AC-8: autopilot.md актуализирует способом из conventions.branchUpdate" "$ap_merge" 'conventions\.branchUpdate'
-assert_not_contains "AC-8: autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$ap_merge" 'conventions\.branchUpdate rebase rebase,merge'
+assert_contains "AC-8: autopilot.md актуализирует способом из conventions.branchUpdate" "$autopilot_step3" 'conventions\.branchUpdate'
+assert_not_contains "AC-8: autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$autopilot_step3" 'conventions\.branchUpdate rebase rebase,merge'
 check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
   "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
 check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
   "$KIT/commands/autopilot.md" "merge без перегона гейтов после актуализации запрещён"
-assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке (не «разреши сам»)" "$work_ready" 'конфликт с main, остановись и позови пользователя'
-assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$ap_merge" 'конфликт с main требует человека.*needs-human'
+assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке (не «разреши сам»)" "$work_step6" 'конфликт с main, остановись и позови пользователя'
+assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$autopilot_step3" 'конфликт с main требует человека.*needs-human'
 # /review — второй путь в ready: та же проверка актуальности (issue #68,
 # fast-follow из вердикта PR #67)
 review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
@@ -873,12 +881,11 @@ assert_contains "AC-8: review.md — дерево возвращается на 
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
 step1=$(md_section "$WORKMD" '^1\. \*\*' '^2\. \*\*')
-step6=$(md_section "$WORKMD" '^6\. \*\*' '^7\. \*\*')
 step7=$(md_section "$WORKMD" '^7\. \*\*' '$')
 
 assert_contains "AC-1: work.md шаг 1 логирует event=start" "$step1" 'adk-log\.sh.*event=start'
 
-assert_contains "AC-1: work.md шаг 6 логирует event=review после каждого вердикта" "$step6" 'adk-log\.sh.*event=review'
+assert_contains "AC-1: work.md шаг 6 логирует event=review после каждого вердикта" "$work_step6" 'adk-log\.sh.*event=review'
 
 assert_contains "AC-1: work.md шаг 7 логирует event=outcome (схема ADR-001)" "$step7" 'adk-log\.sh.*event=outcome'
 
@@ -888,7 +895,7 @@ assert_contains "AC-1: work.md шаг 7 считает размер диффа g
 
 assert_contains "AC-1: work.md шаг 7 пишет diff= (не diffstat=, issue #21)" "$step7" 'diff='
 
-for step_name in step1 step6 step7; do
+for step_name in step1 work_step6 step7; do
   step_text=$(eval "printf '%s' \"\$$step_name\"")
   assert_contains "AC-1: work.md $step_name — запись в журнал не блокирует задачу (|| true)" "$step_text" 'adk-log\.sh.*|| true'
 done
@@ -903,7 +910,6 @@ assert_contains "AC-2: work.md шаг 7 — при human-политиках от
 autopilot_text=$(tr '\n' ' ' < "$KIT/commands/autopilot.md" | tr -s ' ')
 assert_contains "AC-2: autopilot.md сверяет формулировку сводки с policies.merge" "$autopilot_text" 'policies\.merge'
 assert_contains "AC-2: autopilot.md — заблокированные политикой ready-PR идут в сводку как «ждут человека», не «смержено»" "$autopilot_text" 'ждут человека'
-autopilot_step3=$(md_section "$KIT/commands/autopilot.md" '^3\. \*\*' '^4\. \*\*')
 assert_contains "AC-2: autopilot.md шаг 3 — при human-политиках ready-PR не мержится (исключение названо в самом шаге)" "$autopilot_step3" 'policies\.merge'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает work.md
@@ -950,29 +956,28 @@ assert_contains "AC-1: work.md-смоук: adk-stats.sh на журнале с r
 # ── /autopilot: события журнала (AC-2) ───────────────────────────────────────
 AUTOMD="$KIT/commands/autopilot.md"
 cycle_preamble=$(md_section "$AUTOMD" '^## Цикл' '^1\. \*\*')
-step3=$(md_section "$AUTOMD" '^3\. \*\*' '^4\. \*\*')
 finish_section=$(md_section "$AUTOMD" '^## Завершение' '$')
 
 assert_contains "AC-2: autopilot.md логирует event=run_start перед циклом (issue #21: раньше не логировался вовсе)" "$cycle_preamble" 'adk-log\.sh.*event=run_start'
 
-assert_contains "AC-2: autopilot.md шаг 3 логирует event=task на каждую разобранную задачу" "$step3" 'adk-log\.sh.*event=task'
+assert_contains "AC-2: autopilot.md шаг 3 логирует event=task на каждую разобранную задачу" "$autopilot_step3" 'adk-log\.sh.*event=task'
 
 assert_contains "AC-2: autopilot.md «Завершение» логирует event=run_end (не run_finish, issue #21)" "$finish_section" 'adk-log\.sh.*event=run_end'
 
 for outcome_kind in 'result=merged' 'result=stuck' 'result=skipped'; do
-  assert_contains "AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»" "$step3" "$outcome_kind"
+  assert_contains "AC-2: autopilot.md шаг 3 покрывает исход «$outcome_kind»" "$autopilot_step3" "$outcome_kind"
 done
 
 for agg_field in done= stuck= skipped=; do
   assert_contains "AC-2: autopilot.md «Завершение» пишет агрегат «$agg_field»" "$finish_section" "$agg_field"
 done
 
-for section_name in cycle_preamble step3 finish_section; do
+for section_name in cycle_preamble autopilot_step3 finish_section; do
   section_text=$(eval "printf '%s' \"\$$section_name\"")
   assert_contains "AC-2: autopilot.md $section_name — запись в журнал не блокирует прогон (|| true)" "$section_text" 'adk-log\.sh.*|| true'
 done
 
-assert_contains "AC-2: autopilot.md шаг 3 пишет в единицу autopilot-<дата>" "$step3" 'autopilot-\$(date'
+assert_contains "AC-2: autopilot.md шаг 3 пишет в единицу autopilot-<дата>" "$autopilot_step3" 'autopilot-\$(date'
 
 # Смоук: последовательность вызовов adk-log.sh, которую описывает autopilot.md
 # (run_start → task=merged → task=stuck → task=skipped → run_end, схема
@@ -1031,11 +1036,10 @@ check_ac_doc AC-3 "autopilot.md: enabled=false — отказ объясняет
   "$AUTOMD" "policies.autopilot.enabled=false"
 
 # canMerge=false — ready-PR не мержатся, а собираются в список «ждут человека»
-step3_ac3=$(md_section "$AUTOMD" '^3\. \*\*' '^4\. \*\*')
 finish_ac3=$(md_section "$AUTOMD" '^## Завершение' '$')
-assert_contains "AC-3: autopilot.md шаг 3 мержит только при canMerge=true" "$step3_ac3" 'canMerge=true'
-assert_contains "AC-3: autopilot.md шаг 3: canMerge=false — ready-PR не мержится, а попадает в «ждут человека»" "$step3_ac3" 'canMerge=false.*ждут человека'
-assert_contains "AC-3: autopilot.md шаг 3: ready-PR без merge логируется result=ready (ADR-003)" "$step3_ac3" 'result=ready'
+assert_contains "AC-3: autopilot.md шаг 3 мержит только при canMerge=true" "$autopilot_step3" 'canMerge=true'
+assert_contains "AC-3: autopilot.md шаг 3: canMerge=false — ready-PR не мержится, а попадает в «ждут человека»" "$autopilot_step3" 'canMerge=false.*ждут человека'
+assert_contains "AC-3: autopilot.md шаг 3: ready-PR без merge логируется result=ready (ADR-003)" "$autopilot_step3" 'result=ready'
 check_ac_doc AC-3 "autopilot.md: задача с ready-PR при canMerge=false не застряла — метка needs-human не ставится" \
   "$AUTOMD" "метку \`needs-human\` не ставь"
 assert_contains "AC-3: autopilot.md «Завершение» — сводка содержит отдельный список «ждут человека»" "$finish_ac3" 'ждут человека'
