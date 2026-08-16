@@ -126,22 +126,48 @@ issue #45). `/work` читает labels issue, определяет тип по 
 
 ## Пример
 
+Ниже — только атрибуты, у которых уже есть потребитель (хук, `/autopilot`
+или `/work`): изменить их в `adk.config.json` значит сразу изменить
+поведение кита.
+
 ```json
 {
   "policies": {
     "merge": "human-review-required",
-    "review": { "maxRounds": 3, "humanApprovalRequired": true },
     "autopilot": { "enabled": true, "canMerge": false, "maxTasksPerRun": 3 }
   },
   "conventions": {
     "squash": true,
     "branchUpdate": "rebase",
     "commitStyle": "conventional",
+    "externalTitleLint": true
+  }
+}
+```
+
+`policies.review.humanApprovalRequired` в этот пример не входит: он не
+читается хуками — его потребитель серверная настройка, которую заводит
+`/project-init` (README, раздел «Гейты (хуки)»), один раз при
+инициализации репозитория. Правка значения в уже существующем
+`adk.config.json` сама по себе branch protection не обновит — нужен
+повторный `/project-init` или ручная правка настроек репозитория.
+
+Атрибуты, зарезервированные спекой и пока вовсе не имеющие потребителя
+(`policies.review.maxRounds`, `conventions.language`,
+`conventions.branchPattern`, `conventions.attribution` — пометки см. в
+таблицах выше), в примере не участвуют: **на поведение кита они не
+влияют**, задавать их в `adk.config.json` бессмысленно до подключения
+отдельной задачей. Синтаксически они выглядели бы так:
+
+```json
+{
+  "policies": { "review": { "maxRounds": 3 } },
+  "conventions": {
+    "language": "ru",
+    "branchPattern": "issue-{n}-{slug}",
     "attribution": true
   }
 }
 ```
 
-Незаданные атрибуты (в примере — `conventions.language`,
-`conventions.branchPattern`, весь блок `types` и т.д.) берут дефолт из
-таблицы выше.
+Незаданные атрибуты берут дефолт из таблицы выше.
