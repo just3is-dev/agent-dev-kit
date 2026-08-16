@@ -126,14 +126,24 @@ issue #45). `/work` читает labels issue, определяет тип по 
 
 ## Пример
 
-Ниже — только атрибуты, у которых уже есть потребитель (хук, `/autopilot`
-или `/work`): изменить их в `adk.config.json` значит сразу изменить
-поведение кита.
+Ниже — только атрибуты, у которых уже есть потребитель: хук, команда
+(`/work`, `/autopilot`, `/review`) или одноразовая серверная настройка,
+которую заводит `/project-init` через `adk-config.sh` (SPEC-002 AC-6).
+Для большинства атрибутов это значит, что правка значения в
+`adk.config.json` сразу меняет поведение кита. Исключение —
+`conventions.squash` и `policies.review.humanApprovalRequired`: их читает
+только `/project-init`, который один раз при инициализации репозитория
+настраивает по ним allowed merge methods и branch protection
+(`required_pull_request_reviews`) на сервере GitHub. Правка значения в
+уже существующем `adk.config.json` сама по себе ничего на сервере не
+обновит — нужен повторный `/project-init` или ручная правка настроек
+репозитория.
 
 ```json
 {
   "policies": {
     "merge": "human-review-required",
+    "review": { "humanApprovalRequired": true },
     "autopilot": { "enabled": true, "canMerge": false, "maxTasksPerRun": 3 }
   },
   "conventions": {
@@ -145,29 +155,12 @@ issue #45). `/work` читает labels issue, определяет тип по 
 }
 ```
 
-`policies.review.humanApprovalRequired` в этот пример не входит: он не
-читается хуками — его потребитель серверная настройка, которую заводит
-`/project-init` (README, раздел «Гейты (хуки)»), один раз при
-инициализации репозитория. Правка значения в уже существующем
-`adk.config.json` сама по себе branch protection не обновит — нужен
-повторный `/project-init` или ручная правка настроек репозитория.
-
 Атрибуты, зарезервированные спекой и пока вовсе не имеющие потребителя
 (`policies.review.maxRounds`, `conventions.language`,
 `conventions.branchPattern`, `conventions.attribution` — пометки см. в
 таблицах выше), в примере не участвуют: **на поведение кита они не
 влияют**, задавать их в `adk.config.json` бессмысленно до подключения
-отдельной задачей. Синтаксически они выглядели бы так:
+отдельной задачей.
 
-```json
-{
-  "policies": { "review": { "maxRounds": 3 } },
-  "conventions": {
-    "language": "ru",
-    "branchPattern": "issue-{n}-{slug}",
-    "attribution": true
-  }
-}
-```
-
-Незаданные атрибуты берут дефолт из таблицы выше.
+Незаданные атрибуты — включая весь блок `types`, если он в файле
+отсутствует, — берут дефолт из таблицы выше.
