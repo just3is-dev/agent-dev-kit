@@ -126,22 +126,43 @@ issue #45). `/work` читает labels issue, определяет тип по 
 
 ## Пример
 
+Ниже — только атрибуты, у которых уже есть потребитель: хук, команда
+(`/work`, `/autopilot`, `/review`) или одноразовая серверная настройка,
+которую заводит `/project-init` через `adk-config.sh` (SPEC-002 AC-6).
+Для большинства атрибутов это значит, что правка значения в
+`adk.config.json` сразу меняет поведение кита. Исключение —
+`conventions.squash` и `policies.review.humanApprovalRequired`: их читает
+только `/project-init`, который один раз при инициализации репозитория
+настраивает по ним allowed merge methods и branch protection
+(`required_pull_request_reviews`) на сервере GitHub. Правка значения в
+уже существующем `adk.config.json` сама по себе ничего на сервере не
+обновит: повторный `/project-init` для существующего репозитория только
+сверяет настройки с конфигом и сообщает расхождение, ничего не меняя
+(«существующее не перезаписывается», SPEC-002) — привести сервер в
+соответствие можно только вручную через настройки репозитория.
+
 ```json
 {
   "policies": {
     "merge": "human-review-required",
-    "review": { "maxRounds": 3, "humanApprovalRequired": true },
+    "review": { "humanApprovalRequired": true },
     "autopilot": { "enabled": true, "canMerge": false, "maxTasksPerRun": 3 }
   },
   "conventions": {
     "squash": true,
     "branchUpdate": "rebase",
     "commitStyle": "conventional",
-    "attribution": true
+    "externalTitleLint": false
   }
 }
 ```
 
-Незаданные атрибуты (в примере — `conventions.language`,
-`conventions.branchPattern`, весь блок `types` и т.д.) берут дефолт из
-таблицы выше.
+Атрибуты, зарезервированные спекой и пока вовсе не имеющие потребителя
+(`policies.review.maxRounds`, `conventions.language`,
+`conventions.branchPattern`, `conventions.attribution` — пометки см. в
+таблицах выше), в примере не участвуют: **на поведение кита они не
+влияют**, задавать их в `adk.config.json` бессмысленно до подключения
+отдельной задачей.
+
+Незаданные атрибуты — и весь блок `types`, если его в файле нет, — берут
+дефолт из таблицы выше.
