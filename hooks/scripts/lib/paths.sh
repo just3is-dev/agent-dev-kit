@@ -34,14 +34,30 @@ adk_logs_dir() {
   fi
 }
 
-# adk_notify_send <title> <message> — вызывает notify-send.sh рядом со
-# скриптом-вызывающим. До этой правки выражение
-# "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" дублировалось в
-# stop-test.sh и notification.sh. $0 внутри функции — это $0 вызывающего
-# скрипта (bash не меняет его при вызове функции), поэтому путь
-# разрешается так же, как и раньше.
+# adk_notify_state_dir — печатает каталог состояния локальных уведомлений:
+# "${TMPDIR:-/tmp}/agent-dev-kit-notify". До этой правки путь собирался
+# вручную в prompt-timestamp.sh и stop-test.sh (issue #93).
+adk_notify_state_dir() {
+  printf '%s\n' "${TMPDIR:-/tmp}/agent-dev-kit-notify"
+}
+
+# adk_notify_ts_file <session_id> — путь к файлу метки времени начала хода
+# для сессии: "<adk_notify_state_dir>/<session_id>".
+adk_notify_ts_file() {
+  printf '%s\n' "$(adk_notify_state_dir)/$1"
+}
+
+# adk_notify_send <message> — вызывает notify-send.sh рядом со
+# скриптом-вызывающим ($0 внутри функции — это $0 вызывающего, bash его не
+# меняет при вызове функции) с заголовком "Claude — <проект>" (правило
+# корня для заголовка — см. шапку файла, оно намеренно не adk_project_root).
+# До issue #93 оба — резолв пути к notify-send.sh и сборка заголовка —
+# дублировались в stop-test.sh/notification.sh под разными именами
+# переменных (proj/proj_name); вызывающим остаётся передать только текст.
 adk_notify_send() {
-  "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" "$@"
+  local msg="$1"
+  local title="Claude — $(basename "${CLAUDE_PROJECT_DIR:-$PWD}")"
+  "$(cd "$(dirname "$0")" && pwd)/notify-send.sh" "$title" "$msg"
 }
 
 # adk_command_git_root <cmd> <hook_cwd> — git toplevel репозитория, к которому

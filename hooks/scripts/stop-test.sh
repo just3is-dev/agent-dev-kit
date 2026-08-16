@@ -21,15 +21,14 @@ session_id=$(json_field "$payload" "session_id" "")
 # короткие реплики живого диалога уведомлений не порождают.
 notify_done() {
   [ -n "$session_id" ] || return 0
-  ts_file="${TMPDIR:-/tmp}/agent-dev-kit-notify/$session_id"
+  ts_file=$(adk_notify_ts_file "$session_id")
   [ -f "$ts_file" ] || return 0
   started=$(cat "$ts_file" 2>/dev/null)
   case "$started" in ''|*[!0-9]*) return 0 ;; esac
   elapsed=$(( $(date +%s) - started ))
   threshold="${ADK_NOTIFY_MIN_SECONDS:-45}"
   [ "$elapsed" -ge "$threshold" ] || return 0
-  proj_name=$(basename "${CLAUDE_PROJECT_DIR:-$PWD}")
-  adk_notify_send "Claude — $proj_name" "Задача завершена (${elapsed} c), гейты зелёные"
+  adk_notify_send "Задача завершена (${elapsed} c), гейты зелёные"
 }
 on_exit() {
   status=$?

@@ -1741,21 +1741,36 @@ assert_exit "AC-1: adk-log.sh: git-фолбэк для корня по-преж�
 stats_fb=$(cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-stats.sh" 2>&1)
 assert_contains "AC-3: adk-stats.sh: git-фолбэк для корня по-прежнему читает toplevel/.adk/logs" "$stats_fb" "Завершённых задач ещё нет"
 
-# Сознательное решение НЕ унифицировано: stop-test.sh/notification.sh
-# по-прежнему используют ${CLAUDE_PROJECT_DIR:-$PWD} без git-фолбэка
-# (docs/adr/002-shared-hook-lib-paths.md) — проверяем исходники напрямую,
-# так как поведенческий тест «без CLAUDE_PROJECT_DIR» для stop-test.sh
-# требует cwd = корень проекта с исполняемым scripts/test, что здесь не
-# создаётся отдельно.
+# Сознательное решение НЕ унифицировано: заголовок уведомления по-прежнему
+# без git-фолбэка (${CLAUDE_PROJECT_DIR:-$PWD}, не adk_project_root —
+# docs/adr/002-shared-hook-lib-paths.md). Проверяем поведением, а не грепом
+# по исходнику paths.sh (грep по всему файлу ловит и комментарии, а не
+# только код — не отличит рефакторинг от фактического снятия правила):
+# запускаем notification.sh с cwd = подкаталог git-репо ($GITROOT/sub,
+# фикстура выше) и без CLAUDE_PROJECT_DIR. Если бы заголовок резолвился
+# через adk_project_root (git-фолбэк на toplevel), title был бы
+# "Claude — $(basename "$GITROOT")", а не "Claude — sub".
+NOTIFY_TITLE_FILE="$TMP/paths-notify-title"
+rm -f "$NOTIFY_TITLE_FILE"
+printf '{"message":"x"}' | (cd "$GITROOT/sub" && env -u CLAUDE_PROJECT_DIR ADK_NOTIFY_FILE="$NOTIFY_TITLE_FILE" "$HOOKS/notification.sh")
+notify_title_line=$(cat "$NOTIFY_TITLE_FILE" 2>/dev/null)
+assert_contains "adk_notify_send: заголовок — basename \$PWD подкаталога (sub), без git-фолбэка на toplevel (ADR-002)" "$notify_title_line" '^Claude — sub|'
+
 stop_test_content=$(cat "$HOOKS/stop-test.sh")
-assert_contains "stop-test.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)" "$stop_test_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
+assert_contains "stop-test.sh: правило корня для поиска scripts/test не унифицировано (нет git-фолбэка, как решено в ADR-002)" "$stop_test_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
 notification_content=$(cat "$HOOKS/notification.sh")
-assert_contains "notification.sh: правило корня не унифицировано (нет git-фолбэка, как решено в ADR-002)" "$notification_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
+paths_content=$(cat "$PATHS_LIB")
 
 # Дублирующийся резолв notify-send.sh убран из обоих мест — обе точки
 # вызова используют общий adk_notify_send из lib/paths.sh.
 assert_contains "stop-test.sh: использует общий adk_notify_send вместо дублирующегося резолва пути" "$stop_test_content" 'adk_notify_send'
 assert_contains "notification.sh: использует общий adk_notify_send вместо дублирующегося резолва пути" "$notification_content" 'adk_notify_send'
+
+# issue #93: сборка пути состояния уведомлений (agent-dev-kit-notify) убрана
+# из вызывающих скриптов — они больше не содержат литерала "agent-dev-kit-notify".
+prompt_ts_content=$(cat "$HOOKS/prompt-timestamp.sh")
+assert_not_contains "prompt-timestamp.sh: без ручной сборки пути agent-dev-kit-notify — использует adk_notify_state_dir" "$prompt_ts_content" 'agent-dev-kit-notify'
+assert_not_contains "stop-test.sh: без ручной сборки пути agent-dev-kit-notify — использует adk_notify_ts_file" "$stop_test_content" 'agent-dev-kit-notify'
 
 # ── Конфиг процесса: lib/config.sh + adk-config.sh (issue #41, AC-1) ────────
 # Модель — SPEC-002 (docs/specs/002-process-config.md): плоские атрибуты,
