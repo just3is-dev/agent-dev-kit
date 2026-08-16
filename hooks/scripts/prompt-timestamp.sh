@@ -10,7 +10,6 @@ payload=$(cat)
 sid=$(json_field "$payload" "session_id" "")
 [ -n "$sid" ] || exit 0
 
-dir=$(adk_notify_state_dir)
-mkdir -p "$dir"
-date +%s > "$dir/$sid"
+mkdir -p "$(adk_notify_state_dir)"
+date +%s > "$(adk_notify_ts_file "$sid")"
 exit 0

@@ -1741,38 +1741,36 @@ assert_exit "AC-1: adk-log.sh: git-фолбэк для корня по-преж�
 stats_fb=$(cd "$LOGFB/nested/deeper" && env -u CLAUDE_PROJECT_DIR "$HOOKS/adk-stats.sh" 2>&1)
 assert_contains "AC-3: adk-stats.sh: git-фолбэк для корня по-прежнему читает toplevel/.adk/logs" "$stats_fb" "Завершённых задач ещё нет"
 
-# Сознательное решение НЕ унифицировано: правило заголовка уведомления
-# по-прежнему без git-фолбэка (${CLAUDE_PROJECT_DIR:-$PWD}, не
-# adk_project_root — docs/adr/002-shared-hook-lib-paths.md). До issue #93
-# это выражение дублировалось построчно в самих stop-test.sh/notification.sh
-# (проверялось по их исходникам напрямую); теперь оно живёт единственный
-# раз внутри adk_notify_send в lib/paths.sh — оба вызывающих передают
-# только текст сообщения (см. ниже), поэтому проверяем исходник paths.sh —
-# именно там теперь фактически принимается решение «без git-фолбэка», и
-# стоп-теста для stop-test.sh отдельно не нужно: у него есть своё
-# использование того же выражения для поиска scripts/test (не тронуто
-# issue #93), проверяем его так же, как раньше.
+# Сознательное решение НЕ унифицировано: заголовок уведомления по-прежнему
+# без git-фолбэка (${CLAUDE_PROJECT_DIR:-$PWD}, не adk_project_root —
+# docs/adr/002-shared-hook-lib-paths.md). Проверяем поведением, а не грепом
+# по исходнику paths.sh (грep по всему файлу ловит и комментарии, а не
+# только код — не отличит рефакторинг от фактического снятия правила):
+# запускаем notification.sh с cwd = подкаталог git-репо ($GITROOT/sub,
+# фикстура выше) и без CLAUDE_PROJECT_DIR. Если бы заголовок резолвился
+# через adk_project_root (git-фолбэк на toplevel), title был бы
+# "Claude — $(basename "$GITROOT")", а не "Claude — sub".
+NOTIFY_TITLE_FILE="$TMP/paths-notify-title"
+rm -f "$NOTIFY_TITLE_FILE"
+printf '{"message":"x"}' | (cd "$GITROOT/sub" && env -u CLAUDE_PROJECT_DIR ADK_NOTIFY_FILE="$NOTIFY_TITLE_FILE" "$HOOKS/notification.sh")
+notify_title_line=$(cat "$NOTIFY_TITLE_FILE" 2>/dev/null)
+assert_contains "adk_notify_send: заголовок — basename \$PWD подкаталога (sub), без git-фолбэка на toplevel (ADR-002)" "$notify_title_line" '^Claude — sub|'
+
 stop_test_content=$(cat "$HOOKS/stop-test.sh")
 assert_contains "stop-test.sh: правило корня для поиска scripts/test не унифицировано (нет git-фолбэка, как решено в ADR-002)" "$stop_test_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
 notification_content=$(cat "$HOOKS/notification.sh")
 paths_content=$(cat "$PATHS_LIB")
-assert_contains "adk_notify_send: заголовок уведомления не унифицирован с git-фолбэком (решено в ADR-002, вынесено из notification.sh/stop-test.sh в issue #93)" "$paths_content" '\${CLAUDE_PROJECT_DIR:-\$PWD}'
 
 # Дублирующийся резолв notify-send.sh убран из обоих мест — обе точки
 # вызова используют общий adk_notify_send из lib/paths.sh.
 assert_contains "stop-test.sh: использует общий adk_notify_send вместо дублирующегося резолва пути" "$stop_test_content" 'adk_notify_send'
 assert_contains "notification.sh: использует общий adk_notify_send вместо дублирующегося резолва пути" "$notification_content" 'adk_notify_send'
 
-# issue #93: сборка пути состояния уведомлений (agent-dev-kit-notify) и
-# заголовка (Claude — <проект>) убрана из вызывающих скриптов — они больше
-# не содержат ни ручного basename, ни литерала "agent-dev-kit-notify".
+# issue #93: сборка пути состояния уведомлений (agent-dev-kit-notify) убрана
+# из вызывающих скриптов — они больше не содержат литерала "agent-dev-kit-notify".
 prompt_ts_content=$(cat "$HOOKS/prompt-timestamp.sh")
-assert_not_contains "notification.sh: без ручного basename — заголовок формирует adk_notify_send" "$notification_content" 'basename'
 assert_not_contains "prompt-timestamp.sh: без ручной сборки пути agent-dev-kit-notify — использует adk_notify_state_dir" "$prompt_ts_content" 'agent-dev-kit-notify'
 assert_not_contains "stop-test.sh: без ручной сборки пути agent-dev-kit-notify — использует adk_notify_ts_file" "$stop_test_content" 'agent-dev-kit-notify'
-assert_not_contains "stop-test.sh: без ручного basename — заголовок формирует adk_notify_send" "$stop_test_content" 'basename'
-assert_contains "lib/paths.sh: содержит adk_notify_state_dir" "$paths_content" 'adk_notify_state_dir'
-assert_contains "lib/paths.sh: содержит adk_notify_ts_file" "$paths_content" 'adk_notify_ts_file'
 
 # ── Конфиг процесса: lib/config.sh + adk-config.sh (issue #41, AC-1) ────────
 # Модель — SPEC-002 (docs/specs/002-process-config.md): плоские атрибуты,
