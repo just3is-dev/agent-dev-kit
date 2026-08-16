@@ -1491,6 +1491,7 @@ case "$1" in
     case "${SWIFT_STUB_TEST_MODE:-pass}" in
       notests) echo "error: no tests found; create a target in the 'Tests' directory"; exit 1 ;;
       fail) echo "Test Case 'X' failed"; exit 1 ;;
+      slow) echo "SLOW_MARKER_1"; sleep 1; echo "SLOW_MARKER_2"; exit 0 ;;
       *) exit 0 ;;
     esac ;;
   build)
@@ -1522,6 +1523,24 @@ assert_contains "issue #70: swift-ios: вывод упавших тестов д
 # пакет без тест-таргетов: «no tests found» — не провал (контракт)
 (cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=notests ./scripts/test >/dev/null 2>&1)
 assert_exit "issue #70: swift-ios: «no tests found» пакета — не провал, exit 0" 0 $?
+
+# K20 (issue #99): вывод swift test стримится (tee), а не копится в переменной
+# до завершения пакета — проверяем, что первая строка появляется в выводе,
+# пока процесс ещё жив (до того как стаб допишет вторую строку).
+sios_stream_out="$TMP/swiftios-stream.log"
+(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=slow ./scripts/test >"$sios_stream_out" 2>&1) &
+stream_pid=$!
+sleep 0.4
+stream_still_running="no"
+kill -0 "$stream_pid" 2>/dev/null && stream_still_running="yes"
+stream_partial=$(cat "$sios_stream_out" 2>/dev/null)
+wait "$stream_pid"
+assert_contains "K20 (issue #99): swift-ios scripts/test — замер сделан пока swift test ещё выполняется (проверка валидна)" \
+  "$stream_still_running" "yes"
+assert_contains "K20 (issue #99): swift-ios scripts/test стримит первую строку вывода swift test раньше завершения пакета (tee, не накопление в переменной)" \
+  "$stream_partial" "SLOW_MARKER_1"
+assert_not_contains "K20 (issue #99): swift-ios scripts/test — вторая строка вывода ещё не записана в момент замера" \
+  "$stream_partial" "SLOW_MARKER_2"
 
 # check по файлу пакета собирает этот пакет — ошибка типов ловится
 # PostToolUse-гейтом, а не только полным прогоном (круг 1 PR #71)

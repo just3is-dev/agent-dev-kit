@@ -11,17 +11,22 @@ cd "$script_dir/.."
 # Тесты каждого SPM-пакета. «Пустой набор тестов — не провал» (контракт):
 # swift test на пакете без тест-таргетов сам падает с «no tests found» —
 # этот и только этот провал считается успехом.
+# Вывод стримится через tee (не копится в переменной) — разработчик видит
+# прогресс `swift test` по мере выполнения, а не всё разом после завершения
+# пакета; решение гейта (pass/fail) по-прежнему разбирает содержимое
+# полного вывода, сохранённого во временный файл.
 while IFS= read -r pkg; do
   dir=$(dirname "$pkg")
-  if out=$(swift test --package-path "$dir" 2>&1); then
-    printf '%s\n' "$out"
+  out_file=$(mktemp)
+  if swift test --package-path "$dir" 2>&1 | tee "$out_file"; then
+    :
   else
-    printf '%s\n' "$out"
-    case "$out" in
+    case "$(cat "$out_file")" in
       *"no tests found"*) ;;
-      *) exit 1 ;;
+      *) rm -f "$out_file"; exit 1 ;;
     esac
   fi
+  rm -f "$out_file"
 done < <(find_clean 'Package.swift')
 
 # Smoke «приложение собирается» — аналог bootstrap-теста сервиса из
