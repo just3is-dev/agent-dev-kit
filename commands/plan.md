@@ -24,10 +24,14 @@ argument-hint: "[номер или путь спеки; по умолчанию 
    - label типа задачи: имя возьми из конфига проекта —
      `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh types.task.label type:task`
      (отсутствие конфига или атрибута = дефолт `type:task`, см.
-     docs/config.md). Перед созданием issues создай отсутствующий label
-     в репозитории: `gh label create <label> 2>/dev/null || true`.
-     Правило спеки: тип задачи задаётся только label'ом, из текста issue
-     не выводится;
+     docs/config.md). Перед созданием issues создай отсутствующий label в
+     репозитории: `label_err=$(gh label create <label> 2>&1 >/dev/null)`.
+     Раздели исходы: нулевой exit или текст ошибки с «already exists» —
+     успех (label уже есть, идемпотентно), молча продолжай к issues; любую
+     другую ошибку (например, отказ по правам) не глуши — скажи явно, что
+     label не создан и `gh issue create --label` может упасть, и покажи
+     текст ошибки. Правило спеки: тип задачи задаётся только label'ом, из
+     текста issue не выводится;
    - по issue на задачу: заголовок — название задачи, тело — контекст,
      «Сделать», DoD, зависимости («Blocked by #N»), ссылка на файл спеки;
      `gh issue create --milestone ... --label <label> --title ... --body ...`;

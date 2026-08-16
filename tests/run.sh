@@ -860,7 +860,7 @@ assert_contains "AC-8: autopilot.md ссылается на каноническ
 # AC-8 называет /autopilot поимённо: способ актуализации остаётся привязан к
 # conventions.branchUpdate и в нём — якорь на текст, чтение конфига — в каноне
 assert_contains "AC-8: autopilot.md актуализирует способом из conventions.branchUpdate" "$autopilot_step3" 'conventions\.branchUpdate'
-assert_not_contains "AC-8: autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$autopilot_step3" 'conventions\.branchUpdate rebase rebase,merge'
+assert_not_contains "K19 (issue #99): анти-дубль — autopilot.md не дублирует канон (чтение branchUpdate из конфига)" "$autopilot_step3" 'conventions\.branchUpdate rebase rebase,merge'
 check_ac_doc AC-8 "work.md: после актуализации гейты перегоняются обязательно, ready без перегона запрещён" \
   "$KIT/commands/work.md" "переводить PR в ready без перегона гейтов после актуализации запрещено"
 check_ac_doc AC-8 "autopilot.md: после актуализации гейты перегоняются обязательно, merge без перегона запрещён" \
@@ -1068,8 +1068,12 @@ plan_step3=$(md_section "$PLANMD" '^3\. \*\*' '^4\. \*\*')
 
 assert_contains "AC-4: plan.md шаг 3 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
   "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
-assert_contains "AC-4: plan.md шаг 3 создаёт отсутствующий label в репо идемпотентно (gh label create, ошибка «уже есть» гасится)" \
-  "$plan_step3" 'gh label create.*2>/dev/null'
+assert_contains "AC-4: plan.md шаг 3 перехватывает stderr gh label create, чтобы разобрать исход (не глушит его 2>/dev/null)" \
+  "$plan_step3" 'gh label create.*2>&1'
+assert_contains "AC-4: plan.md шаг 3 считает успехом идемпотентный случай «label уже есть» (already exists)" \
+  "$plan_step3" 'already exists'
+assert_contains "K18 (issue #99): plan.md шаг 3 не глушит прочие ошибки gh label create — говорит явно, что label не создан" \
+  "$plan_step3" 'label не создан'
 assert_contains "AC-4: plan.md шаг 3 создаёт label до создания issues" \
   "$plan_step3" 'gh label create.*gh issue create'
 assert_contains "AC-4: plan.md шаг 3 проставляет label создаваемым issues (--label в gh issue create)" \
@@ -1487,6 +1491,7 @@ case "$1" in
     case "${SWIFT_STUB_TEST_MODE:-pass}" in
       notests) echo "error: no tests found; create a target in the 'Tests' directory"; exit 1 ;;
       fail) echo "Test Case 'X' failed"; exit 1 ;;
+      slow) echo "SLOW_MARKER_1"; sleep 1; echo "SLOW_MARKER_2"; exit 0 ;;
       *) exit 0 ;;
     esac ;;
   build)
@@ -1518,6 +1523,24 @@ assert_contains "issue #70: swift-ios: вывод упавших тестов д
 # пакет без тест-таргетов: «no tests found» — не провал (контракт)
 (cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=notests ./scripts/test >/dev/null 2>&1)
 assert_exit "issue #70: swift-ios: «no tests found» пакета — не провал, exit 0" 0 $?
+
+# K20 (issue #99): вывод swift test стримится (tee), а не копится в переменной
+# до завершения пакета — проверяем, что первая строка появляется в выводе,
+# пока процесс ещё жив (до того как стаб допишет вторую строку).
+sios_stream_out="$TMP/swiftios-stream.log"
+(cd "$SIOS" && PATH="$SPATH" SWIFT_STUB_TEST_MODE=slow ./scripts/test >"$sios_stream_out" 2>&1) &
+stream_pid=$!
+sleep 0.4
+stream_still_running="no"
+kill -0 "$stream_pid" 2>/dev/null && stream_still_running="yes"
+stream_partial=$(cat "$sios_stream_out" 2>/dev/null)
+wait "$stream_pid"
+assert_contains "K20 (issue #99): swift-ios scripts/test — замер сделан пока swift test ещё выполняется (проверка валидна)" \
+  "$stream_still_running" "yes"
+assert_contains "K20 (issue #99): swift-ios scripts/test стримит первую строку вывода swift test раньше завершения пакета (tee, не накопление в переменной)" \
+  "$stream_partial" "SLOW_MARKER_1"
+assert_not_contains "K20 (issue #99): swift-ios scripts/test — вторая строка вывода ещё не записана в момент замера" \
+  "$stream_partial" "SLOW_MARKER_2"
 
 # check по файлу пакета собирает этот пакет — ошибка типов ловится
 # PostToolUse-гейтом, а не только полным прогоном (круг 1 PR #71)
