@@ -1068,8 +1068,12 @@ plan_step3=$(md_section "$PLANMD" '^3\. \*\*' '^4\. \*\*')
 
 assert_contains "AC-4: plan.md шаг 3 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
   "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
-assert_contains "AC-4: plan.md шаг 3 создаёт отсутствующий label в репо идемпотентно (gh label create, ошибка «уже есть» гасится)" \
-  "$plan_step3" 'gh label create.*2>/dev/null'
+assert_contains "AC-4: plan.md шаг 3 перехватывает stderr gh label create, чтобы разобрать исход (не глушит его 2>/dev/null)" \
+  "$plan_step3" 'gh label create.*2>&1'
+assert_contains "AC-4: plan.md шаг 3 считает успехом идемпотентный случай «label уже есть» (already exists)" \
+  "$plan_step3" 'already exists'
+assert_contains "K18 (issue #99): plan.md шаг 3 не глушит прочие ошибки gh label create — говорит явно, что label не создан" \
+  "$plan_step3" 'label не создан'
 assert_contains "AC-4: plan.md шаг 3 создаёт label до создания issues" \
   "$plan_step3" 'gh label create.*gh issue create'
 assert_contains "AC-4: plan.md шаг 3 проставляет label создаваемым issues (--label в gh issue create)" \
