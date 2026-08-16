@@ -67,6 +67,21 @@ adk_notify_send() {
 # подключён дополнительной директорией). До этой правки блок был продублирован
 # в bash-guard.sh и pr-title-check.sh (ADR-002: общее — в lib). Печатает
 # пустую строку, если репозиторий не найден.
+
+# adk_command_cwd <cmd> <hook_cwd> — печатает cwd самой команды: явный `cd`
+# в начале команды побеждает, иначе cwd сессии из payload хука. Пустая
+# строка, если ни того ни другого нет. Не ходит в git — в отличие от
+# adk_command_git_root (которая идёт дальше, до toplevel), эта функция
+# нужна там, где важен именно «сырой» кандидат, а не репозиторий, к
+# которому он относится (adk_hook_config_root, lib/config.sh, issue #78).
+adk_command_cwd() {
+  local cmd="$1" hook_cwd="$2" cd_prefix=""
+  case "$cmd" in
+    cd\ *) cd_prefix=$(printf '%s' "$cmd" | sed -E 's/^cd +//; s/ *(&&|;|\|).*$//' | tr -d '"'"'"'') ;;
+  esac
+  printf '%s\n' "${cd_prefix:-$hook_cwd}"
+}
+
 adk_command_git_root() {
   local cmd="$1" hook_cwd="$2" cd_prefix="" d="" root=""
   case "$cmd" in

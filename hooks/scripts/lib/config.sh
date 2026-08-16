@@ -39,6 +39,34 @@ adk_config_file() {
   fi
 }
 
+# adk_hook_config_root <cmd> <hook_cwd> — корень, из которого хук читает
+# adk.config.json: первый кандидат, где файл реально есть — cwd самой
+# команды (adk_command_cwd, lib/paths.sh), затем CLAUDE_PROJECT_DIR
+# (мульти-директорная сессия может указывать на другой каталог), и только
+# если файла нет ни там, ни там — git toplevel команды (adk_command_git_root)
+# безусловно, как и раньше: мейнстрим-раскладка «конфиг на корне репозитория»
+# не меняется, даже если файла там тоже нет — тогда adk_config_get вернёт
+# дефолт, это его контракт, не этой функции. До этой правки оба хука
+# безусловно предпочитали git toplevel — проект, оказавшийся подкаталогом
+# более крупного репозитория со своим adk.config.json, свой конфиг не
+# находил (issue #78). Печатает пустую строку, если ни один кандидат не
+# существует как каталог вовсе (нет ни git-репозитория, ни CLAUDE_PROJECT_DIR) —
+# вызывающий откатывается на свой прежний финальный фолбэк
+# (${CLAUDE_PROJECT_DIR:-$PWD}), как и раньше.
+adk_hook_config_root() {
+  local cmd="$1" hook_cwd="$2" cmd_cwd
+  cmd_cwd=$(adk_command_cwd "$cmd" "$hook_cwd")
+  if [ -n "$cmd_cwd" ] && [ -f "$cmd_cwd/adk.config.json" ]; then
+    printf '%s\n' "$cmd_cwd"
+    return 0
+  fi
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -f "${CLAUDE_PROJECT_DIR}/adk.config.json" ]; then
+    printf '%s\n' "$CLAUDE_PROJECT_DIR"
+    return 0
+  fi
+  adk_command_git_root "$cmd" "$hook_cwd"
+}
+
 # Серверный метод приземления GitHub — производная пары conventions.squash ×
 # conventions.branchUpdate, не самостоятельная настройка (SPEC-002, AC-6):
 # squash=true → squash-merge; false+rebase → rebase-merge; false+merge →

@@ -39,7 +39,11 @@ fix_required() {
 hook_cwd=$(json_field "$payload" "cwd" "")
 git_root=$(adk_command_git_root "$cmd" "$hook_cwd")
 
-cfg_root="${git_root:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+# Конфиг ищем от корня, где реально лежит adk.config.json — не безусловно
+# от git toplevel: проект может быть подкаталогом более крупного
+# репозитория со своим конфигом (adk_hook_config_root, issue #78).
+hook_cfg_root=$(adk_hook_config_root "$cmd" "$hook_cwd")
+cfg_root="${hook_cfg_root:-${CLAUDE_PROJECT_DIR:-$PWD}}"
 style=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.commitStyle plain conventional,plain)
 ext_lint=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.externalTitleLint false)
 [ "$style" = "conventional" ] || exit 0
