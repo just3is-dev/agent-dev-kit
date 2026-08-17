@@ -113,11 +113,14 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
        (`git checkout main`) — дерево не бросай в rebase-in-progress и не
        оставляй на ветке PR.
 
-     Ветка актуальна и гейты зелёные — `gh pr merge <PR> --squash
-     --delete-branch` (squash: один issue = один коммит в main,
-     заголовок PR становится сообщением коммита); если настроен CI —
-     дождись зелёного перед merge (`gh pr checks --watch`; это же
-     покрывает CI-прогон актуализированной ветки); после
+     Ветка актуальна и гейты зелёные — флаг слияния выводится из метода
+     приземления (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
+     --merge-method`), а не зашит жёстко: `squash-merge` → `--squash`,
+     `rebase-merge` → `--rebase`, `merge-commit` → `--merge`; `gh pr merge
+     <PR> <флаг> --delete-branch` (при дефолтном squash-merge — один issue
+     = один коммит в main, заголовок PR становится сообщением коммита);
+     если настроен CI — дождись зелёного перед merge (`gh pr checks
+     --watch`; это же покрывает CI-прогон актуализированной ветки); после
      merge — залогируй `result=merged`, следующая итерация;
    - **PR ready, но merge не твой** — `canMerge=false` либо merge
      заблокировал хук по `policies.merge` → PR не мержи, добавь его в

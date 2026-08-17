@@ -60,8 +60,10 @@ argument-hint: "[номер issue; по умолчанию следующий н
    issue и спеку (в том же PR), затем продолжай.
 4. **Неочевидные решения** по ходу — ADR (скилл adr), в том же PR.
 5. **PR — черновиком.** Коммить логическими шагами. `git push -u origin
-   <ветка>`, затем `gh pr create --draft`. **Заголовок PR — это будущий
-   squash-коммит в main** (merge делается со squash), по нему история main
+   <ветка>`, затем `gh pr create --draft`. **Заголовок PR — будущее
+   сообщение коммита в main** (при дефолтном squash-merge — squash-коммита;
+   метод приземления — производная `conventions.squash` ×
+   `conventions.branchUpdate`, см. docs/config.md), по нему история main
    читается как чейнджлог. Заголовок получает `commitType` типа задачи
    (шаг 1) — прочитай его из конфига:
    `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh types.<тип>.commitType <дефолт>`

@@ -71,7 +71,7 @@ exit-код; тот, кому не важна (значение не из зак
 | `policies.review.maxRounds` | число | `2` | Зарезервирован спекой, потребителя пока нет. Сегодняшний лимит «два круга ревью без APPROVE → зовём человека» зашит текстом в `commands/work.md` (шаг 6) и `commands/autopilot.md`; атрибут не читается. |
 | `policies.review.humanApprovalRequired` | bool | `false` | Вердикт даёт reviewer-агент; человек не обязан approve'ить PR отдельно. |
 | `policies.autopilot.enabled` | bool | `true` | `/autopilot` стартует без ограничений; `false` — отказ старта без побочных эффектов (читается в `commands/autopilot.md`, «Политика прогона»). |
-| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge --squash --delete-branch`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). |
+| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge <флаг> --delete-branch`, флаг — производная метода приземления, см. «Серверный метод приземления GitHub» ниже, не жёсткий `--squash`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). |
 | `policies.autopilot.maxTasksPerRun` | число | `5` | Лимит задач `/autopilot` за прогон; аргумент команды его переопределяет (`commands/autopilot.md`, «Параметры»). |
 
 `policies.merge` энфорсится хуком bash-guard (SPEC-002 AC-2): `human-only`
