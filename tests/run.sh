@@ -2394,12 +2394,13 @@ check_ac_doc AC-6 "project-init.md: серверные настройки при
 # без документированного пути обновления копия молча устаревает и не
 # понимает новые аннотации хелпера (например «ждёт #N», issue #54).
 # Механизм — прямое копирование файла, не повторная инициализация: рерайт
-# /project-init для этого не годится, существующие файлы проекта (CI,
-# кастомизированный scripts/test) она не трогает (шаг 9 команды).
-check_ac_doc "issue #56" "contract.md: /project-init не годится для обновления копии (существующие файлы не трогает)" \
+# /project-init для этого не годится — шаг 5 команды безусловно кладёт
+# scripts/*, ci.yml без охраны от перезаписи (затрёт кастомизированный
+# scripts/test и CI), а не потому что команда «не трогает» существующее.
+check_ac_doc "issue #56" "contract.md: /project-init не годится для обновления копии (шаг 5 перезаписывает без охраны)" \
   "$KIT/docs/contract.md" "для повторного запуска не годится"
-check_ac_doc "issue #56" "contract.md: путь обновления — прямое копирование файла из плагина" \
-  "$KIT/docs/contract.md" "cp \${CLAUDE_PLUGIN_ROOT}/hooks/scripts/ac-check.sh scripts/ac-check"
+check_ac_doc "issue #56" "contract.md: путь обновления — прямое копирование файла из установленного плагина" \
+  "$KIT/docs/contract.md" "find ~/.claude -path '*agent-dev-kit*/hooks/scripts/ac-check.sh'"
 check_ac_doc "issue #56" "contract.md: признак устаревшей копии назван явно" \
   "$KIT/docs/contract.md" "не поддерживает аннотацию \`(ждёт #N)\`"
 check_ac_doc "issue #56" "contract.md: прогон на проекте со старой копией описан (до/после команды копирования)" \
