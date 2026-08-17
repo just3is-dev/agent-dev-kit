@@ -936,6 +936,29 @@ check_ac_doc AC-8 "autopilot.md: после актуализации гейты 
   "$KIT/commands/autopilot.md" "merge без перегона гейтов после актуализации запрещён"
 assert_contains "AC-8: work.md — конфликт при актуализации ведёт к остановке (не «разреши сам»)" "$work_step6" 'конфликт с main, остановись и позови пользователя'
 assert_contains "AC-8: autopilot.md — конфликт с main (CONFLICTING) ведёт к needs-human" "$autopilot_step3" 'конфликт с main требует человека.*needs-human'
+
+# ── issue #77 (хвост ревью PR #63, K16): флаг слияния — производная
+# метода приземления (adk-config.sh --merge-method), не жёсткий --squash —
+# иначе легальный conventions.squash=false сервер отклонит, и автопилот
+# застрянет на корректном конфиге. Дефолтное поведение (squash=true) не
+# меняется: --merge-method без конфига по-прежнему даёт squash-merge
+# (проверено секцией AC-6 ниже), маппинг на --squash сохранён явно.
+assert_contains "issue #77: autopilot.md выводит флаг merge через adk-config.sh --merge-method, не жёсткий --squash" "$autopilot_step3" 'adk-config\.sh --merge-method'
+assert_contains "issue #77: autopilot.md маппит squash-merge на --squash" "$autopilot_step3" 'squash-merge.*--squash'
+assert_contains "issue #77: autopilot.md маппит rebase-merge на --rebase" "$autopilot_step3" 'rebase-merge.*--rebase'
+assert_contains "issue #77: autopilot.md маппит merge-commit на --merge" "$autopilot_step3" 'merge-commit.*--merge'
+assert_not_contains "issue #77: autopilot.md не мержит жёстким --squash без вывода метода приземления" "$autopilot_step3" 'pr merge <PR> --squash --delete-branch'
+
+config_doc_text=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+check_ac_doc "issue #77" "docs/config.md: canMerge выводит флаг merge из метода приземления, не жёсткий --squash" \
+  "$KIT/docs/config.md" "gh pr merge <флаг> --delete-branch"
+assert_not_contains "issue #77: docs/config.md canMerge не упоминает безусловный --squash в описании merge" "$config_doc_text" 'gh pr merge --squash --delete-branch'
+
+work_step5=$(md_section "$KIT/commands/work.md" '^5\. \*\*' '^6\. \*\*')
+check_ac_doc "issue #77" "work.md: формулировка «заголовок PR = squash-коммит» оговорена — верна при дефолтном squash-merge" \
+  "$KIT/commands/work.md" "при дефолтном squash-merge — squash-коммита"
+assert_not_contains "issue #77: work.md не утверждает безусловно «merge делается со squash»" "$work_step5" 'merge делается со squash'
+
 # /review — второй путь в ready: та же проверка актуальности (issue #68,
 # fast-follow из вердикта PR #67)
 review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
