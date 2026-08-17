@@ -1004,6 +1004,17 @@ done
 
 assert_contains "AC-1: work.md шаг 7 — reason закавычен (причина может содержать пробелы)" "$step7" 'reason="'
 
+# ── issue #79 (SPEC-001 AC-1): /review тоже логирует круги ───────────────────
+# SPEC-001 обещает запись в журнале для каждой завершённой через /work,
+# /review или /autopilot задачи, но до этой правки review.md не вызывал
+# adk-log.sh ни разу — круги, проведённые через /review, не попадали в
+# issue-<N>.jsonl и adk-stats.sh занижал среднее число кругов у самых
+# проблемных задач (три и более кругов обычно идут через /review).
+assert_contains "issue #79: review.md шаг 5 логирует event=review после каждого вердикта" "$review_ready" 'adk-log\.sh.*event=review'
+assert_contains "issue #79: review.md шаг 5 — запись круга не блокирует задачу (|| true)" "$review_ready" 'adk-log\.sh.*event=review.*|| true'
+assert_contains "issue #79: review.md шаг 5 продолжает нумерацию кругов задачи, а не начинает с 1" "$review_ready" 'с продолжением нумерации кругов задачи'
+assert_contains "issue #79: review.md шаг 5 при переводе в ready обновляет итог result=merged" "$review_ready" 'adk-log\.sh.*event=outcome result=merged'
+
 # ── SPEC-002 AC-2: формулировки отчётов соответствуют политике merge ─────────
 # Третий (мягкий) слой enforcement: при политиках с обязательным человеком
 # отчёт не обещает merge, а формулируется как «PR готов к ревью коллеги».
