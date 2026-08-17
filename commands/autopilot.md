@@ -79,26 +79,26 @@ docs/adr/001-journal-event-schema.md; журнал — наблюдаемост�
    `type` — тип задачи по label issue, правило определения — шаг 1
    `/work`, оно здесь не дублируется).
    - **PR ready, `canMerge=true`** → сперва проверь актуальность ветки.
-     Канонический рецепт — шаг 6 `/work` (AC-8 SPEC-002); здесь — только
-     отличия автопилота от канона:
-     - **счёт отставания и конфликтность**: HEAD в этот момент — не ветка
-       PR (субагент шага 2 оставляет дерево на своей ветке), поэтому бери
-       оба факта явно, одним вызовом: `git fetch origin && gh pr view
-       <PR> --json mergeable,headRefName` — `CONFLICTING` — конфликт с
-       main (как в каноне), `UNKNOWN` — GitHub ещё считает mergeability,
-       повтори запрос; отставание — `git rev-list --count origin/<ветка
-       PR>..origin/main` (счётчик больше нуля значит BEHIND, ветка
-       отстала), `<ветка PR>` — то же поле `headRefName`;
+     Канонический рецепт — шаг 6 `/work` (AC-8 SPEC-002): способ
+     актуализации — `conventions.branchUpdate`, обязательный перегон
+     гейтов — merge без перегона гейтов после актуализации запрещён;
+     здесь — только отличия автопилота от канона:
+     - **счёт отставания и конфликтность**: checkout дерева в этот момент
+       не определён (субагент шага 2 оставляет дерево на своей ветке, на
+       main его возвращает лишь merge с `--delete-branch`), поэтому бери
+       оба факта явно, не от HEAD: конфликтность и ветка PR — одним
+       вызовом `gh pr view <PR> --json mergeable,headRefName`
+       (`CONFLICTING` — конфликт с main, как в каноне; `UNKNOWN` —
+       повтори запрос); отставание — `git fetch origin && git rev-list
+       --count origin/<ветка PR>..origin/main` (счётчик больше нуля
+       значит BEHIND, ветка отстала), `<ветка PR>` — то же поле
+       `headRefName`;
      - **checkout**: актуализируй отставшую ветку PR только в явном
-       `gh pr checkout <PR>` — текущий checkout дерева в этот момент не
-       определён (субагент шага 2 оставляет дерево на своей ветке, на
-       main его возвращает лишь merge с `--delete-branch`); способ
-       актуализации — `conventions.branchUpdate`, как в каноне;
-     - **push**: только после локально зелёных гейтов, как в каноне —
-       merge без перегона гейтов после актуализации запрещён; refspec
-       обязателен (`git push --force-with-lease origin <ветка PR>` после
-       rebase, `git push origin <ветка PR>` после merge) — push с
-       force-флагом без него применился бы к текущему checkout;
+       `gh pr checkout <PR>`;
+     - **push**: refspec обязателен (`git push --force-with-lease origin
+       <ветка PR>` после rebase, `git push origin <ветка PR>` после
+       merge) — push с force-флагом без него применился бы к текущему
+       checkout;
      - **исход отказа — застревание, а не вопрос человеку**: конфликт с
        main требует человека, но останавливается не прогон, а задача —
        метка needs-human, уведомление, `result=stuck reason="конфликт с
