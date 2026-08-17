@@ -1444,6 +1444,55 @@ ac_err=$("$HOOKS/ac-check.sh" "$PERMP" 2>&1 >/dev/null)
 assert_not_contains "AC-4: ac-check: недоступная директория не течёт 'Permission denied' в stderr (issue #28 K6)" "$ac_err" "ermission denied"
 chmod 755 "$PERMP/secret"
 
+# ── ac-check.sh: конвенция swift-тестов в дефолтном корпусе (issue #82) ─────
+# Баг: дефолтный корпус ac-check знал только конвенции js/python (tests/,
+# *.test.*, *.spec.*, test_*.py) — SPM-конвенция шаблона swift-ios
+# (Packages/<P>/Tests/**/<X>Tests.swift) ни под один паттерн не подпадала,
+# тег AC-N в реальном swift-тесте не засчитывался (ложно-красный гейт).
+# Один фикстурный проект проверяет обе части фикса разом: *Tests.swift
+# входит в корпус (AC-101 покрыт), а .build/DerivedData/Pods из него
+# исключены (AC-102, чей единственный тег лежит в этих папках, остаётся
+# непокрытым — иначе гейт затянул бы тесты зависимостей из .build/checkouts).
+SWIFTAC="$TMP/ac-swift-proj"
+mkdir -p "$SWIFTAC/docs/specs" \
+  "$SWIFTAC/Packages/Feature/Tests/FeatureTests" \
+  "$SWIFTAC/.build/checkouts/Dep/Tests" \
+  "$SWIFTAC/DerivedData/Build/Products/Tests" \
+  "$SWIFTAC/Pods/Dep/Tests"
+
+write_ac_spec "$SWIFTAC/docs/specs/001-x.md" "approved" "- [ ] AC-101: критерий, закрытый swift-тестом пакета
+- [ ] AC-102: критерий, чей тег встречается только в исключённых директориях"
+
+cat > "$SWIFTAC/Packages/Feature/Tests/FeatureTests/FeatureTests.swift" <<'EOF'
+import XCTest
+
+final class FeatureTests: XCTestCase {
+    func testAC101() {
+        // AC-101: критерий покрыт
+        XCTAssertTrue(true)
+    }
+}
+EOF
+echo "// AC-102" > "$SWIFTAC/.build/checkouts/Dep/Tests/DepTests.swift"
+echo "// AC-102" > "$SWIFTAC/DerivedData/Build/Products/Tests/DerivedTests.swift"
+echo "// AC-102" > "$SWIFTAC/Pods/Dep/Tests/PodsTests.swift"
+
+swiftac_out=$("$HOOKS/ac-check.sh" "$SWIFTAC" 2>&1)
+swiftac_st=$?
+assert_exit "issue #82: ac-check: swift-корпус собран — AC-102 (только в .build/DerivedData/Pods) остаётся непокрытым" 1 "$swiftac_st"
+assert_not_contains "issue #82: ac-check: *Tests.swift в Packages/<P>/Tests/ засчитан — AC-101 не в списке непокрытых" "$swiftac_out" "AC-101"
+assert_contains "issue #82: ac-check: AC-102 назван непокрытым — .build/checkouts не тестовый корпус" "$swiftac_out" "AC-102"
+
+# .build/checkouts тянет тесты зависимостей репозитория (не своих) — их
+# присутствие не должно замедлять/засорять корпус: явное регресс-repro,
+# что после фикса каталог по-прежнему исключён, даже если в нём лежит файл,
+# который под старым паттерном не матчился бы вовсе (AC-103 нигде, кроме
+# .build, не встречается — обязан остаться непокрытым)
+write_ac_spec "$SWIFTAC/docs/specs/001-x.md" "approved" "- [ ] AC-103: критерий только в .build/checkouts"
+echo "// AC-103" > "$SWIFTAC/.build/checkouts/Dep/Tests/OnlyInBuildTests.swift"
+"$HOOKS/ac-check.sh" "$SWIFTAC" >/dev/null 2>&1
+assert_exit "issue #82: ac-check: тег, существующий только в .build/checkouts, не засчитывается как покрытие" 1 $?
+
 # ── Запланированные AC: аннотация «(ждёт #N)» (issue #54) ───────────────────
 # Репро бага: approved-спека мержится до реализации милестоуна, тест AC
 # появляется в одном из будущих issues — гейт не должен быть красным весь

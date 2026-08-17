@@ -15,9 +15,12 @@
 # (templates/process/spec-template.md) не принимается за approved.
 # Только draft/in-progress/etc. пропускаются; approved — проверяется.
 # Тестовый корпус — переданные пути (файлы или папки), либо при их
-# отсутствии дефолт: tests/, **/*.test.*, **/*.spec.*, test_*.py, за
-# вычетом docs/specs/ (сами спеки не должны "покрывать" сами себя) и
-# служебных папок (node_modules, vendor, .git, dist, build).
+# отсутствии дефолт: tests/, **/*.test.*, **/*.spec.*, test_*.py,
+# **/*Tests.swift (конвенция SPM: Packages/<P>/Tests/**/<X>Tests.swift,
+# шаблон swift-ios — issue #82), за вычетом docs/specs/ (сами спеки не
+# должны "покрывать" сами себя) и служебных папок (node_modules, vendor,
+# .git, dist, build, .build, DerivedData, Pods — swift-паттерн иначе тянет
+# чужой корпус тестов зависимостей из .build/checkouts).
 # exit 1 со списком непокрытых AC, exit 0 при полном покрытии или
 # отсутствии спек с конвенцией AC. Только проверка, ничего не правит.
 #
@@ -102,6 +105,9 @@ prune_default() {
     -not -path '*/.git/*' \
     -not -path '*/dist/*' \
     -not -path '*/build/*' \
+    -not -path '*/.build/*' \
+    -not -path '*/DerivedData/*' \
+    -not -path '*/Pods/*' \
     "${@:2}" 2>/dev/null
 }
 
@@ -119,7 +125,7 @@ else
     while IFS= read -r f; do test_files+=("$f"); done < <(prune_default "$root/tests")
   fi
   while IFS= read -r f; do test_files+=("$f"); done < <(
-    prune_default "$root" -not -path "$root/tests/*" \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' \)
+    prune_default "$root" -not -path "$root/tests/*" \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*.py' -o -name '*Tests.swift' \)
   )
 fi
 
