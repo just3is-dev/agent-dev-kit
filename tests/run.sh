@@ -1966,6 +1966,12 @@ check_ac_doc "issue #54" "reviewer: переходные состояния ге
 check_ac_doc "issue #54" "контракт: аннотация «ждёт #N» и --complete описаны" \
   "$KIT/docs/contract.md" "ждёт #"
 
+# ── Усиление чек-листа reviewer по контракту между компонентами (issue #81) ─
+check_ac_doc "issue #81" "reviewer: проверка всех сторон контракта формата/интерфейса" \
+  "$KIT/agents/reviewer.md" "каждого писателя и каждого читателя формата"
+check_ac_doc "issue #81" "reviewer: проверка видимости нового стека гейтам проекта" \
+  "$KIT/agents/reviewer.md" "ac-check, scripts/check, scripts/test"
+
 # ── Общий хелпер hooks/scripts/lib/paths.sh (issue #23) ─────────────────────
 # Кандидат K3 из /consolidate: adk-log.sh и adk-stats.sh дублировали
 # построчно правило определения корня проекта и каталога журнала;
