@@ -4,7 +4,7 @@
 # Читает $ADK_LOGS_DIR либо <корень проекта>/.adk/logs/. Схема событий,
 # которую ожидает агрегация (event=start/review/outcome, поля round/verdict/
 # result/reason/type/timestamp) — docs/adr/001-journal-event-schema.md; её же
-# обязаны писать /work и /autopilot.
+# обязаны писать /work, /review и /autopilot.
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
 # агрегатов. Битые строки (невалидный JSON, JSON не-объект, оборванная
 # multibyte UTF-8 последовательность) пропускаются с предупреждением в

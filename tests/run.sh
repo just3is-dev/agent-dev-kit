@@ -1011,9 +1011,41 @@ assert_contains "AC-1: work.md шаг 7 — reason закавычен (прич�
 # issue-<N>.jsonl и adk-stats.sh занижал среднее число кругов у самых
 # проблемных задач (три и более кругов обычно идут через /review).
 assert_contains "issue #79: review.md шаг 5 логирует event=review после каждого вердикта" "$review_ready" 'adk-log\.sh.*event=review'
-assert_contains "issue #79: review.md шаг 5 — запись круга не блокирует задачу (|| true)" "$review_ready" 'adk-log\.sh.*event=review.*|| true'
+# Круг 1 ревью PR #116: якорь без границы справа ('.*|| true' — жадный,
+# дотягивается до '|| true' СЛЕДУЮЩЕГО вызова adk-log.sh, event=outcome)
+# давал ложный PASS даже если сам вызов event=review остался без `|| true`.
+# Якорь теперь — литеральная смежность round=.../verdict=.../|| true в
+# одном вызове, не растягивается на чужой || true.
+assert_contains "issue #79: review.md шаг 5 — запись круга не блокирует задачу (|| true) прямо у своего вызова, не у чужого" "$review_ready" 'event=review round=<номер круга> verdict=<APPROVE|REQUEST_CHANGES> || true'
+# Круг 1 ревью PR #116: старый якорь пинил только фразу "с продолжением
+# нумерации кругов задачи", а не сам рецепт — мутация, заменившая рецепт
+# на "(номер круга — 1)" при сохранении фразы, проходила тестом
+# незамеченной. Якоря теперь — конкретные токены рецепта (max(round)+1
+# из журнала, не отдельный счётчик с 1).
 assert_contains "issue #79: review.md шаг 5 продолжает нумерацию кругов задачи, а не начинает с 1" "$review_ready" 'с продолжением нумерации кругов задачи'
+assert_contains "issue #79: review.md шаг 5 берёт круг как наибольший round среди строк event=review журнала (не отдельный счётчик)" "$review_ready" 'наибольший `round` среди его строк `event=review`'
+assert_contains "issue #79: review.md шаг 5 — без предыдущих записей круг 1, иначе max+1" "$review_ready" 'это круг 1, иначе `<max+1>`'
 assert_contains "issue #79: review.md шаг 5 при переводе в ready обновляет итог result=merged" "$review_ready" 'adk-log\.sh.*event=outcome result=merged'
+assert_contains "issue #79: review.md шаг 5 — итог result=merged документирован как сокращённая форма (не выдаёт себя за полный шаг 7 /work)" "$review_ready" 'сокращённая форма'
+
+# Круг 1 ревью PR #116 (блокер): review.md умел искать PR по issue
+# ($ARGUMENTS/Closes #N/имя ветки), но не определял <N> в обратную
+# сторону (PR → issue) для собственного журналирования в шаге 5 — при
+# вызове /review по номеру PR без Closes #N агент рисковал подставить
+# в adk-log.sh номер PR вместо issue, заведя в журнале фантомную задачу.
+assert_contains "issue #79: review.md шаг 1 определяет <N> по Closes #N в теле PR или по имени ветки issue-<N>-" "$step1_review" 'номер после `Closes #` в теле PR либо после'
+assert_contains "issue #79: review.md шаг 1 — <N> не определён явно останавливает журналирование, а не молчаливо подставляет PR" "$step1_review" '`<N>` не определён'
+assert_contains "issue #79: review.md шаг 5 не логирует круг без определённого <N>" "$review_ready" '`<N>` не определён — круг не логируется'
+
+# Документация журнала (ADR-001) и шапка adk-stats.sh не должны отставать
+# от нового писателя — иначе схема события «сокращённый outcome» и факт
+# «/review — третий писатель» существуют только в коде, не как контракт.
+check_ac_doc "issue #79" "ADR-001 документирует /review как третьего писателя журнала (issue-<N>.jsonl)" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "третий писатель"
+check_ac_doc "issue #79" "ADR-001 документирует сокращённую форму outcome, которую пишет /review" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "сокращённая форма итога"
+check_ac_doc "issue #79" "adk-stats.sh шапка называет /review среди писателей схемы событий" \
+  "$KIT/hooks/scripts/adk-stats.sh" "/work, /review и /autopilot"
 
 # ── SPEC-002 AC-2: формулировки отчётов соответствуют политике merge ─────────
 # Третий (мягкий) слой enforcement: при политиках с обязательным человеком
