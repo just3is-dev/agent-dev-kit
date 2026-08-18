@@ -2462,6 +2462,22 @@ check_ac_doc "issue #56" "contract.md: признак устаревшей ко�
 check_ac_doc "issue #56" "contract.md: прогон на проекте со старой копией описан (до/после команды копирования)" \
   "$KIT/docs/contract.md" "копия трактует критерий как непокрытый"
 
+# ── Уточнения хелпера обновления копии scripts/ac-check (issue #122, хвост
+# ревью PR #118, круг 3): признак устаревания по grep на одну аннотацию
+# «ждёт #N» слеп к остальным правкам хелпера, а пустой find (плагин не
+# найден под ~/.claude) раньше падал невнятным `cp: : No such file or
+# directory` вместо понятной причины.
+check_ac_doc "issue #122" "contract.md: признак устаревшей копии — прямое сравнение diff с найденным исходником, не только grep по аннотации" \
+  "$KIT/docs/contract.md" "diff scripts/ac-check \"\$AC_CHECK_SRC\""
+check_ac_doc "issue #122" "contract.md: явно назвал ограниченность прежнего grep-признака — слеп к правкам хелпера вне аннотации" \
+  "$KIT/docs/contract.md" "слеп к остальным правкам хелпера"
+check_ac_doc "issue #122" "contract.md: команда обновления сама проверяет пустой find и не запускает cp вслепую" \
+  "$KIT/docs/contract.md" "-z \"\$AC_CHECK_SRC\""
+check_ac_doc "issue #122" "contract.md: пустой find даёт понятное сообщение об ошибке вместо голого cp: : No such file or directory" \
+  "$KIT/docs/contract.md" "agent-dev-kit не установлен по ожидаемому пути"
+check_ac_doc "issue #122" "contract.md: назван конкретный симптом, который правка устраняет (голый cp: : No such file or directory)" \
+  "$KIT/docs/contract.md" "cp: : No such file or directory"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
