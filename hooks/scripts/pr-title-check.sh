@@ -48,6 +48,17 @@ ext_lint=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.externalTit
 [ "$style" = "conventional" ] || exit 0
 [ "$ext_lint" != "true" ] || exit 0
 
+# Метод приземления определяет, каким коммитом станет заголовок PR —
+# производная conventions.squash × conventions.branchUpdate, а не жёсткий
+# squash (issue #119, хвост ревью PR #117, круг 1: то же требование уже
+# применено к work.md/autopilot.md/docs/config.md после issue #77).
+merge_method=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_merge_method)
+case "$merge_method" in
+  rebase-merge) commit_note="сообщением коммита в main (метод приземления — rebase-merge)" ;;
+  merge-commit) commit_note="сообщением merge-коммита в main (метод приземления — merge-commit)" ;;
+  *) commit_note="сообщением squash-коммита в main (метод приземления — squash-merge, дефолт)" ;;
+esac
+
 # Фактический заголовок: явный номер PR из команды (gh pr edit 12), иначе PR
 # текущей ветки — тот, что выберет `gh pr view` без номера (несколько PR
 # одной ветки или закрытый PR ветки — краевые случаи выбора gh, не наши).
@@ -70,7 +81,7 @@ else
 fi
 
 if ! printf '%s' "$title" | grep -Eq '\(#[0-9]+\)$'; then
-  fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует завершать заголовок ссылкой на issue «(#N)» — он станет сообщением squash-коммита в main. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально: «<commitType>(scope): …»)."
+  fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует завершать заголовок ссылкой на issue «(#N)» — он станет $commit_note. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально: «<commitType>(scope): …»)."
 fi
 issue_n=$(printf '%s' "$title" | grep -Eo '\(#[0-9]+\)$' | grep -Eo '[0-9]+')
 

@@ -494,6 +494,28 @@ printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="любой заголовок без конвенции" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" >/dev/null 2>&1
 assert_exit "AC-5: без конфига любой заголовок проходит (дефолт plain)" 0 $?
 
+# ── issue #119 (хвост ревью PR #117, круг 1): отказ pr-title-check называл
+# заголовок PR безусловно «сообщением squash-коммита» — метод приземления
+# конфигурируем (conventions.squash × conventions.branchUpdate,
+# adk_config_merge_method, docs/config.md), сообщение должно отражать
+# реально настроенный метод, а не врать про squash при rebase-merge/merge-commit.
+printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
+mm_title_err=$(printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
+assert_contains "issue #119: pr-title-check при дефолтном squash-merge называет squash-коммит" "$mm_title_err" 'squash-коммит'
+
+printf '{"conventions": {"commitStyle": "conventional", "squash": false, "branchUpdate": "rebase"}}' > "$TITLEP/adk.config.json"
+mm_title_err=$(printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
+assert_not_contains "issue #119: pr-title-check при rebase-merge не врёт про squash-коммит" "$mm_title_err" 'squash-коммит'
+assert_contains "issue #119: pr-title-check при rebase-merge называет rebase-merge" "$mm_title_err" 'rebase-merge'
+
+printf '{"conventions": {"commitStyle": "conventional", "squash": false, "branchUpdate": "merge"}}' > "$TITLEP/adk.config.json"
+mm_title_err=$(printf '%s' "$TCMD" \
+  | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
+assert_not_contains "issue #119: pr-title-check при merge-commit не врёт про squash-коммит" "$mm_title_err" 'squash-коммит'
+assert_contains "issue #119: pr-title-check при merge-commit называет merge-commit" "$mm_title_err" 'merge-commit'
+
 # issue #78: проект — подкаталог более крупного репозитория со своим
 # adk.config.json (toplevel репозитория без конфига); корень конфига —
 # первый кандидат, где файл реально есть (cwd команды → git toplevel этой
@@ -958,6 +980,14 @@ work_step5=$(md_section "$KIT/commands/work.md" '^5\. \*\*' '^6\. \*\*')
 check_ac_doc "issue #77" "work.md: формулировка «заголовок PR = squash-коммит» оговорена — верна при дефолтном squash-merge" \
   "$KIT/commands/work.md" "при дефолтном squash-merge — squash-коммита"
 assert_not_contains "issue #77: work.md не утверждает безусловно «merge делается со squash»" "$work_step5" 'merge делается со squash'
+
+# ── issue #119 (хвост ревью PR #117, круг 1): README.md тоже безусловно
+# называл squash в описании merge через /autopilot — переформулировано
+# условно, как уже сделано в work.md/autopilot.md/docs/config.md.
+readme_text=$(tr '\n' ' ' < "$KIT/README.md" | tr -s ' ')
+assert_not_contains "issue #119: README.md не утверждает безусловно «squash: один issue = один коммит»" "$readme_text" '(squash: один issue = один коммит в main)'
+check_ac_doc "issue #119" "README.md: merge-описание /autopilot оговорено — верно при дефолтном squash-merge" \
+  "$KIT/README.md" "при дефолтном squash-merge — один issue = один коммит в main"
 
 # /review — второй путь в ready: та же проверка актуальности (issue #68,
 # fast-follow из вердикта PR #67)
