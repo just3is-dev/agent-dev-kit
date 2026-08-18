@@ -2009,6 +2009,23 @@ check_ac_doc "issue #81" "reviewer: проверка всех сторон ко�
 check_ac_doc "issue #81" "reviewer: проверка видимости нового стека гейтам проекта" \
   "$KIT/agents/reviewer.md" "ac-check, scripts/check, scripts/test"
 
+# ── README.md синхронизирован с чек-листом reviewer (issue #120, хвост
+# ревью PR #115/#117: пункты из #54 и #81 дважды оставались не отражены
+# в README.md:199) ───────────────────────────────────────────────────────
+check_ac_doc "issue #120" "README: чек-лист reviewer упоминает переходные состояния (issue #54)" \
+  "$KIT/README.md" "переходные состояния"
+check_ac_doc "issue #120" "README: чек-лист reviewer упоминает контракт между компонентами (issue #81)" \
+  "$KIT/README.md" "контракт между компонентами"
+
+# doc-тест против рассинхрона: число пунктов чек-листа в README должно
+# совпадать с числом нумерованных пунктов в agents/reviewer.md, чтобы
+# следующее расширение чек-листа не повторило разрыв (issue #120).
+reviewer_checklist_items=$(grep -cE '^[0-9]+\. \*\*' "$KIT/agents/reviewer.md")
+readme_reviewer_row=$(sed -n '/^| `reviewer`/p' "$KIT/README.md")
+readme_checklist_items=$(( $(printf '%s' "$readme_reviewer_row" | grep -o '→' | wc -l | tr -d ' ') + 1 ))
+assert_exit "issue #120: README перечисляет столько же пунктов чек-листа reviewer, сколько их в agents/reviewer.md" \
+  "$reviewer_checklist_items" "$readme_checklist_items"
+
 # ── Общий хелпер hooks/scripts/lib/paths.sh (issue #23) ─────────────────────
 # Кандидат K3 из /consolidate: adk-log.sh и adk-stats.sh дублировали
 # построчно правило определения корня проекта и каталога журнала;
