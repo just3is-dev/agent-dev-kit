@@ -19,7 +19,9 @@ argument-hint: "[номер или путь спеки; по умолчанию 
    - проверь `gh auth status` и наличие remote; если GitHub недоступен —
      fallback: сохрани план в `docs/plans/NNN-<слаг>.md` с чекбоксами и скажи,
      что issues можно создать позже;
-   - milestone с названием `SPEC-NNN: <название>`:
+   - milestone: заголовок — первая строка файла спеки без `# `, байт в
+     байт (`SPEC-NNN: Название`); регистр и формулировка не могут
+     разойтись со спекой, потому что источник один:
      `gh api repos/{owner}/{repo}/milestones -f title=... -f description=...`;
    - label типа задачи: имя возьми из конфига проекта —
      `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh types.task.label type:task`
