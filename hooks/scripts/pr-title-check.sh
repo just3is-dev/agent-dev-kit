@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # PostToolUse(Bash): после gh pr create/edit сверяет фактический заголовок PR
 # (gh pr view) с конвенцией conventions.commitStyle=conventional (SPEC-002,
-# AC-5). Заголовок PR — будущее сообщение squash-коммита в main, единственная
-# точка контроля конвенции (веточные коммиты squash схлопывает).
+# AC-5). При дефолтном squash-merge заголовок PR — будущее сообщение
+# squash-коммита в main, единственная точка контроля конвенции (веточные
+# коммиты squash схлопывает); метод приземления — производная
+# conventions.squash × conventions.branchUpdate, не жёсткий squash
+# (issue #119, хвост ревью PR #117, круг 1; см. docs/config.md).
 # Валидируется состояние PR, а не текст команды — разбора shell нет вовсе:
 # PreToolUse-парсинг команд давал пары «ложный запрет / молчаливый пропуск»
 # на кавычках, heredoc и подстановках (ADR-004, круги ревью PR #62).
@@ -48,17 +51,6 @@ ext_lint=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_get conventions.externalTit
 [ "$style" = "conventional" ] || exit 0
 [ "$ext_lint" != "true" ] || exit 0
 
-# Метод приземления определяет, каким коммитом станет заголовок PR —
-# производная conventions.squash × conventions.branchUpdate, а не жёсткий
-# squash (issue #119, хвост ревью PR #117, круг 1: то же требование уже
-# применено к work.md/autopilot.md/docs/config.md после issue #77).
-merge_method=$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_merge_method)
-case "$merge_method" in
-  rebase-merge) commit_note="сообщением коммита в main (метод приземления — rebase-merge)" ;;
-  merge-commit) commit_note="сообщением merge-коммита в main (метод приземления — merge-commit)" ;;
-  *) commit_note="сообщением squash-коммита в main (метод приземления — squash-merge, дефолт)" ;;
-esac
-
 # Фактический заголовок: явный номер PR из команды (gh pr edit 12), иначе PR
 # текущей ветки — тот, что выберет `gh pr view` без номера (несколько PR
 # одной ветки или закрытый PR ветки — краевые случаи выбора gh, не наши).
@@ -81,7 +73,19 @@ else
 fi
 
 if ! printf '%s' "$title" | grep -Eq '\(#[0-9]+\)$'; then
-  fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует завершать заголовок ссылкой на issue «(#N)» — он станет $commit_note. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально: «<commitType>(scope): …»)."
+  # «Станет сообщением squash-коммита» верно только при squash-merge —
+  # единственном методе приземления, где GitHub кладёт заголовок PR в
+  # subject коммита main; при rebase-merge/merge-commit заголовок PR в
+  # коммит не попадает (rebase переносит коммиты ветки как есть, у
+  # merge-коммита subject по умолчанию — «Merge pull request #N from …»),
+  # поэтому для них утверждение не делается вовсе, а не подменяется другим
+  # неточным (issue #119, хвост ревью PR #117, круг 1; деривация —
+  # adk_config_merge_method, docs/config.md).
+  commit_note=""
+  if [ "$(CLAUDE_PROJECT_DIR="$cfg_root" adk_config_merge_method)" = "squash-merge" ]; then
+    commit_note=" — он станет сообщением squash-коммита в main (метод приземления — squash-merge, дефолт)"
+  fi
+  fix_required "Заголовок PR не соответствует конвенции: conventions.commitStyle=conventional требует завершать заголовок ссылкой на issue «(#N)»$commit_note. Сейчас: «$title». Исправь: gh pr edit $pr_ref$r_flag --title \"<commitType>: <суть> (#N)\" (scope — опционально: «<commitType>(scope): …»)."
 fi
 issue_n=$(printf '%s' "$title" | grep -Eo '\(#[0-9]+\)$' | grep -Eo '[0-9]+')
 

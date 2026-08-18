@@ -497,8 +497,15 @@ assert_exit "AC-5: без конфига любой заголовок прох�
 # ── issue #119 (хвост ревью PR #117, круг 1): отказ pr-title-check называл
 # заголовок PR безусловно «сообщением squash-коммита» — метод приземления
 # конфигурируем (conventions.squash × conventions.branchUpdate,
-# adk_config_merge_method, docs/config.md), сообщение должно отражать
-# реально настроенный метод, а не врать про squash при rebase-merge/merge-commit.
+# adk_config_merge_method, docs/config.md). Утверждение «станет сообщением
+# squash-коммита» верно только при squash-merge (GitHub кладёт заголовок PR
+# в subject коммита только в этом случае); при rebase-merge/merge-commit
+# заголовок PR в коммит не попадает вовсе (rebase переносит коммиты ветки
+# как есть, у merge-коммита subject по умолчанию — «Merge pull request #N
+# from …»), поэтому для них сообщение не делает вообще никакого утверждения
+# о будущем коммите — не заменяет одну неточность другой (круг 1 ревью
+# PR #123 отклонил вариант с явными «rebase-merge»/«merge-commit» заявлениями
+# как фактически неверный).
 printf '{"conventions": {"commitStyle": "conventional"}}' > "$TITLEP/adk.config.json"
 mm_title_err=$(printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
@@ -508,13 +515,13 @@ printf '{"conventions": {"commitStyle": "conventional", "squash": false, "branch
 mm_title_err=$(printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
 assert_not_contains "issue #119: pr-title-check при rebase-merge не врёт про squash-коммит" "$mm_title_err" 'squash-коммит'
-assert_contains "issue #119: pr-title-check при rebase-merge называет rebase-merge" "$mm_title_err" 'rebase-merge'
+assert_contains "issue #119: pr-title-check при rebase-merge всё равно требует (#N) в заголовке" "$mm_title_err" 'ссылкой на issue'
 
 printf '{"conventions": {"commitStyle": "conventional", "squash": false, "branchUpdate": "merge"}}' > "$TITLEP/adk.config.json"
 mm_title_err=$(printf '%s' "$TCMD" \
   | ADK_GUARD_PR_TITLE="feat: добавить фичу" ADK_GUARD_ISSUE_LABELS="type:task" CLAUDE_PROJECT_DIR="$TITLEP" "$HOOKS/pr-title-check.sh" 2>&1 >/dev/null)
 assert_not_contains "issue #119: pr-title-check при merge-commit не врёт про squash-коммит" "$mm_title_err" 'squash-коммит'
-assert_contains "issue #119: pr-title-check при merge-commit называет merge-commit" "$mm_title_err" 'merge-commit'
+assert_contains "issue #119: pr-title-check при merge-commit всё равно требует (#N) в заголовке" "$mm_title_err" 'ссылкой на issue'
 
 # issue #78: проект — подкаталог более крупного репозитория со своим
 # adk.config.json (toplevel репозитория без конфига); корень конфига —
