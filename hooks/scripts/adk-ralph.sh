@@ -27,6 +27,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 root=$(adk_project_root)
 plugin_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+# Экспорт обязателен: без него дочерний headless-процесс `claude -p` (строка
+# ~317) не наследует CLAUDE_PLUGIN_ROOT при штатном ручном запуске (шапка
+# файла), где переменная не выставлена вовсе — а commands/work.md, которым
+# инструктируется этот процесс, содержит 10+ мест вида
+# ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/... (блокер круга 4 ревью PR #141).
+export CLAUDE_PLUGIN_ROOT="$plugin_root"
 work_md="$plugin_root/commands/work.md"
 
 # ── Политика: enabled=false / неизвестное значение — отказ старта fail-closed,
@@ -82,7 +88,6 @@ stuck_summary=""
 skipped_summary=""
 stop_reason=""
 exit_code=0
-pr_list_truncation_warned=""  # gh pr list --limit 200: предупреждение печатается один раз за прогон
 
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
@@ -233,7 +238,12 @@ find_pr_state() {
   # выборке PR читается как «PR не создан» → липкий needs-human, а не
   # просто как неполный список для следующего прогона. Предупреждение —
   # один раз за прогон (issues повторяют этот вызов на каждой итерации).
-  if [ -z "$pr_list_truncation_warned" ]; then
+  # Флаг живёт файлом в $work_dir, а не переменной: find_pr_state вызывается
+  # через `$(...)` (командная подстановка = подоболочка), присваивание
+  # переменной в ней не долетело бы до родительского процесса — предупреждение
+  # печаталось бы на каждой итерации, не один раз за прогон (важно круга 4
+  # ревью PR #141).
+  if [ ! -e "$work_dir/pr_list_truncation_warned" ]; then
     pr_count=$(printf '%s' "$pr_json" | python3 -c '
 import json, sys
 try:
@@ -245,7 +255,7 @@ except Exception:
       echo "adk-ralph: gh pr list вернул ровно 200 открытых PR — список мог быть" \
         "усечён лимитом; «PR не создан» не гарантирует, что искомый PR" \
         "действительно отсутствует." >&2
-      pr_list_truncation_warned=1
+      : >"$work_dir/pr_list_truncation_warned"
     fi
   fi
   # rc=0 не гарантирует валидный JSON (gh мог напечатать частичный вывод) —

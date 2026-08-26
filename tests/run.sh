@@ -2478,6 +2478,24 @@ check_ac_doc "issue #122" "contract.md: пустой find даёт понятн�
 check_ac_doc "issue #122" "contract.md: назван конкретный симптом, который правка устраняет (голый cp: : No such file or directory)" \
   "$KIT/docs/contract.md" "cp: : No such file or directory"
 
+claude_stub_guard() { # claude_stub_guard <bindir> — общая часть стаба claude
+  # во всех ralph-фикстурах ниже: фейлится (маркер CLAUDE_PLUGIN_ROOT_MISSING
+  # в claude-calls.log + exit 1), если CLAUDE_PLUGIN_ROOT не выставлен в
+  # собственном окружении стаба. Слепая зона круга 4 ревью PR #141: стаб
+  # раньше проверял только аргументы вызова, не окружение запуска, поэтому ни
+  # одна фикстура не поймала баг «adk-ralph.sh не пробрасывает
+  # CLAUDE_PLUGIN_ROOT дочернему claude -p». Каждая фикстура дописывает
+  # (cat >>) остаток стаба после этого пролога.
+  cat > "$1/claude" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  echo "CLAUDE_PLUGIN_ROOT_MISSING" >> "$d/claude-calls.log"
+  exit 1
+fi
+EOF
+}
+
 # ── adk-ralph.sh: ralph-цикл SPEC-003, цикл по очереди issues свежим
 # headless-процессом, без --dangerously-skip-permissions (issue #139,
 # AC-1, AC-7) ──────────────────────────────────────────────────────────────
@@ -2514,9 +2532,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN/gh"
-cat > "$RBIN/claude" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
+claude_stub_guard "$RBIN"
+cat >> "$RBIN/claude" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 exit 0
 EOF
@@ -2576,6 +2593,60 @@ assert_not_contains "AC-7: adk-ralph: строка запуска не соде�
   "$claude_calls" "dangerously-skip-permissions"
 assert_contains "AC-1: adk-ralph: инструкции headless-процесса называют номер обрабатываемой задачи" \
   "$claude_calls" "issue #1"
+
+# ── Блокер круга 4 ревью PR #141: adk-ralph.sh обязан пробросить
+# CLAUDE_PLUGIN_ROOT дочернему headless-процессу claude -p — иначе 10+ мест
+# ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/... в commands/work.md резолвятся в
+# путь с пустым префиксом. Фикстуры выше сами выставляют
+# CLAUDE_PLUGIN_ROOT="$KIT" для запуска adk-ralph.sh — переменная и так
+# наследуется дочерним процессом стандартным механизмом окружения shell,
+# поэтому ни одна из них не ловит этот баг. Штатный ручной запуск (шапка
+# adk-ralph.sh: «запускается вручную из корня проекта») не выставляет
+# CLAUDE_PLUGIN_ROOT вовсе — эта фикстура воспроизводит именно такое
+# окружение (unset), claude_stub_guard фейлится, если переменной нет в
+# собственном окружении стаба.
+RALPH_ROOTENV="$TMP/ralph-rootenv-proj"
+RBIN_ROOTENV="$TMP/ralph-rootenv-bin"
+mkdir -p "$RALPH_ROOTENV" "$RBIN_ROOTENV"
+(cd "$RALPH_ROOTENV" && git_c init -q -b main)
+cat > "$RBIN_ROOTENV/issues-fixture.json" <<'EOF'
+[
+  {"number": 91, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_ROOTENV/prs-fixture.json" <<'EOF'
+[
+  {"number": 401, "isDraft": false, "headRefName": "issue-91-z"}
+]
+EOF
+cat > "$RBIN_ROOTENV/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_ROOTENV/gh"
+claude_stub_guard "$RBIN_ROOTENV"
+cat >> "$RBIN_ROOTENV/claude" <<'EOF'
+echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >> "$d/claude-calls.log"
+exit 0
+EOF
+chmod +x "$RBIN_ROOTENV/claude"
+RALPH_ROOTENV_LOGS="$TMP/ralph-rootenv-logs"
+
+ralph_rootenv_out=$(cd "$RALPH_ROOTENV" && unset CLAUDE_PLUGIN_ROOT && PATH="$RBIN_ROOTENV:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ROOTENV" \
+  ADK_LOGS_DIR="$RALPH_ROOTENV_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-rootenv-notify.log" \
+  "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: без CLAUDE_PLUGIN_ROOT в окружении запуска — прогон всё равно завершается штатно (блокер круга 4 ревью PR #141)" \
+  0 $?
+claude_rootenv_calls=$(cat "$RBIN_ROOTENV/claude-calls.log" 2>/dev/null)
+assert_not_contains "AC-1: adk-ralph: claude-стаб не зафиксировал отсутствие CLAUDE_PLUGIN_ROOT в своём окружении" \
+  "$claude_rootenv_calls" "CLAUDE_PLUGIN_ROOT_MISSING"
+assert_contains "AC-1: adk-ralph: дочерний claude -p получил непустой CLAUDE_PLUGIN_ROOT, равный корню кита" \
+  "$claude_rootenv_calls" "CLAUDE_PLUGIN_ROOT=$KIT"
 
 # ── policies.autopilot.enabled=false — отказ старта без единого побочного
 # эффекта: ни строки в журнале, ни одного вызова gh (issue #139 DoD) ────────
@@ -2646,8 +2717,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN_ERR/gh"
-cat > "$RBIN_ERR/claude" <<'EOF'
-#!/usr/bin/env bash
+claude_stub_guard "$RBIN_ERR"
+cat >> "$RBIN_ERR/claude" <<'EOF'
 exit 0
 EOF
 chmod +x "$RBIN_ERR/claude"
@@ -2698,9 +2769,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN3/gh"
-cat > "$RBIN3/claude" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
+claude_stub_guard "$RBIN3"
+cat >> "$RBIN3/claude" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
 exit 0
 EOF
@@ -2780,9 +2850,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN_CFAIL/gh"
-cat > "$RBIN_CFAIL/claude" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
+claude_stub_guard "$RBIN_CFAIL"
+cat >> "$RBIN_CFAIL/claude" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
 echo "claude: rate limit exceeded" >&2
 exit 1
@@ -2847,8 +2916,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN_EDITFAIL/gh"
-cat > "$RBIN_EDITFAIL/claude" <<'EOF'
-#!/usr/bin/env bash
+claude_stub_guard "$RBIN_EDITFAIL"
+cat >> "$RBIN_EDITFAIL/claude" <<'EOF'
 exit 0
 EOF
 chmod +x "$RBIN_EDITFAIL/claude"
@@ -2900,8 +2969,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN_NH/gh"
-cat > "$RBIN_NH/claude" <<'EOF'
-#!/usr/bin/env bash
+claude_stub_guard "$RBIN_NH"
+cat >> "$RBIN_NH/claude" <<'EOF'
 exit 0
 EOF
 chmod +x "$RBIN_NH/claude"
@@ -2929,20 +2998,29 @@ assert_not_contains "AC-1: adk-ralph: needs-human-каскад — issue #71 (у
 
 # ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
 # issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
-# дороже: пропущенный в выборке PR читается как «PR не создан» ─────────────
+# дороже: пропущенный в выборке PR читается как «PR не создан». Три
+# независимых issue (три итерации, каждая заново вызывает find_pr_state) —
+# предупреждение обязано напечататься ровно один раз за весь прогон, не на
+# каждой итерации: find_pr_state вызывается через `$(...)` (подоболочка),
+# присваивание переменной внутри неё не долетело бы до родительского
+# процесса (важно круга 4 ревью PR #141) ────────────────────────────────────
 RALPH_TRUNC="$TMP/ralph-trunc-proj"
 RBIN_TRUNC="$TMP/ralph-trunc-bin"
 mkdir -p "$RALPH_TRUNC" "$RBIN_TRUNC"
 (cd "$RALPH_TRUNC" && git_c init -q -b main)
 cat > "$RBIN_TRUNC/issues-fixture.json" <<'EOF'
 [
-  {"number": 81, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+  {"number": 81, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 82, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 83, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
 python3 -c '
 import json
-prs = [{"number": i, "isDraft": False, "headRefName": f"issue-{9000+i}-x"} for i in range(199)]
+prs = [{"number": i, "isDraft": False, "headRefName": f"issue-{9000+i}-x"} for i in range(197)]
 prs.append({"number": 9200, "isDraft": False, "headRefName": "issue-81-real"})
+prs.append({"number": 9201, "isDraft": False, "headRefName": "issue-82-real"})
+prs.append({"number": 9202, "isDraft": False, "headRefName": "issue-83-real"})
 with open("'"$RBIN_TRUNC"'/prs-fixture.json", "w") as f:
     json.dump(prs, f)
 '
@@ -2956,8 +3034,8 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN_TRUNC/gh"
-cat > "$RBIN_TRUNC/claude" <<'EOF'
-#!/usr/bin/env bash
+claude_stub_guard "$RBIN_TRUNC"
+cat >> "$RBIN_TRUNC/claude" <<'EOF'
 exit 0
 EOF
 chmod +x "$RBIN_TRUNC/claude"
@@ -2965,10 +3043,13 @@ chmod +x "$RBIN_TRUNC/claude"
 ralph_trunc_out=$(cd "$RALPH_TRUNC" && PATH="$RBIN_TRUNC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TRUNC" \
   ADK_LOGS_DIR="$TMP/ralph-trunc-logs" ADK_NOTIFY_FILE="$TMP/ralph-trunc-notify.log" \
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
-assert_exit "AC-1: adk-ralph: gh pr list вернул ровно 200 PR — прогон всё равно завершается штатно (предупреждение, не отказ)" \
+assert_exit "AC-1: adk-ralph: gh pr list вернул ровно 200 PR на всех трёх итерациях — прогон всё равно завершается штатно (предупреждение, не отказ)" \
   0 $?
 assert_contains "AC-1: adk-ralph: gh pr list вернул ровно 200 — предупреждение об усечении лимитом" \
   "$ralph_trunc_out" "gh pr list вернул ровно 200 открытых PR"
+ralph_trunc_warn_count=$(printf '%s' "$ralph_trunc_out" | grep -c "gh pr list вернул ровно 200 открытых PR")
+assert_exit "AC-1: adk-ralph: предупреждение об усечении gh pr list печатается ровно один раз за прогон, не на каждой из трёх итераций (важно круга 4 ревью PR #141)" \
+  1 "$ralph_trunc_warn_count"
 
 # ── gh issue list падает — единообразно с остальными путями отказа: run_end
 # с причиной и уведомление, а не молчаливый exit сразу после run_start
