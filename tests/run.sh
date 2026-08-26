@@ -2557,6 +2557,8 @@ assert_contains "AC-1: adk-ralph: застрявший issue #1 помечен n
 assert_not_contains "AC-1: adk-ralph: issue #2 (пропущен каскадом) не получает needs-human — не он застрял" "$edit_log" "issue edit 2 "
 notify_content=$(cat "$RALPH_NOTIFY" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: уведомление о застревании issue #1 с причиной" "$notify_content" "issue #1 застрял: PR остался черновиком"
+assert_contains "AC-1: adk-ralph: итог прогона тоже дублируется уведомлением (SPEC-003 «Сводка прогона и HITL»)" \
+  "$notify_content" "Прогон завершён: ready=1 stuck=1 skipped=1"
 
 claude_calls=$(cat "$RBIN/claude-calls.log" 2>/dev/null)
 # Каждый запуск claude -p передаёт содержимое work.md как один (многострочный)
@@ -2564,7 +2566,8 @@ claude_calls=$(cat "$RBIN/claude-calls.log" 2>/dev/null)
 # по маркеру, который claude-stub пишет ровно один раз на вызов ("$*" целиком).
 claude_call_count=$(printf '%s' "$claude_calls" | grep -c "Инструкция ралфа")
 assert_exit "AC-1: adk-ralph: headless-процесс запущен ровно дважды (issue #2 пропущен без исполнения)" 2 "$claude_call_count"
-assert_contains "AC-7: adk-ralph: запуск headless без --dangerously-skip-permissions" "$claude_calls" "-p"
+claude_dash_p_lines=$(printf '%s' "$claude_calls" | grep -cE '^-p ')
+assert_exit "AC-7: adk-ralph: оба запуска начинаются с '-p ' (не --dangerously-skip-permissions первым флагом)" 2 "$claude_dash_p_lines"
 assert_not_contains "AC-7: adk-ralph: строка запуска не содержит --dangerously-skip-permissions" \
   "$claude_calls" "dangerously-skip-permissions"
 assert_contains "AC-1: adk-ralph: инструкции headless-процесса называют номер обрабатываемой задачи" \
@@ -2599,6 +2602,112 @@ assert_contains "AC-1: adk-ralph: сообщение отказа называе
 assert_exit "AC-1: adk-ralph: enabled=false — каталог журнала не создан, ни строки не записано" 0 $?
 [ ! -f "$RBIN_OFF/gh-calls.log" ]
 assert_exit "AC-1: adk-ralph: enabled=false — gh ни разу не вызван" 0 $?
+
+# ── policies.autopilot.enabled — неизвестное значение в конфиге (опечатка,
+# не отсутствие атрибута) — fail-closed, не молчаливый дефолт "true" ────────
+RALPH_TYPO_CFG="$TMP/ralph-typo-config.json"
+cat > "$RALPH_TYPO_CFG" <<'EOF'
+{"policies": {"autopilot": {"enabled": "yes"}}}
+EOF
+ralph_typo_out=$(cd "$RALPH_OFF" && PATH="$RBIN_OFF:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OFF" \
+  ADK_LOGS_DIR="$TMP/ralph-typo-logs" ADK_CONFIG_FILE="$RALPH_TYPO_CFG" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: policies.autopilot.enabled=\"yes\" (опечатка) — fail-closed, отказ старта" 1 $?
+assert_contains "AC-1: adk-ralph: сообщение отказа называет fail-closed на неизвестном значении" \
+  "$ralph_typo_out" "fail-closed"
+[ ! -e "$TMP/ralph-typo-logs" ]
+assert_exit "AC-1: adk-ralph: опечатка в enabled — журнал не начат" 0 $?
+
+# ── gh pr list не удался: отсутствие фактов — не факт отсутствия PR, задача
+# не штампуется needs-human вслепую, прогон останавливается целиком ────────
+RALPH_ERR="$TMP/ralph-err-proj"
+RBIN_ERR="$TMP/ralph-err-bin"
+mkdir -p "$RALPH_ERR" "$RBIN_ERR"
+(cd "$RALPH_ERR" && git_c init -q -b main)
+cat > "$RBIN_ERR/issues-fixture.json" <<'EOF'
+[
+  {"number": 9, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_ERR/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") echo "gh: rate limit exceeded" >&2; exit 1 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_ERR/gh"
+cat > "$RBIN_ERR/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$RBIN_ERR/claude"
+RALPH_ERR_LOGS="$TMP/ralph-err-logs"
+
+ralph_err_out=$(cd "$RALPH_ERR" && PATH="$RBIN_ERR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ERR" \
+  ADK_LOGS_DIR="$RALPH_ERR_LOGS" CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: gh pr list падает — прогон завершается с ошибкой (exit != 0)" 1 $?
+assert_contains "AC-1: adk-ralph: сообщение об ошибке называет причину — gh pr list не удался" \
+  "$ralph_err_out" "gh pr list не удался"
+[ ! -f "$RBIN_ERR/issue-edit.log" ]
+assert_exit "AC-1: adk-ralph: gh pr list падает — issue #9 НЕ штампуется needs-human вслепую" 0 $?
+ralph_err_log=$(cat "$RALPH_ERR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_not_contains "AC-1: adk-ralph: gh pr list падает — issue #9 не залогирован как обработанный" \
+  "$ralph_err_log" '"issue": "9"'
+assert_contains "AC-1: adk-ralph: run_end фиксирует причину сбоя gh pr list" \
+  "$ralph_err_log" '"event": "run_end"'
+
+# ── Три независимых issue подряд без единого застревания (буквальный
+# сценарий DoD: «три доступных issue — три итерации, ready-PR у всех») ──────
+RALPH3="$TMP/ralph-three-proj"
+RBIN3="$TMP/ralph-three-bin"
+mkdir -p "$RALPH3" "$RBIN3"
+(cd "$RALPH3" && git_c init -q -b main)
+cat > "$RBIN3/issues-fixture.json" <<'EOF'
+[
+  {"number": 21, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 22, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 23, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN3/prs-fixture.json" <<'EOF'
+[
+  {"number": 201, "isDraft": false, "headRefName": "issue-21-a"},
+  {"number": 202, "isDraft": false, "headRefName": "issue-22-b"},
+  {"number": 203, "isDraft": false, "headRefName": "issue-23-c"}
+]
+EOF
+cat > "$RBIN3/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN3/gh"
+cat > "$RBIN3/claude" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+echo "call" >> "$d/claude-calls.log"
+exit 0
+EOF
+chmod +x "$RBIN3/claude"
+RALPH3_LOGS="$TMP/ralph-three-logs"
+
+ralph3_out=$(cd "$RALPH3" && PATH="$RBIN3:$PATH" CLAUDE_PROJECT_DIR="$RALPH3" \
+  ADK_LOGS_DIR="$RALPH3_LOGS" CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: три независимых issue, все ready — прогон завершается штатно" 0 $?
+assert_exit "AC-1: adk-ralph: три независимых ready-задачи — headless-процесс запущен трижды" \
+  3 "$(count_lines "$RBIN3/claude-calls.log")"
+ralph3_log=$(cat "$RALPH3_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_exit "AC-1: adk-ralph: журнал — run_start + 3×event=task(ready) + run_end" \
+  5 "$(count_lines "$RALPH3_LOGS/autopilot-$(date +%Y-%m-%d).jsonl")"
+assert_contains "AC-1: adk-ralph: run_end трёх независимых ready-задач — ready=3" "$ralph3_log" '"ready": "3"'
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"

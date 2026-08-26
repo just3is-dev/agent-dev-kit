@@ -31,7 +31,18 @@ work_md="$plugin_root/commands/work.md"
 
 # ── Политика: enabled=false — отказ старта без единого побочного эффекта ────
 # (журнал не начат, gh не вызван) — читается до любых других действий.
+# Ненулевой exit adk_config_get (опечатка в значении, не отсутствие
+# файла/атрибута — за это lib/config.sh отвечает exit 0) — fail-closed, как
+# ralph обязан вести себя со всем, что читает из конфига (issue #129, к
+# нему же готовит эта же дисциплина): не запускаемся при неясной политике,
+# а не молча трактуем как дефолтное "включено".
 enabled=$(adk_config_get "policies.autopilot.enabled" "true" "true,false")
+enabled_rc=$?
+if [ "$enabled_rc" -ne 0 ]; then
+  echo "adk-ralph: policies.autopilot.enabled — неизвестное значение в конфиге," \
+    "отказ старта (fail-closed)." >&2
+  exit 1
+fi
 if [ "$enabled" != "true" ]; then
   echo "adk-ralph: автопилот выключен конфигом (policies.autopilot.enabled=false)," \
     "включается правкой adk.config.json явным коммитом." >&2
@@ -59,21 +70,32 @@ issues_file="$work_dir/issues.json"
 
 "$logger" "$run_unit" event=run_start || true
 
-if ! (cd "$root" && gh issue list --state open --json number,labels,body --limit 100) \
+issue_fetch_limit=100
+if ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
   >"$issues_file" 2>"$work_dir/gh-issue-list.err"; then
   echo "adk-ralph: gh issue list не удался:" >&2
   cat "$work_dir/gh-issue-list.err" >&2
   exit 1
+fi
+fetched_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$issues_file" 2>/dev/null || echo 0)
+if [ "$fetched_count" -eq "$issue_fetch_limit" ] 2>/dev/null; then
+  echo "adk-ralph: gh issue list вернул ровно $issue_fetch_limit открытых issues —" \
+    "список мог быть усечён лимитом, «очередь пуста» в конце прогона не гарантирует," \
+    "что открытых issues действительно не осталось." >&2
 fi
 
 # ── Состояние прогона ─────────────────────────────────────────────────────
 handled=""  # issue-номера, по которым уже записана строка event=task
 stuck=""    # issue-номера, застрявшие в этом прогоне (needs-human поставлен)
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
+ready_count=0
+stuck_count=0
+skipped_count=0
 ready_list=""
 stuck_summary=""
 skipped_summary=""
 stop_reason=""
+exit_code=0
 
 csv_add() { # csv_add <csv> <значение> — печатает csv с добавленным значением
   if [ -z "$1" ]; then printf '%s' "$2"; else printf '%s,%s' "$1" "$2"; fi
@@ -169,10 +191,20 @@ else:
 PYEOF
 }
 
-find_pr_state() { # find_pr_state <issue> — печатает "ready"/"draft"/"none"
-  local issue_num="$1" pr_json
+# find_pr_state <issue> — печатает "ready"/"draft"/"none"/"error". "error" —
+# сам вызов gh не удался (сеть, лимит, протухший токен): это НЕ факт
+# «PR не создан», отсутствие фактов не равно факту отсутствия. Смешивать их
+# нельзя — задача ложно получила бы needs-human (метка липкая, следующий
+# прогон её не подхватит) за сбой самого gh, а не за реальное состояние PR.
+find_pr_state() {
+  local issue_num="$1" pr_json rc
   pr_json=$(cd "$root" && gh pr list --state open \
-    --json number,isDraft,headRefName --limit 200 2>/dev/null) || pr_json="[]"
+    --json number,isDraft,headRefName --limit 200 2>"$work_dir/gh-pr-list.err")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'error'
+    return
+  fi
   printf '%s' "$pr_json" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -198,6 +230,7 @@ while :; do
         "$logger" "$run_unit" event=task issue="$skip_num" type="$skip_type" result=skipped || true
         handled=$(csv_add "$handled" "$skip_num")
         skipped=$(csv_add "$skipped" "$skip_num")
+        skipped_count=$((skipped_count + 1))
         skipped_summary="$skipped_summary #$skip_num"
         ;;
     esac
@@ -216,6 +249,7 @@ while :; do
     *)
       echo "adk-ralph: неожиданный вывод выбора задачи: $status_line" >&2
       stop_reason="внутренняя ошибка выбора задачи"
+      exit_code=1
       break
       ;;
   esac
@@ -229,10 +263,24 @@ while :; do
   (cd "$root" && claude -p "$prompt")
 
   pr_state=$(find_pr_state "$issue_num")
+
+  if [ "$pr_state" = "error" ]; then
+    # Отсутствие фактов — не факт отсутствия: сбой самого gh (сеть, лимит,
+    # токен) не значит «PR не создан». Не штампуем needs-human вслепую —
+    # останавливаем прогон целиком, задача не логируется как обработанная
+    # (её ещё предстоит взять заново следующим прогоном).
+    echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
+    cat "$work_dir/gh-pr-list.err" >&2
+    stop_reason="gh pr list не удался"
+    exit_code=1
+    break
+  fi
+
   handled=$(csv_add "$handled" "$issue_num")
 
   if [ "$pr_state" = "ready" ]; then
     "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready || true
+    ready_count=$((ready_count + 1))
     ready_list="$ready_list #$issue_num"
   else
     if [ "$pr_state" = "draft" ]; then
@@ -245,19 +293,24 @@ while :; do
     "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
     "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" || true
     stuck=$(csv_add "$stuck" "$issue_num")
+    stuck_count=$((stuck_count + 1))
     stuck_summary="$stuck_summary #$issue_num ($reason)"
   fi
 done
 
-ready_count=$(printf '%s' "$ready_list" | tr -s ' ' '\n' | grep -c '^#' || true)
-stuck_count=$(printf '%s' "$stuck" | tr ',' '\n' | grep -c '[0-9]' || true)
-skipped_count=$(printf '%s' "$skipped" | tr ',' '\n' | grep -c '[0-9]' || true)
-
 "$logger" "$run_unit" event=run_end done=0 ready="$ready_count" stuck="$stuck_count" \
   skipped="$skipped_count" reason="$stop_reason" || true
 
-echo "=== Ralph: итог прогона ==="
-echo "Ready (ждут человека): ${ready_list:-нет}"
-echo "Застряло: ${stuck_summary:-нет}"
-echo "Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}"
-echo "Причина остановки: $stop_reason"
+summary="=== Ralph: итог прогона ===
+Ready (ждут человека): ${ready_list:-нет}
+Застряло: ${stuck_summary:-нет}
+Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
+Причина остановки: $stop_reason"
+
+echo "$summary"
+# Сводка дублируется локальным уведомлением (SPEC-003 «Сводка прогона и
+# HITL»; DoD issue #139: «event=run_end и уведомление») — не только
+# терминал и журнал.
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count. Причина: $stop_reason" || true
+
+exit "$exit_code"
