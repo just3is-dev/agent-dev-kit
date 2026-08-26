@@ -29,13 +29,8 @@ root=$(adk_project_root)
 plugin_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 work_md="$plugin_root/commands/work.md"
 
-# ── Политика: enabled=false — отказ старта без единого побочного эффекта ────
-# (журнал не начат, gh не вызван) — читается до любых других действий.
-# Ненулевой exit adk_config_get (опечатка в значении, не отсутствие
-# файла/атрибута — за это lib/config.sh отвечает exit 0) — fail-closed, как
-# ralph обязан вести себя со всем, что читает из конфига (issue #129, к
-# нему же готовит эта же дисциплина): не запускаемся при неясной политике,
-# а не молча трактуем как дефолтное "включено".
+# ── Политика: enabled=false / неизвестное значение — отказ старта fail-closed,
+# без единого побочного эффекта (ADR-007 §5) ─────────────────────────────────
 enabled=$(adk_config_get "policies.autopilot.enabled" "true" "true,false")
 enabled_rc=$?
 if [ "$enabled_rc" -ne 0 ]; then
@@ -54,6 +49,17 @@ if [ ! -f "$work_md" ]; then
   exit 1
 fi
 
+# Префлайт бинаря claude — тот же класс проверки, что и work_md выше: без
+# него каждая итерация цикла дошла бы до find_pr_state → "none" → ложное
+# «PR не создан» по всей очереди issues (ADR-007 §4). Дешевле остановиться
+# до первой задачи, чем узнать об этом после того, как вся очередь уже
+# помечена needs-human.
+if ! command -v claude >/dev/null 2>&1; then
+  echo "adk-ralph: бинарь claude не найден в PATH (не установлен/не в PATH)" \
+    "— отказ старта до какого-либо побочного эффекта (ADR-007 §4)." >&2
+  exit 1
+fi
+
 logs_dir=$(adk_logs_dir "$root")
 run_unit="autopilot-$(date +%Y-%m-%d)"
 logger="$SCRIPT_DIR/adk-log.sh"
@@ -63,26 +69,6 @@ task_label=$(adk_config_get "types.task.label" "type:task")
 bug_label=$(adk_config_get "types.bug.label" "type:bug")
 ff_label=$(adk_config_get "types.fastFollow.label" "type:fast-follow")
 consolidate_label=$(adk_config_get "types.consolidate.label" "type:consolidate")
-
-work_dir=$(mktemp -d)
-trap 'rm -rf "$work_dir"' EXIT
-issues_file="$work_dir/issues.json"
-
-"$logger" "$run_unit" event=run_start || true
-
-issue_fetch_limit=100
-if ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
-  >"$issues_file" 2>"$work_dir/gh-issue-list.err"; then
-  echo "adk-ralph: gh issue list не удался:" >&2
-  cat "$work_dir/gh-issue-list.err" >&2
-  exit 1
-fi
-fetched_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$issues_file" 2>/dev/null || echo 0)
-if [ "$fetched_count" -eq "$issue_fetch_limit" ] 2>/dev/null; then
-  echo "adk-ralph: gh issue list вернул ровно $issue_fetch_limit открытых issues —" \
-    "список мог быть усечён лимитом, «очередь пуста» в конце прогона не гарантирует," \
-    "что открытых issues действительно не осталось." >&2
-fi
 
 # ── Состояние прогона ─────────────────────────────────────────────────────
 handled=""  # issue-номера, по которым уже записана строка event=task
@@ -96,6 +82,36 @@ stuck_summary=""
 skipped_summary=""
 stop_reason=""
 exit_code=0
+pr_list_truncation_warned=""  # gh pr list --limit 200: предупреждение печатается один раз за прогон
+
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"' EXIT
+issues_file="$work_dir/issues.json"
+
+"$logger" "$run_unit" event=run_start || true
+
+issue_fetch_limit=100
+if ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
+  >"$issues_file" 2>"$work_dir/gh-issue-list.err"; then
+  # Единообразно с остальными путями отказа этого скрипта: run_start уже
+  # записан, поэтому этот сбой обязан дописать run_end/reason и
+  # уведомление, а не выйти молча (иначе в журнале висит прогон без
+  # исхода) — общий хвост ниже делает это для exit_code!=0.
+  echo "adk-ralph: gh issue list не удался:" >&2
+  cat "$work_dir/gh-issue-list.err" >&2
+  stop_reason="gh issue list не удался"
+  exit_code=1
+fi
+
+# Безопасно вычислять и без guard'а на exit_code: если gh issue list выше
+# не удался, issues_file пуст/невалиден, json.load бросит исключение,
+# `|| echo 0` даст 0 — предупреждение об усечении просто не напечатается.
+fetched_count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$issues_file" 2>/dev/null || echo 0)
+if [ "$fetched_count" -eq "$issue_fetch_limit" ] 2>/dev/null; then
+  echo "adk-ralph: gh issue list вернул ровно $issue_fetch_limit открытых issues —" \
+    "список мог быть усечён лимитом, «очередь пуста» в конце прогона не гарантирует," \
+    "что открытых issues действительно не осталось." >&2
+fi
 
 csv_add() { # csv_add <csv> <значение> — печатает csv с добавленным значением
   if [ -z "$1" ]; then printf '%s' "$2"; else printf '%s,%s' "$1" "$2"; fi
@@ -155,16 +171,27 @@ def type_of(it):
 
 new_skips = []
 new_skip_numbers = set()
+already_needs_human = set()
 changed = True
 while changed:
     changed = False
     for it in issues:
         n = it["number"]
-        if n in handled or n in new_skip_numbers:
+        if n in handled or n in new_skip_numbers or n in already_needs_human:
             continue
         if blockers(it.get("body")) & unresolved:
-            new_skips.append(it)
-            new_skip_numbers.add(n)
+            # Issue уже с needs-human не была «в очереди» этого прогона —
+            # её уже отдали человеку раньше. Она по-прежнему держит своих
+            # зависимых заблокированными (остаётся в unresolved), но сама
+            # не печатается как SKIP: иначе result=skipped завышал бы
+            # счётчик пропущенных задачами, которые и так не были бы
+            # взяты в этот прогон (на нём считается maxSkippedShare,
+            # AC-5/#134).
+            if "needs-human" in labels_of(it):
+                already_needs_human.add(n)
+            else:
+                new_skips.append(it)
+                new_skip_numbers.add(n)
             unresolved.add(n)
             changed = True
 
@@ -191,19 +218,35 @@ else:
 PYEOF
 }
 
-# find_pr_state <issue> — печатает "ready"/"draft"/"none"/"error". "error" —
-# сам вызов gh не удался (сеть, лимит, протухший токен): это НЕ факт
-# «PR не создан», отсутствие фактов не равно факту отсутствия. Смешивать их
-# нельзя — задача ложно получила бы needs-human (метка липкая, следующий
-# прогон её не подхватит) за сбой самого gh, а не за реальное состояние PR.
+# find_pr_state <issue> — печатает "ready"/"draft"/"none"/"error" (поиск PR
+# по префиксу ветки, различение сбоя gh от «PR не создан» — ADR-007 §2/§4).
 find_pr_state() {
-  local issue_num="$1" pr_json rc parsed
+  local issue_num="$1" pr_json rc parsed pr_count
   pr_json=$(cd "$root" && gh pr list --state open \
     --json number,isDraft,headRefName --limit 200 2>"$work_dir/gh-pr-list.err")
   rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'error'
     return
+  fi
+  # Усечение --limit 200 дороже здесь, чем у gh issue list: пропущенный в
+  # выборке PR читается как «PR не создан» → липкий needs-human, а не
+  # просто как неполный список для следующего прогона. Предупреждение —
+  # один раз за прогон (issues повторяют этот вызов на каждой итерации).
+  if [ -z "$pr_list_truncation_warned" ]; then
+    pr_count=$(printf '%s' "$pr_json" | python3 -c '
+import json, sys
+try:
+    print(len(json.load(sys.stdin)))
+except Exception:
+    print(0)
+' 2>/dev/null || echo 0)
+    if [ "$pr_count" -eq 200 ] 2>/dev/null; then
+      echo "adk-ralph: gh pr list вернул ровно 200 открытых PR — список мог быть" \
+        "усечён лимитом; «PR не создан» не гарантирует, что искомый PR" \
+        "действительно отсутствует." >&2
+      pr_list_truncation_warned=1
+    fi
   fi
   # rc=0 не гарантирует валидный JSON (gh мог напечатать частичный вывод) —
   # разбор, упавший сам по себе, — тот же класс факта, что и сбой gh: не
@@ -227,7 +270,10 @@ except Exception:
 }
 
 # ── Цикл ──────────────────────────────────────────────────────────────────
-while :; do
+# exit_code уже != 0 здесь только если gh issue list выше не удался
+# (stop_reason уже выставлен тем же путём) — цикл в этом случае не
+# стартует вовсе, run_end/уведомление печатает общий хвост ниже.
+while [ "$exit_code" -eq 0 ]; do
   select_out=$(select_next)
 
   while IFS= read -r line; do
@@ -269,14 +315,25 @@ while :; do
 целиком для задачи issue #$issue_num. Путь к проекту: $root."
 
   (cd "$root" && claude -p "$prompt")
+  claude_rc=$?
+  if [ "$claude_rc" -ne 0 ]; then
+    # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
+    # разово споткнулся) — до find_pr_state дела не дошло, значит нет и
+    # факта «PR не создан» (ADR-007 §4, тот же принцип, что ниже для gh
+    # pr list). Останавливаем прогон целиком: причина обычно не
+    # специфична для этого issue и повторится на следующей итерации тем
+    # же образом — не штампуем needs-human вслепую по всей очереди.
+    echo "adk-ralph: claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num — прогон остановлен." >&2
+    stop_reason="claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num"
+    exit_code=1
+    break
+  fi
 
   pr_state=$(find_pr_state "$issue_num")
 
   if [ "$pr_state" = "error" ]; then
-    # Отсутствие фактов — не факт отсутствия: сбой самого gh (сеть, лимит,
-    # токен) не значит «PR не создан». Не штампуем needs-human вслепую —
-    # останавливаем прогон целиком, задача не логируется как обработанная
-    # (её ещё предстоит взять заново следующим прогоном).
+    # Сбой gh pr list — не факт «PR не создан» (ADR-007 §2/§3): прогон
+    # останавливается целиком, issue не логируется как обработанный.
     echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
     cat "$work_dir/gh-pr-list.err" >&2
     stop_reason="gh pr list не удался при разборе issue #$issue_num"
@@ -297,7 +354,16 @@ while :; do
       reason="PR не создан"
     fi
     (cd "$root" && gh label create needs-human >/dev/null 2>&1) || true
-    (cd "$root" && gh issue edit "$issue_num" --add-label needs-human >/dev/null 2>&1) || true
+    if ! (cd "$root" && gh issue edit "$issue_num" --add-label needs-human) \
+      >/dev/null 2>"$work_dir/gh-issue-edit.err"; then
+      # needs-human — единственный механизм HITL для этой задачи: молчать
+      # об отказе нельзя. Не останавливаем весь прогон за это (в отличие
+      # от сбоя gh pr list выше) — но без громкого предупреждения журнал
+      # и уведомление утверждали бы stuck, а метки не было бы, и
+      # следующий прогон взял бы issue заново.
+      echo "adk-ralph: не удалось пометить issue #$issue_num меткой needs-human:" >&2
+      cat "$work_dir/gh-issue-edit.err" >&2
+    fi
     "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
     "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" || true
     stuck=$(csv_add "$stuck" "$issue_num")
