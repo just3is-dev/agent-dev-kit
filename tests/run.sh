@@ -2541,16 +2541,20 @@ ralph_log="$RALPH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
 assert_exit "AC-1: adk-ralph: журнал прогона создан" 0 $?
 assert_exit "AC-1: adk-ralph: журнал содержит ровно run_start + 3×event=task + run_end" 5 "$(count_lines "$ralph_log")"
 
-ralph_log_content=$(cat "$ralph_log")
-assert_contains "AC-1: adk-ralph: журнал открывается event=run_start" "$ralph_log_content" '"event": "run_start"'
-assert_contains "AC-1: adk-ralph: issue #1 (черновик PR) — result=stuck с причиной" \
-  "$ralph_log_content" '"event": "task", "issue": "1", "type": "task", "result": "stuck", "reason": "PR остался черновиком"'
-assert_contains "AC-1: adk-ralph: issue #2 (Blocked by застрявшей #1) — result=skipped, без исполнения" \
-  "$ralph_log_content" '"event": "task", "issue": "2", "type": "task", "result": "skipped"'
-assert_contains "AC-1: adk-ralph: issue #3 (ready-PR) — result=ready (ADR-003, merge вне рамок #139)" \
-  "$ralph_log_content" '"event": "task", "issue": "3", "type": "bug", "result": "ready"'
-assert_contains "AC-1: adk-ralph: run_end считает done/ready/stuck/skipped и причину остановки" \
-  "$ralph_log_content" '"event": "run_end", "done": "0", "ready": "1", "stuck": "1", "skipped": "1", "reason": "очередь пуста"'
+# jsonl_check (tests/run.sh:107, issue #28 K4) вместо сырого assert_contains
+# по сериализованному JSON — проверяет поведение (какие поля есть), не
+# точный порядок/соседство ключей сериализации (issue #139, круг 3 ревью
+# PR #141: будущие issues #131/#132 добавят duration/tokens в event=task,
+# не должны красить эти тесты без реальной регрессии).
+ralph_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=1|type=task|result=stuck|reason=PR остался черновиком' \
+  'event=task|issue=2|type=task|result=skipped' \
+  'event=task|issue=3|type=bug|result=ready' \
+  'event=run_end|done=0|ready=1|stuck=1|skipped=1|reason=очередь пуста')
+ralph_valid=$(jsonl_check "$ralph_log" 5 "$ralph_spec")
+assert_exit "AC-1: adk-ralph: журнал — run_start, issue #1 stuck/#2 skipped/#3 ready с причинами, run_end с агрегатами и причиной остановки" \
+  1 "$ralph_valid"
 
 edit_log=$(cat "$RBIN/issue-edit.log" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: застрявший issue #1 помечен needs-human" "$edit_log" "issue edit 1 --add-label needs-human"
@@ -2717,6 +2721,296 @@ assert_contains "AC-1: adk-ralph: run_end трёх независимых ready-
 ralph3_notify=$(cat "$RALPH3_NOTIFY" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: три независимые ready-задачи — итог прогона тоже дублируется уведомлением" \
   "$ralph3_notify" "Прогон завершён: ready=3 stuck=0 skipped=0"
+
+# ── Префлайт: бинарь claude не найден в PATH — отказ старта до какого-либо
+# побочного эффекта (блокер круга 3 ревью PR #141, ADR-007 §4): без него
+# каждая итерация дошла бы до find_pr_state → "none" → ложное «PR не
+# создан» по всей очереди issues ───────────────────────────────────────────
+RALPH_NOCLAUDE="$TMP/ralph-noclaude-proj"
+RBIN_NOCLAUDE="$TMP/ralph-noclaude-bin"
+mkdir -p "$RALPH_NOCLAUDE" "$RBIN_NOCLAUDE"
+(cd "$RALPH_NOCLAUDE" && git_c init -q -b main)
+cat > "$RBIN_NOCLAUDE/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+echo "UNEXPECTED gh CALL: $*" >> "$d/gh-calls.log"
+exit 1
+EOF
+chmod +x "$RBIN_NOCLAUDE/gh"
+# Намеренно нет исполняемого claude ни в $RBIN_NOCLAUDE, ни в узком PATH
+# ниже (system PATH урезан до /usr/bin:/bin — на машине разработчика
+# настоящий claude обычно стоит в PATH, префлайт должен смотреть на PATH
+# прогона, а не считать, что claude всегда доступен).
+RALPH_NOCLAUDE_LOGS="$TMP/ralph-noclaude-logs"
+
+ralph_noclaude_out=$(cd "$RALPH_NOCLAUDE" && PATH="$RBIN_NOCLAUDE:/usr/bin:/bin" CLAUDE_PROJECT_DIR="$RALPH_NOCLAUDE" \
+  ADK_LOGS_DIR="$RALPH_NOCLAUDE_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-noclaude-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: claude не в PATH — отказ старта (exit != 0)" 1 $?
+assert_contains "AC-1: adk-ralph: сообщение отказа называет отсутствие бинаря claude" \
+  "$ralph_noclaude_out" "бинарь claude не найден"
+[ ! -e "$RALPH_NOCLAUDE_LOGS" ]
+assert_exit "AC-1: adk-ralph: claude не в PATH — журнал не начат (та же дисциплина, что work_md/enabled)" 0 $?
+[ ! -f "$RBIN_NOCLAUDE/gh-calls.log" ]
+assert_exit "AC-1: adk-ralph: claude не в PATH — gh ни разу не вызван" 0 $?
+
+# ── claude -p завершается с ошибкой (exit != 0) — блокер круга 3: до
+# find_pr_state дела не доходит, значит нет факта «PR не создан»; прогон
+# останавливается целиком с честной причиной, не needs-human по всей
+# очереди (воспроизведение сценария из ревью: два доступных issue, claude
+# падает на первом же) ──────────────────────────────────────────────────────
+RALPH_CFAIL="$TMP/ralph-cfail-proj"
+RBIN_CFAIL="$TMP/ralph-cfail-bin"
+mkdir -p "$RALPH_CFAIL" "$RBIN_CFAIL"
+(cd "$RALPH_CFAIL" && git_c init -q -b main)
+cat > "$RBIN_CFAIL/issues-fixture.json" <<'EOF'
+[
+  {"number": 41, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 42, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_CFAIL/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") echo "unexpected pr list call" >&2; exit 1 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_CFAIL/gh"
+cat > "$RBIN_CFAIL/claude" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+echo "call" >> "$d/claude-calls.log"
+echo "claude: rate limit exceeded" >&2
+exit 1
+EOF
+chmod +x "$RBIN_CFAIL/claude"
+RALPH_CFAIL_LOGS="$TMP/ralph-cfail-logs"
+RALPH_CFAIL_NOTIFY="$TMP/ralph-cfail-notify.log"
+
+ralph_cfail_out=$(cd "$RALPH_CFAIL" && PATH="$RBIN_CFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CFAIL" \
+  ADK_LOGS_DIR="$RALPH_CFAIL_LOGS" ADK_NOTIFY_FILE="$RALPH_CFAIL_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_cfail_st=$?
+assert_exit "AC-1: adk-ralph: claude -p падает (exit!=0) — прогон завершается с ошибкой" 1 "$ralph_cfail_st"
+assert_contains "AC-1: adk-ralph: сообщение об ошибке называет issue и причину (не путается со сбоем gh pr list)" \
+  "$ralph_cfail_out" "claude -p завершился с ошибкой (exit 1) при issue #41"
+assert_not_contains "AC-1: adk-ralph: claude -p падает — issue #41 НЕ штампуется needs-human вслепую (не «PR не создан»)" \
+  "$ralph_cfail_out" "issue #41 застрял"
+assert_not_contains "AC-1: adk-ralph: claude -p падает — не проваливается тихо в find_pr_state (gh pr list ни разу не вызван)" \
+  "$ralph_cfail_out" "unexpected pr list call"
+[ ! -f "$RBIN_CFAIL/issue-edit.log" ]
+assert_exit "AC-1: adk-ralph: claude -p падает — gh issue edit needs-human ни разу не вызван" 0 $?
+claude_cfail_calls=$(printf '%s' "$(cat "$RBIN_CFAIL/claude-calls.log" 2>/dev/null)" | grep -c "call")
+assert_exit "AC-1: adk-ralph: claude -p падает на первом issue — headless-процесс запущен ровно один раз (не по всей очереди из двух issues)" \
+  1 "$claude_cfail_calls"
+ralph_cfail_log=$(cat "$RALPH_CFAIL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_not_contains "AC-1: adk-ralph: claude -p падает — issue #41 не залогирован как обработанный" \
+  "$ralph_cfail_log" '"issue": "41"'
+cfail_spec=$(printf '%s\n%s' \
+  'event=run_start' \
+  'event=run_end|reason=claude -p завершился с ошибкой (exit 1) при issue #41')
+cfail_valid=$(jsonl_check "$RALPH_CFAIL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2 "$cfail_spec")
+assert_exit "AC-1: adk-ralph: журнал — run_start + run_end с честной причиной сбоя claude -p (не сирота без исхода)" \
+  1 "$cfail_valid"
+ralph_cfail_notify=$(cat "$RALPH_CFAIL_NOTIFY" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: claude -p падает — итог прогона всё равно уведомлён (SPEC-003 «Сводка прогона и HITL»)" \
+  "$ralph_cfail_notify" "Прогон завершён: ready=0 stuck=0 skipped=0"
+
+# ── gh issue edit --add-label needs-human падает — единственный механизм
+# HITL не должен отказывать молча (важно круга 3 ревью PR #141): громкое
+# предупреждение в stderr, прогон при этом не останавливается целиком ──────
+RALPH_EDITFAIL="$TMP/ralph-editfail-proj"
+RBIN_EDITFAIL="$TMP/ralph-editfail-bin"
+mkdir -p "$RALPH_EDITFAIL" "$RBIN_EDITFAIL"
+(cd "$RALPH_EDITFAIL" && git_c init -q -b main)
+cat > "$RBIN_EDITFAIL/issues-fixture.json" <<'EOF'
+[
+  {"number": 51, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_EDITFAIL/prs-fixture.json" <<'EOF'
+[]
+EOF
+cat > "$RBIN_EDITFAIL/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "gh: HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_EDITFAIL/gh"
+cat > "$RBIN_EDITFAIL/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$RBIN_EDITFAIL/claude"
+RALPH_EDITFAIL_LOGS="$TMP/ralph-editfail-logs"
+
+ralph_editfail_out=$(cd "$RALPH_EDITFAIL" && PATH="$RBIN_EDITFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_EDITFAIL" \
+  ADK_LOGS_DIR="$RALPH_EDITFAIL_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-editfail-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_editfail_st=$?
+assert_exit "AC-1: adk-ralph: gh issue edit needs-human падает — прогон всё равно завершается штатно (громкое предупреждение, не блокер)" \
+  0 "$ralph_editfail_st"
+assert_contains "AC-1: adk-ralph: gh issue edit needs-human падает — предупреждение в stderr (единственный механизм HITL не молчит)" \
+  "$ralph_editfail_out" "не удалось пометить issue #51 меткой needs-human"
+assert_contains "AC-1: adk-ralph: предупреждение о сбое needs-human содержит диагностику gh (HTTP 403)" \
+  "$ralph_editfail_out" "HTTP 403"
+
+# ── Каскад пропуска зависимостей исключает issues уже с меткой needs-human
+# из result=skipped — такая задача не была «в очереди» этого прогона
+# (мелочь круга 3 ревью PR #141, счётчик используется в maxSkippedShare
+# AC-5/#134): issue #70 без блокеров застрянет этим прогоном, issue #71
+# уже needs-human и заблокирован именно им, issue #72 независим и получит
+# ready-PR ───────────────────────────────────────────────────────────────
+RALPH_NH="$TMP/ralph-nh-proj"
+RBIN_NH="$TMP/ralph-nh-bin"
+mkdir -p "$RALPH_NH" "$RBIN_NH"
+(cd "$RALPH_NH" && git_c init -q -b main)
+cat > "$RBIN_NH/issues-fixture.json" <<'EOF'
+[
+  {"number": 70, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 71, "labels": [{"name":"type:task"},{"name":"needs-human"}], "body": "Зависит от: Blocked by #70"},
+  {"number": 72, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_NH/prs-fixture.json" <<'EOF'
+[
+  {"number": 301, "isDraft": true, "headRefName": "issue-70-x"},
+  {"number": 302, "isDraft": false, "headRefName": "issue-72-y"}
+]
+EOF
+cat > "$RBIN_NH/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_NH/gh"
+cat > "$RBIN_NH/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$RBIN_NH/claude"
+RALPH_NH_LOGS="$TMP/ralph-nh-logs"
+
+ralph_nh_out=$(cd "$RALPH_NH" && PATH="$RBIN_NH:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NH" \
+  ADK_LOGS_DIR="$RALPH_NH_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-nh-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: needs-human-каскад — прогон завершается штатно" 0 $?
+assert_contains "AC-1: adk-ralph: needs-human-каскад — сводка перечисляет застрявшую #70" \
+  "$ralph_nh_out" "#70 (PR остался черновиком)"
+assert_contains "AC-1: adk-ralph: needs-human-каскад — сводка перечисляет ready #72" "$ralph_nh_out" "#72"
+assert_not_contains "AC-1: adk-ralph: needs-human-каскад — сводка не упоминает уже-needs-human #71 (не в очереди этого прогона)" \
+  "$ralph_nh_out" "#71"
+ralph_nh_log=$(cat "$RALPH_NH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_not_contains "AC-1: adk-ralph: needs-human-каскад — журнал не содержит записи по issue #71" \
+  "$ralph_nh_log" '"issue": "71"'
+assert_contains "AC-1: adk-ralph: needs-human-каскад — run_end: skipped=0 (needs-human issue не завышает счётчик пропущенных)" \
+  "$ralph_nh_log" '"skipped": "0"'
+edit_nh_log=$(cat "$RBIN_NH/issue-edit.log" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: needs-human-каскад — issue #70 (застрявший этим прогоном) помечен needs-human" \
+  "$edit_nh_log" "issue edit 70 --add-label needs-human"
+assert_not_contains "AC-1: adk-ralph: needs-human-каскад — issue #71 (уже needs-human) не получает повторный issue edit от ralph" \
+  "$edit_nh_log" "issue edit 71"
+
+# ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
+# issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
+# дороже: пропущенный в выборке PR читается как «PR не создан» ─────────────
+RALPH_TRUNC="$TMP/ralph-trunc-proj"
+RBIN_TRUNC="$TMP/ralph-trunc-bin"
+mkdir -p "$RALPH_TRUNC" "$RBIN_TRUNC"
+(cd "$RALPH_TRUNC" && git_c init -q -b main)
+cat > "$RBIN_TRUNC/issues-fixture.json" <<'EOF'
+[
+  {"number": 81, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+python3 -c '
+import json
+prs = [{"number": i, "isDraft": False, "headRefName": f"issue-{9000+i}-x"} for i in range(199)]
+prs.append({"number": 9200, "isDraft": False, "headRefName": "issue-81-real"})
+with open("'"$RBIN_TRUNC"'/prs-fixture.json", "w") as f:
+    json.dump(prs, f)
+'
+cat > "$RBIN_TRUNC/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_TRUNC/gh"
+cat > "$RBIN_TRUNC/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$RBIN_TRUNC/claude"
+
+ralph_trunc_out=$(cd "$RALPH_TRUNC" && PATH="$RBIN_TRUNC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TRUNC" \
+  ADK_LOGS_DIR="$TMP/ralph-trunc-logs" ADK_NOTIFY_FILE="$TMP/ralph-trunc-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: gh pr list вернул ровно 200 PR — прогон всё равно завершается штатно (предупреждение, не отказ)" \
+  0 $?
+assert_contains "AC-1: adk-ralph: gh pr list вернул ровно 200 — предупреждение об усечении лимитом" \
+  "$ralph_trunc_out" "gh pr list вернул ровно 200 открытых PR"
+
+# ── gh issue list падает — единообразно с остальными путями отказа: run_end
+# с причиной и уведомление, а не молчаливый exit сразу после run_start
+# (мелочь круга 3 ревью PR #141) ────────────────────────────────────────────
+RALPH_ILFAIL="$TMP/ralph-ilfail-proj"
+RBIN_ILFAIL="$TMP/ralph-ilfail-bin"
+mkdir -p "$RALPH_ILFAIL" "$RBIN_ILFAIL"
+(cd "$RALPH_ILFAIL" && git_c init -q -b main)
+cat > "$RBIN_ILFAIL/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue list") echo "gh: rate limit exceeded" >&2; exit 1 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_ILFAIL/gh"
+cat > "$RBIN_ILFAIL/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "UNEXPECTED claude CALL" >&2
+exit 1
+EOF
+chmod +x "$RBIN_ILFAIL/claude"
+RALPH_ILFAIL_LOGS="$TMP/ralph-ilfail-logs"
+RALPH_ILFAIL_NOTIFY="$TMP/ralph-ilfail-notify.log"
+
+ralph_ilfail_out=$(cd "$RALPH_ILFAIL" && PATH="$RBIN_ILFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ILFAIL" \
+  ADK_LOGS_DIR="$RALPH_ILFAIL_LOGS" ADK_NOTIFY_FILE="$RALPH_ILFAIL_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: gh issue list падает — прогон завершается с ошибкой" 1 $?
+assert_contains "AC-1: adk-ralph: сообщение об ошибке называет сбой gh issue list" \
+  "$ralph_ilfail_out" "gh issue list не удался"
+assert_not_contains "AC-1: adk-ralph: gh issue list падает — claude ни разу не вызывается" \
+  "$ralph_ilfail_out" "UNEXPECTED claude CALL"
+ilfail_spec=$(printf '%s\n%s' \
+  'event=run_start' \
+  'event=run_end|reason=gh issue list не удался')
+ilfail_valid=$(jsonl_check "$RALPH_ILFAIL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2 "$ilfail_spec")
+assert_exit "AC-1: adk-ralph: gh issue list падает — журнал не сирота: run_start + run_end с причиной" \
+  1 "$ilfail_valid"
+ralph_ilfail_notify=$(cat "$RALPH_ILFAIL_NOTIFY" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: gh issue list падает — итог прогона всё равно уведомлён" \
+  "$ralph_ilfail_notify" "Прогон завершён: ready=0 stuck=0 skipped=0"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
