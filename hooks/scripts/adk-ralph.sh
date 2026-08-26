@@ -197,7 +197,7 @@ PYEOF
 # нельзя — задача ложно получила бы needs-human (метка липкая, следующий
 # прогон её не подхватит) за сбой самого gh, а не за реальное состояние PR.
 find_pr_state() {
-  local issue_num="$1" pr_json rc
+  local issue_num="$1" pr_json rc parsed
   pr_json=$(cd "$root" && gh pr list --state open \
     --json number,isDraft,headRefName --limit 200 2>"$work_dir/gh-pr-list.err")
   rc=$?
@@ -205,17 +205,25 @@ find_pr_state() {
     printf 'error'
     return
   fi
-  printf '%s' "$pr_json" | python3 -c '
+  # rc=0 не гарантирует валидный JSON (gh мог напечатать частичный вывод) —
+  # разбор, упавший сам по себе, — тот же класс факта, что и сбой gh: не
+  # «PR не создан», а «не удалось узнать», иначе один и тот же баг вернулся
+  # бы другим путём (issue #139, круг 2 ревью PR #141).
+  parsed=$(printf '%s' "$pr_json" | python3 -c '
 import json, sys
-data = json.load(sys.stdin)
-prefix = "issue-" + sys.argv[1] + "-"
-matches = [d for d in data if d.get("headRefName", "").startswith(prefix)]
-if not matches:
-    print("none")
-else:
-    matches.sort(key=lambda d: d["number"])
-    print("draft" if matches[-1].get("isDraft") else "ready")
-' "$issue_num"
+try:
+    data = json.load(sys.stdin)
+    prefix = "issue-" + sys.argv[1] + "-"
+    matches = [d for d in data if d.get("headRefName", "").startswith(prefix)]
+    if not matches:
+        print("none")
+    else:
+        matches.sort(key=lambda d: d["number"])
+        print("draft" if matches[-1].get("isDraft") else "ready")
+except Exception:
+    print("error")
+' "$issue_num")
+  printf '%s' "${parsed:-error}"
 }
 
 # ── Цикл ──────────────────────────────────────────────────────────────────
@@ -271,7 +279,7 @@ while :; do
     # (её ещё предстоит взять заново следующим прогоном).
     echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
     cat "$work_dir/gh-pr-list.err" >&2
-    stop_reason="gh pr list не удался"
+    stop_reason="gh pr list не удался при разборе issue #$issue_num"
     exit_code=1
     break
   fi

@@ -2594,6 +2594,7 @@ EOF
 
 ralph_off_out=$(cd "$RALPH_OFF" && PATH="$RBIN_OFF:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OFF" \
   ADK_LOGS_DIR="$RALPH_OFF_LOGS" ADK_CONFIG_FILE="$RALPH_OFF_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-off-notify.log" \
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-1: adk-ralph: policies.autopilot.enabled=false — отказ старта, exit != 0" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение отказа называет policies.autopilot.enabled=false" \
@@ -2611,6 +2612,7 @@ cat > "$RALPH_TYPO_CFG" <<'EOF'
 EOF
 ralph_typo_out=$(cd "$RALPH_OFF" && PATH="$RBIN_OFF:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OFF" \
   ADK_LOGS_DIR="$TMP/ralph-typo-logs" ADK_CONFIG_FILE="$RALPH_TYPO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-typo-notify.log" \
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-1: adk-ralph: policies.autopilot.enabled=\"yes\" (опечатка) — fail-closed, отказ старта" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение отказа называет fail-closed на неизвестном значении" \
@@ -2646,12 +2648,14 @@ exit 0
 EOF
 chmod +x "$RBIN_ERR/claude"
 RALPH_ERR_LOGS="$TMP/ralph-err-logs"
+RALPH_ERR_NOTIFY="$TMP/ralph-err-notify.log"
 
 ralph_err_out=$(cd "$RALPH_ERR" && PATH="$RBIN_ERR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ERR" \
-  ADK_LOGS_DIR="$RALPH_ERR_LOGS" CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+  ADK_LOGS_DIR="$RALPH_ERR_LOGS" ADK_NOTIFY_FILE="$RALPH_ERR_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-1: adk-ralph: gh pr list падает — прогон завершается с ошибкой (exit != 0)" 1 $?
-assert_contains "AC-1: adk-ralph: сообщение об ошибке называет причину — gh pr list не удался" \
-  "$ralph_err_out" "gh pr list не удался"
+assert_contains "AC-1: adk-ralph: сообщение об ошибке называет причину и номер issue — gh pr list не удался при разборе issue #9" \
+  "$ralph_err_out" "gh pr list не удался при разборе issue #9"
 [ ! -f "$RBIN_ERR/issue-edit.log" ]
 assert_exit "AC-1: adk-ralph: gh pr list падает — issue #9 НЕ штампуется needs-human вслепую" 0 $?
 ralph_err_log=$(cat "$RALPH_ERR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
@@ -2698,9 +2702,11 @@ exit 0
 EOF
 chmod +x "$RBIN3/claude"
 RALPH3_LOGS="$TMP/ralph-three-logs"
+RALPH3_NOTIFY="$TMP/ralph-three-notify.log"
 
 ralph3_out=$(cd "$RALPH3" && PATH="$RBIN3:$PATH" CLAUDE_PROJECT_DIR="$RALPH3" \
-  ADK_LOGS_DIR="$RALPH3_LOGS" CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+  ADK_LOGS_DIR="$RALPH3_LOGS" ADK_NOTIFY_FILE="$RALPH3_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-1: adk-ralph: три независимых issue, все ready — прогон завершается штатно" 0 $?
 assert_exit "AC-1: adk-ralph: три независимых ready-задачи — headless-процесс запущен трижды" \
   3 "$(count_lines "$RBIN3/claude-calls.log")"
@@ -2708,6 +2714,9 @@ ralph3_log=$(cat "$RALPH3_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
 assert_exit "AC-1: adk-ralph: журнал — run_start + 3×event=task(ready) + run_end" \
   5 "$(count_lines "$RALPH3_LOGS/autopilot-$(date +%Y-%m-%d).jsonl")"
 assert_contains "AC-1: adk-ralph: run_end трёх независимых ready-задач — ready=3" "$ralph3_log" '"ready": "3"'
+ralph3_notify=$(cat "$RALPH3_NOTIFY" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: три независимые ready-задачи — итог прогона тоже дублируется уведомлением" \
+  "$ralph3_notify" "Прогон завершён: ready=3 stuck=0 skipped=0"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
