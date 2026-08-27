@@ -380,6 +380,19 @@ while [ "$exit_code" -eq 0 ]; do
     stuck_count=$((stuck_count + 1))
     stuck_summary="$stuck_summary #$issue_num ($reason)"
   fi
+
+  # ── Возврат дерева на main между итерациями (блокер круга 6 ревью PR #141) —
+  # commands/work.md разворачивает каждую задачу на собственной ветке
+  # (issue-<N>-<слаг>) и не возвращает дерево обратно; без явного возврата
+  # здесь вторая и последующие задачи прогона стартовали бы claude -p на
+  # ветке предыдущей задачи, а не на main. Канонический рецепт — тот же, что
+  # у /autopilot (commands/autopilot.md, пункт «возврат дерева»): в любом
+  # исходе задачи вернуться на main; git pull обновляет её для следующей
+  # ветки (то же самое делает шаг 2 /work на настоящем ручном запуске).
+  # Best-effort: сбой здесь — периметр отказов внешнего вызова git, вне
+  # границы happy path круга 6 (issue #142), не блокирует прогон.
+  (cd "$root" && git checkout main >/dev/null 2>&1) || true
+  (cd "$root" && git pull >/dev/null 2>&1) || true
 done
 
 "$logger" "$run_unit" event=run_end done=0 ready="$ready_count" stuck="$stuck_count" \

@@ -3093,6 +3093,73 @@ ralph_ilfail_notify=$(cat "$RALPH_ILFAIL_NOTIFY" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: gh issue list падает — итог прогона всё равно уведомлён" \
   "$ralph_ilfail_notify" "Прогон завершён: ready=0 stuck=0 skipped=0"
 
+# ── Блокер круга 6 ревью PR #141: цикл не возвращает рабочее дерево на main
+# между итерациями — commands/work.md разворачивает каждую задачу на
+# собственной ветке (issue-<N>-<слаг>) и не возвращает дерево обратно, так
+# что вторая и последующая задачи прогона стартуют claude -p на ветке
+# предыдущей задачи, а не на main. Все ralph-фикстуры выше используют
+# `git init` без единого коммита и без переключения веток — это слепая
+# зона, из-за которой баг проходил мимо них. Эта фикстура — настоящий
+# мини-git-репозиторий (реальный коммит на main) со стабом claude, который
+# в точности как шаг 2 /work реально создаёт и переключается на ветку
+# задачи (`git checkout -b issue-N-x`) ──────────────────────────────────────
+RALPH_GITSTATE="$TMP/ralph-gitstate-proj"
+RBIN_GITSTATE="$TMP/ralph-gitstate-bin"
+mkdir -p "$RALPH_GITSTATE" "$RBIN_GITSTATE"
+(cd "$RALPH_GITSTATE" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_GITSTATE/issues-fixture.json" <<'EOF'
+[
+  {"number": 201, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 202, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_GITSTATE/prs-fixture.json" <<'EOF'
+[
+  {"number": 301, "isDraft": false, "headRefName": "issue-201-x"},
+  {"number": 302, "isDraft": false, "headRefName": "issue-202-x"}
+]
+EOF
+cat > "$RBIN_GITSTATE/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_GITSTATE/gh"
+claude_stub_guard "$RBIN_GITSTATE"
+cat >> "$RBIN_GITSTATE/claude" <<'EOF'
+# Логирует ветку, на которой реально стартовал (до создания своей) — это то,
+# что проверяет тест круга 6: вторая задача обязана стартовать на main, а не
+# на ветке первой задачи (issue-201-x).
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
+git checkout -q -b "issue-${issue_num}-x"
+exit 0
+EOF
+chmod +x "$RBIN_GITSTATE/claude"
+
+ralph_gitstate_out=$(cd "$RALPH_GITSTATE" && PATH="$RBIN_GITSTATE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_GITSTATE" \
+  ADK_LOGS_DIR="$TMP/ralph-gitstate-logs" ADK_NOTIFY_FILE="$TMP/ralph-gitstate-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: два независимых issue в настоящем git-репозитории — прогон завершается штатно" 0 $?
+assert_exit "AC-1: adk-ralph: headless-процесс реального git-репозитория запущен дважды" \
+  2 "$(count_lines "$RBIN_GITSTATE/claude-start-branch.log")"
+
+second_start_branch=$(sed -n '2p' "$RBIN_GITSTATE/claude-start-branch.log")
+[ "$second_start_branch" = "main" ]
+assert_exit "AC-1 (блокер круга 6 ревью PR #141): adk-ralph.sh возвращает дерево на main между итерациями — вторая задача стартует на main, не на ветке issue-201-x первой задачи (фактически: $second_start_branch)" \
+  0 $?
+
+final_branch=$(git -C "$RALPH_GITSTATE" rev-parse --abbrev-ref HEAD)
+[ "$final_branch" = "main" ]
+assert_exit "AC-1 (блокер круга 6 ревью PR #141): adk-ralph.sh — финальная ветка репозитория после прогона — main (фактически: $final_branch)" \
+  0 $?
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
