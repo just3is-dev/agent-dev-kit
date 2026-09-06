@@ -77,18 +77,13 @@ GitHub-маркетплейс получает не HEAD репозитория,
 единственный сигнал потребителю, что кэш устарел, — бамп версии
 обязателен, а не по желанию автора PR.
 
-**Файлы плагина**: `commands/`, `agents/`, `skills/`, `hooks/`,
-`templates/`, `.claude-plugin/plugin.json`. Почти любой файл в этом
-списке — поведение, которое кит отгружает потребителю, включая
-md-инструкции команд. Критерий не «это документация» — часть `docs/`
-попадает в тот же список, потому что команды плагина читают эти файлы
-из своего кэша в рантайме через `${CLAUDE_PLUGIN_ROOT}` (грепом по
-`${CLAUDE_PLUGIN_ROOT}.*docs` в `commands/`, issue #166): `docs/contract.md`
-и `docs/config.md` (project-init.md читает их из кэша плагина через
-`${CLAUDE_PLUGIN_ROOT}`), `docs/adr/` целиком (stats.md читает
-`docs/adr/001-journal-event-schema.md` через `${CLAUDE_PLUGIN_ROOT}` —
-директория целиком, а не только этот файл: следующая команда может
-так же начать читать любой другой ADR по номеру).
+**Файлы плагина**: `commands/`, `agents/`, `skills/`, `hooks/`, `templates/`, `docs/contract.md`, `docs/config.md`, `docs/adr/`, `.claude-plugin/plugin.json`. Критерий не «это документация», а «читается исполняемой частью плагина (командой, хуком, агентом, скиллом) из кэша в рантайме через `${CLAUDE_PLUGIN_ROOT}`» (грепом по
+`${CLAUDE_PLUGIN_ROOT}.*docs`, issue #166): `docs/contract.md` и
+`docs/config.md` — `project-init.md` читает их из кэша плагина через
+`${CLAUDE_PLUGIN_ROOT}`; `docs/adr/` целиком — `stats.md` читает
+`docs/adr/001-journal-event-schema.md` через `${CLAUDE_PLUGIN_ROOT}`, а
+директория не файл: следующая команда может начать читать любой другой
+ADR по номеру.
 
 Три уровня бампа:
 
@@ -99,10 +94,10 @@ md-инструкции команд. Критерий не «это докум�
   схема журнала, формат `adk.config.json`); до 1.0.0 не используется —
   breaking помечается в релизе.
 
-Не требуют бампа — не читаются командами плагина через
-`${CLAUDE_PLUGIN_ROOT}` в рантайме: `docs/specs`, `docs/plans`,
-`docs/observability`, `tests/`, `README`, `.github/`, `scripts/`,
-`.claude-plugin/marketplace.json`.
+Не требуют бампа — не читаются исполняемыми частями плагина (командами,
+хуками, агентами, скиллами) через `${CLAUDE_PLUGIN_ROOT}` в рантайме:
+`docs/specs`, `docs/plans`, `docs/observability`, `tests/`, `README`,
+`.github/`, `scripts/`, `.claude-plugin/marketplace.json`.
 
 Одноимённые пути `docs/specs`, `docs/plans` встречаются и в
 `commands/project-init.md`, `commands/plan.md`, `commands/spec.md`,
@@ -117,6 +112,12 @@ md-инструкции команд. Критерий не «это докум�
 Сравнение с base-веткой PR делает CI-гейт, а не локальный `scripts/check`:
 такое сравнение требует сети/истории git, а не только рабочей копии —
 это работа CI, не локальных гейтов.
+
+Политика действует с момента её фиксации здесь; принудительно проверяет
+её CI-гейт из отдельной задачи (issue #151) — до его появления patch не
+бампается вручную на каждом PR постфактум. Первый бамп (0.1.0 → 0.2.0)
+— отдельная разовая задача (issue #156), не побочный эффект правки этого
+раздела.
 
 ## Как контракт используют хуки плагина
 
