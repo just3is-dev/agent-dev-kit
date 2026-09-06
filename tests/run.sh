@@ -2491,8 +2491,16 @@ check_ac_doc AC-3 "contract.md: правило major — ломающее изм
   "$KIT/docs/contract.md" "**major** — ломающее изменение контракта (\`scripts/check|test|fix\`, схема журнала, формат \`adk.config.json\`)"
 check_ac_doc AC-3 "contract.md: до 1.0.0 major не используется — breaking помечается в релизе" \
   "$KIT/docs/contract.md" "до 1.0.0 не используется — breaking помечается в релизе"
-check_ac_doc AC-3 "contract.md: всё остальное (docs/specs|adr|plans|observability, tests/, README, .github/, scripts/) бампа не требует" \
-  "$KIT/docs/contract.md" "Всё остальное (\`docs/specs\`, \`docs/adr\`, \`docs/plans\`, \`docs/observability\`, \`tests/\`, \`README\`, \`.github/\`, \`scripts/\`) бампа не требует"
+check_ac_doc AC-3 "contract.md: docs/contract.md и docs/config.md — файлы плагина, потому что project-init.md читает их из кэша через CLAUDE_PLUGIN_ROOT" \
+  "$KIT/docs/contract.md" "\`docs/contract.md\` и \`docs/config.md\` (project-init.md читает их из кэша плагина через \`\${CLAUDE_PLUGIN_ROOT}\`)"
+check_ac_doc AC-3 "contract.md: docs/adr/ целиком — файлы плагина, потому что stats.md читает 001-journal-event-schema.md через CLAUDE_PLUGIN_ROOT" \
+  "$KIT/docs/contract.md" "\`docs/adr/\` целиком (stats.md читает \`docs/adr/001-journal-event-schema.md\` через \`\${CLAUDE_PLUGIN_ROOT}\`"
+check_ac_doc AC-3 "contract.md: не требуют бампа (docs/specs|plans|observability, tests/, README, .github/, scripts/, marketplace.json) — не читаются командами плагина в рантайме" \
+  "$KIT/docs/contract.md" "Не требуют бампа — не читаются командами плагина через \`\${CLAUDE_PLUGIN_ROOT}\` в рантайме: \`docs/specs\`, \`docs/plans\`, \`docs/observability\`, \`tests/\`, \`README\`, \`.github/\`, \`scripts/\`, \`.claude-plugin/marketplace.json\`"
+check_ac_doc AC-3 "contract.md: docs/specs и docs/plans в commands/hooks — это пути проекта, использующего кит, а не кэш плагина" \
+  "$KIT/docs/contract.md" "это пути в репозитории ПРОЕКТА, использующего кит"
+check_ac_doc AC-3 "contract.md: marketplace.json явно классифицирован как метаданные листинга, не читаемые командами плагина" \
+  "$KIT/docs/contract.md" "метаданные листинга плагина в маркетплейсе"
 check_ac_doc AC-3 "contract.md: сравнение с base-веткой — работа CI, не локального scripts/check" \
   "$KIT/docs/contract.md" "Сравнение с base-веткой PR делает CI-гейт, а не локальный \`scripts/check\`"
 
