@@ -83,7 +83,7 @@ README (раздел установки) документирует:
       (commands/agents/skills/hooks/templates/plugin.json), не меняя
       `version`; PR только по docs/specs|adr|plans|observability и
       tests/ проходит без бампа; сообщение гейта называет правило.
-- [ ] AC-2 (ждёт #155): push в main с изменённым `version` создаёт git-тег `vX.Y.Z`
+- [ ] AC-2: push в main с изменённым `version` создаёт git-тег `vX.Y.Z`
       и GitHub Release, notes которого содержат заголовки коммитов от
       предыдущего тега; push без изменения `version` тега не создаёт.
 - [ ] AC-3 (ждёт #150): политика бампа (patch/minor/major, перечень «файлов
