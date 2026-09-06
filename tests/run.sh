@@ -2514,6 +2514,48 @@ fi
 EOF
 }
 
+gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
+  # каркас стаба gh для ralph-фикстур ниже (issue #149, по образцу
+  # claude_stub_guard выше, issue #139): пишет "$bindir/gh" целиком, без
+  # cat >> — параметры целиком определяют поведение, поэтому порядок веток
+  # case не зависит от того, что фикстура дописывает после.
+  # <issues>/<prs> — одно из:
+  #   путь к JSON-фикстуре: "gh <issue|pr> list" печатает файл, exit 0;
+  #   "-": ветка вообще не нужна этой фикстуре, неожиданный вызов ловит
+  #     общий default ниже;
+  #   "FAIL:<сообщение>": печатает сообщение в stderr, exit 1 (сбой gh).
+  # <edit> — необязательный (по умолчанию "log"): "log" логирует "$*" в
+  # issue-edit.log и завершается 0; "FAIL:<сообщение>" — как выше, для
+  # фикстур, которым нужен сбой gh issue edit (issue #149: HTTP 403).
+  # gh label create всегда no-op: adk-ralph.sh сам глушит её результат
+  # (`>/dev/null 2>&1 || true`), варьировать эту ветку не нужно ни одной
+  # существующей ralph-фикстуре.
+  local bindir="$1" issues="$2" prs="$3" edit="${4:-log}"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'd="$(cd "$(dirname "$0")" && pwd)"'
+    printf '%s\n' 'case "$1 $2" in'
+    case "$issues" in
+      -) ;;
+      FAIL:*) printf '  "issue list") echo "%s" >&2; exit 1 ;;\n' "${issues#FAIL:}" ;;
+      *) printf '  "issue list") cat "%s"; exit 0 ;;\n' "$issues" ;;
+    esac
+    case "$prs" in
+      -) ;;
+      FAIL:*) printf '  "pr list") echo "%s" >&2; exit 1 ;;\n' "${prs#FAIL:}" ;;
+      *) printf '  "pr list") cat "%s"; exit 0 ;;\n' "$prs" ;;
+    esac
+    printf '%s\n' '  "label create") exit 0 ;;'
+    case "$edit" in
+      FAIL:*) printf '  "issue edit") echo "%s" >&2; exit 1 ;;\n' "${edit#FAIL:}" ;;
+      *) printf '%s\n' '  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;' ;;
+    esac
+    printf '%s\n' '  *) echo "unexpected gh call: $*" >&2; exit 1 ;;'
+    printf '%s\n' 'esac'
+  } > "$bindir/gh"
+  chmod +x "$bindir/gh"
+}
+
 # ── adk-ralph.sh: ralph-цикл SPEC-003, цикл по очереди issues свежим
 # headless-процессом, без --dangerously-skip-permissions (issue #139,
 # AC-1, AC-7) ──────────────────────────────────────────────────────────────
@@ -2538,18 +2580,7 @@ cat > "$RBIN/prs-fixture.json" <<'EOF'
   {"number": 103, "isDraft": false, "headRefName": "issue-3-bar"}
 ]
 EOF
-cat > "$RBIN/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN/gh"
+gh_ralph_stub "$RBIN" "$RBIN/issues-fixture.json" "$RBIN/prs-fixture.json"
 claude_stub_guard "$RBIN"
 cat >> "$RBIN/claude" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
@@ -2637,16 +2668,7 @@ cat > "$RBIN_ROOTENV/prs-fixture.json" <<'EOF'
   {"number": 401, "isDraft": false, "headRefName": "issue-91-z"}
 ]
 EOF
-cat > "$RBIN_ROOTENV/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_ROOTENV/gh"
+gh_ralph_stub "$RBIN_ROOTENV" "$RBIN_ROOTENV/issues-fixture.json" "$RBIN_ROOTENV/prs-fixture.json"
 claude_stub_guard "$RBIN_ROOTENV"
 cat >> "$RBIN_ROOTENV/claude" <<'EOF'
 echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >> "$d/claude-calls.log"
@@ -2724,17 +2746,7 @@ cat > "$RBIN_ERR/issues-fixture.json" <<'EOF'
   {"number": 9, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-cat > "$RBIN_ERR/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") echo "gh: rate limit exceeded" >&2; exit 1 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_ERR/gh"
+gh_ralph_stub "$RBIN_ERR" "$RBIN_ERR/issues-fixture.json" "FAIL:gh: rate limit exceeded"
 claude_stub_guard "$RBIN_ERR"
 cat >> "$RBIN_ERR/claude" <<'EOF'
 exit 0
@@ -2777,16 +2789,7 @@ cat > "$RBIN3/prs-fixture.json" <<'EOF'
   {"number": 203, "isDraft": false, "headRefName": "issue-23-c"}
 ]
 EOF
-cat > "$RBIN3/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN3/gh"
+gh_ralph_stub "$RBIN3" "$RBIN3/issues-fixture.json" "$RBIN3/prs-fixture.json"
 claude_stub_guard "$RBIN3"
 cat >> "$RBIN3/claude" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
@@ -2857,17 +2860,7 @@ cat > "$RBIN_CFAIL/issues-fixture.json" <<'EOF'
   {"number": 42, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-cat > "$RBIN_CFAIL/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") echo "unexpected pr list call" >&2; exit 1 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_CFAIL/gh"
+gh_ralph_stub "$RBIN_CFAIL" "$RBIN_CFAIL/issues-fixture.json" "FAIL:unexpected pr list call"
 claude_stub_guard "$RBIN_CFAIL"
 cat >> "$RBIN_CFAIL/claude" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
@@ -2922,18 +2915,8 @@ EOF
 cat > "$RBIN_EDITFAIL/prs-fixture.json" <<'EOF'
 []
 EOF
-cat > "$RBIN_EDITFAIL/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "gh: HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_EDITFAIL/gh"
+gh_ralph_stub "$RBIN_EDITFAIL" "$RBIN_EDITFAIL/issues-fixture.json" "$RBIN_EDITFAIL/prs-fixture.json" \
+  "FAIL:gh: HTTP 403: Resource not accessible by integration"
 claude_stub_guard "$RBIN_EDITFAIL"
 cat >> "$RBIN_EDITFAIL/claude" <<'EOF'
 exit 0
@@ -2975,18 +2958,7 @@ cat > "$RBIN_NH/prs-fixture.json" <<'EOF'
   {"number": 302, "isDraft": false, "headRefName": "issue-72-y"}
 ]
 EOF
-cat > "$RBIN_NH/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_NH/gh"
+gh_ralph_stub "$RBIN_NH" "$RBIN_NH/issues-fixture.json" "$RBIN_NH/prs-fixture.json"
 claude_stub_guard "$RBIN_NH"
 cat >> "$RBIN_NH/claude" <<'EOF'
 exit 0
@@ -3042,16 +3014,7 @@ prs.append({"number": 9202, "isDraft": False, "headRefName": "issue-83-real"})
 with open("'"$RBIN_TRUNC"'/prs-fixture.json", "w") as f:
     json.dump(prs, f)
 '
-cat > "$RBIN_TRUNC/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_TRUNC/gh"
+gh_ralph_stub "$RBIN_TRUNC" "$RBIN_TRUNC/issues-fixture.json" "$RBIN_TRUNC/prs-fixture.json"
 claude_stub_guard "$RBIN_TRUNC"
 cat >> "$RBIN_TRUNC/claude" <<'EOF'
 exit 0
@@ -3076,14 +3039,7 @@ RALPH_ILFAIL="$TMP/ralph-ilfail-proj"
 RBIN_ILFAIL="$TMP/ralph-ilfail-bin"
 mkdir -p "$RALPH_ILFAIL" "$RBIN_ILFAIL"
 (cd "$RALPH_ILFAIL" && git_c init -q -b main)
-cat > "$RBIN_ILFAIL/gh" <<'EOF'
-#!/usr/bin/env bash
-case "$1 $2" in
-  "issue list") echo "gh: rate limit exceeded" >&2; exit 1 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_ILFAIL/gh"
+gh_ralph_stub "$RBIN_ILFAIL" "FAIL:gh: rate limit exceeded" "-"
 cat > "$RBIN_ILFAIL/claude" <<'EOF'
 #!/usr/bin/env bash
 echo "UNEXPECTED claude CALL" >&2
@@ -3139,16 +3095,7 @@ cat > "$RBIN_GITSTATE/prs-fixture.json" <<'EOF'
   {"number": 302, "isDraft": false, "headRefName": "issue-202-x"}
 ]
 EOF
-cat > "$RBIN_GITSTATE/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_GITSTATE/gh"
+gh_ralph_stub "$RBIN_GITSTATE" "$RBIN_GITSTATE/issues-fixture.json" "$RBIN_GITSTATE/prs-fixture.json"
 claude_stub_guard "$RBIN_GITSTATE"
 cat >> "$RBIN_GITSTATE/claude" <<'EOF'
 # Логирует ветку, на которой реально стартовал (до создания своей) — это то,
