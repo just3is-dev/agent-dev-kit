@@ -3321,6 +3321,12 @@ assert_contains "AC-4: раздел установки ссылается на d
   "$readme_install" '(docs/contract.md)'
 assert_not_contains "AC-4: README не дублирует команду копирования scripts/ac-check из docs/contract.md" \
   "$(cat "$KIT/README.md")" 'AC_CHECK_SRC'
+check_ac_doc AC-4 "README: команда обновления оговаривает scope (--scope project для проектной установки)" \
+  "$KIT/README.md" 'дефолтный scope команды'
+check_ac_doc AC-4 "README: пример settings.json уточняет путь (.claude/settings.json проектный vs ~/.claude/settings.json пользовательский)" \
+  "$KIT/README.md" '~/.claude/settings.json'
+assert_not_contains "AC-4: spec 004 не несёт аннотацию (ждёт #153) на AC-4 — тест уже покрывает критерий" \
+  "$(cat "$KIT/docs/specs/004-plugin-versioning.md")" 'AC-4 (ждёт #153)'
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
