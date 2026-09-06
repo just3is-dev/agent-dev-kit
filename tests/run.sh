@@ -3267,6 +3267,38 @@ assert_contains "AC-2: release.yml — срабатывает на push в ве�
 assert_contains "AC-2: release.yml — permissions.contents: write (создание тега/релиза)" "$release_yml_probe" "permissions_contents=write"
 assert_contains "AC-2: release.yml — вызывает .github/scripts/release-check.sh" "$release_yml_probe" "calls_script=true"
 
+# Читающая сторона контракта: разбор вывода release-check.sh внутри
+# release.yml (`sed -n 1p`/`2p`/`tail -n +3` → $GITHUB_OUTPUT) выполняется
+# буквально — тем же кодом, что живёт в файле, а не переписан вручную в
+# тесте — на реальном stdout скрипта из сценариев (а)/(б) выше (важное
+# ревью PR #160 круг 1: контракт был проверен только со стороны писателя,
+# дрейф формата на строку дал бы неверный тег без единого красного теста).
+rel_run_step=$(ruby -ryaml -e '
+y = YAML.load_file(ARGV[0])
+step = y["jobs"]["release"]["steps"].find { |s| s["id"] == "release" }
+puts step["run"]
+' "$REL_WORKFLOW")
+rel_run_step_patched=$(printf '%s' "$rel_run_step" | awk \
+  -v old='out=$(.github/scripts/release-check.sh .)' \
+  -v new='out="$FIXTURE_OUT"' \
+  '{ i = index($0, old); if (i > 0) print substr($0, 1, i - 1) new substr($0, i + length(old)); else print }')
+
+run_release_yml_parse() { # run_release_yml_parse <вывод release-check.sh> — исполняет извлечённый шаг release.yml, печатает итоговый $GITHUB_OUTPUT
+  local gh_out
+  gh_out=$(mktemp "$TMP/gh-output-XXXXXX")
+  FIXTURE_OUT="$1" GITHUB_OUTPUT="$gh_out" bash -c "$rel_run_step_patched" >/dev/null
+  cat "$gh_out"
+}
+
+rel_parsed_a=$(run_release_yml_parse "$rela_out")
+assert_contains "AC-2: release.yml разбор вывода (a): should_release=true" "$rel_parsed_a" "should_release=true"
+assert_contains "AC-2: release.yml разбор вывода (a): tag=v0.2.0 в \$GITHUB_OUTPUT" "$rel_parsed_a" "tag=v0.2.0"
+assert_contains "AC-2: release.yml разбор вывода (a): notes в \$GITHUB_OUTPUT содержат коммиты после тега" "$rel_parsed_a" "add feature A"
+
+rel_parsed_b=$(run_release_yml_parse "$relb_out")
+assert_contains "AC-2: release.yml разбор вывода (b): should_release=false" "$rel_parsed_b" "should_release=false"
+assert_not_contains "AC-2: release.yml разбор вывода (b): без вердикта релиза тег в \$GITHUB_OUTPUT не выставляется" "$rel_parsed_b" "tag="
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
