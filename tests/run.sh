@@ -3160,6 +3160,145 @@ final_branch=$(git -C "$RALPH_GITSTATE" rev-parse --abbrev-ref HEAD)
 assert_exit "AC-1 (блокер круга 6 ревью PR #141): adk-ralph.sh — финальная ветка репозитория после прогона — main (фактически: $final_branch)" \
   0 $?
 
+# ── .github/scripts/release-check.sh + .github/workflows/release.yml:
+# релизный workflow — тег и GitHub Release из истории main (issue #155,
+# SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
+# создаёт workflow-обёртка — три DoD-сценария проверяют только скрипт на
+# временных git-репозиториях (git_c, как в фикстурах adk-ralph выше) ────────
+REL_SCRIPT="$KIT/.github/scripts/release-check.sh"
+
+plugin_json() { # plugin_json <версия> — содержимое .claude-plugin/plugin.json с этой версией
+  printf '{\n  "name": "fixture",\n  "version": "%s"\n}\n' "$1"
+}
+
+# (а) версия изменилась при существующем предыдущем теге — правильный
+# vX.Y.Z, notes содержат заголовки всех коммитов после предыдущего тега
+# (включая коммит бампа) и не содержат заголовков до него
+RELA="$TMP/release-a"
+mkdir -p "$RELA/.claude-plugin"
+(cd "$RELA" && git_c init -q -b main)
+plugin_json 0.1.0 > "$RELA/.claude-plugin/plugin.json"
+(cd "$RELA" && git add -A && git_c commit -qm "init release fixture")
+(cd "$RELA" && git_c tag v0.1.0)
+echo one > "$RELA/a.txt"
+(cd "$RELA" && git add -A && git_c commit -qm "add feature A")
+echo two > "$RELA/b.txt"
+(cd "$RELA" && git add -A && git_c commit -qm "add feature B")
+plugin_json 0.2.0 > "$RELA/.claude-plugin/plugin.json"
+(cd "$RELA" && git add -A && git_c commit -qm "release: bump version to 0.2.0")
+
+rela_out=$("$REL_SCRIPT" "$RELA")
+assert_exit "AC-2: release-check(a): версия изменилась при существующем предыдущем теге — exit 0" 0 $?
+rela_line1=$(printf '%s\n' "$rela_out" | sed -n '1p')
+rela_tag=$(printf '%s\n' "$rela_out" | sed -n '2p')
+rela_notes=$(printf '%s\n' "$rela_out" | tail -n +3)
+
+[ "$rela_line1" = "RELEASE" ]
+assert_exit "AC-2: release-check(a): вердикт — RELEASE" 0 $?
+[ "$rela_tag" = "v0.2.0" ]
+assert_exit "AC-2: release-check(a): целевой тег — v0.2.0" 0 $?
+assert_contains "AC-2: release-check(a): notes содержат коммит после тега (feature A)" "$rela_notes" "add feature A"
+assert_contains "AC-2: release-check(a): notes содержат коммит после тега (feature B)" "$rela_notes" "add feature B"
+assert_contains "AC-2: release-check(a): notes содержат коммит бампа версии" "$rela_notes" "bump version to 0.2.0"
+assert_not_contains "AC-2: release-check(a): notes не содержат заголовков коммитов до предыдущего тега" "$rela_notes" "init release fixture"
+
+rela_tags_after=$(cd "$RELA" && git tag)
+if printf '%s\n' "$rela_tags_after" | grep -qx 'v0.2.0'; then rela_tag_created=1; else rela_tag_created=0; fi
+assert_exit "AC-2: release-check(a): скрипт сам не создаёт тег — только печатает решение (создаёт workflow)" 0 "$rela_tag_created"
+
+# (б) version не менялась — «релиза нет», exit 0, тега нет
+RELB="$TMP/release-b"
+mkdir -p "$RELB/.claude-plugin"
+(cd "$RELB" && git_c init -q -b main)
+plugin_json 0.1.0 > "$RELB/.claude-plugin/plugin.json"
+(cd "$RELB" && git add -A && git_c commit -qm "init release fixture")
+(cd "$RELB" && git_c tag v0.1.0)
+echo doc > "$RELB/README.md"
+(cd "$RELB" && git add -A && git_c commit -qm "docs: update readme")
+
+relb_out=$("$REL_SCRIPT" "$RELB")
+assert_exit "AC-2: release-check(b): version не менялась — exit 0" 0 $?
+assert_contains "AC-2: release-check(b): вердикт «релиза нет»" "$relb_out" "релиза нет"
+relb_tags=$(cd "$RELB" && git tag)
+[ "$relb_tags" = "v0.1.0" ]
+assert_exit "AC-2: release-check(b): version не менялась — новых тегов не появилось" 0 $?
+
+# (в) целевой тег уже существует — повторного релиза нет
+RELC="$TMP/release-c"
+mkdir -p "$RELC/.claude-plugin"
+(cd "$RELC" && git_c init -q -b main)
+plugin_json 0.1.0 > "$RELC/.claude-plugin/plugin.json"
+(cd "$RELC" && git add -A && git_c commit -qm "init release fixture")
+(cd "$RELC" && git_c tag v0.1.0)
+plugin_json 0.2.0 > "$RELC/.claude-plugin/plugin.json"
+(cd "$RELC" && git add -A && git_c commit -qm "release: bump version to 0.2.0")
+(cd "$RELC" && git_c tag v0.2.0)
+
+relc_out=$("$REL_SCRIPT" "$RELC")
+assert_exit "AC-2: release-check(в): целевой тег уже существует — exit 0" 0 $?
+assert_contains "AC-2: release-check(в): вердикт «релиза нет» — повтора нет" "$relc_out" "релиза нет"
+relc_tag_count=$(cd "$RELC" && git tag | wc -l | tr -d ' ')
+assert_exit "AC-2: release-check(в): тегов по-прежнему два — повторный релиз не создан" 2 "$relc_tag_count"
+
+# ── release.yml: валиден как YAML, срабатывает на push в main, вызывает
+# именно release-check.sh (issue #155) — Psych парсит голый ключ YAML `on:`
+# как булев true (классическая ловушка GitHub Actions YAML), поэтому зонд
+# читает и y[true], и y["on"] ──────────────────────────────────────────────
+REL_WORKFLOW="$KIT/.github/workflows/release.yml"
+
+command -v ruby >/dev/null 2>&1
+assert_exit "AC-2: release.yml: ruby доступен для проверки YAML (стандартный инструмент дев-машины и ubuntu-latest)" 0 $?
+
+ruby -ryaml -e "YAML.load_file(ARGV[0])" "$REL_WORKFLOW" >/dev/null 2>&1
+assert_exit "AC-2: release.yml — валиден как YAML" 0 $?
+
+release_yml_probe=$(ruby -ryaml -e '
+y = YAML.load_file(ARGV[0])
+on = y[true] || y["on"] || {}
+push = on["push"] || {}
+branches = push["branches"] || []
+puts "branches=#{branches.join(",")}"
+puts "permissions_contents=#{(y["permissions"] || {})["contents"]}"
+steps = (y["jobs"] || {}).values.flat_map { |j| j["steps"] || [] }
+calls_script = steps.any? { |s| (s["run"] || "").include?(".github/scripts/release-check.sh") }
+puts "calls_script=#{calls_script}"
+' "$REL_WORKFLOW" 2>&1)
+assert_contains "AC-2: release.yml — срабатывает на push в ветку main" "$release_yml_probe" "branches=main"
+assert_contains "AC-2: release.yml — permissions.contents: write (создание тега/релиза)" "$release_yml_probe" "permissions_contents=write"
+assert_contains "AC-2: release.yml — вызывает .github/scripts/release-check.sh" "$release_yml_probe" "calls_script=true"
+
+# Читающая сторона контракта: разбор вывода release-check.sh внутри
+# release.yml (`sed -n 1p`/`2p`/`tail -n +3` → $GITHUB_OUTPUT) выполняется
+# буквально — тем же кодом, что живёт в файле, а не переписан вручную в
+# тесте — на реальном stdout скрипта из сценариев (а)/(б) выше (важное
+# ревью PR #160 круг 1: контракт был проверен только со стороны писателя,
+# дрейф формата на строку дал бы неверный тег без единого красного теста).
+rel_run_step=$(ruby -ryaml -e '
+y = YAML.load_file(ARGV[0])
+step = y["jobs"]["release"]["steps"].find { |s| s["id"] == "release" }
+puts step["run"]
+' "$REL_WORKFLOW")
+rel_run_step_patched=$(printf '%s' "$rel_run_step" | awk \
+  -v old='out=$(.github/scripts/release-check.sh .)' \
+  -v new='out="$FIXTURE_OUT"' \
+  '{ i = index($0, old); if (i > 0) print substr($0, 1, i - 1) new substr($0, i + length(old)); else print }')
+
+run_release_yml_parse() { # run_release_yml_parse <вывод release-check.sh> — исполняет извлечённый шаг release.yml, печатает итоговый $GITHUB_OUTPUT
+  local gh_out
+  gh_out=$(mktemp "$TMP/gh-output-XXXXXX")
+  FIXTURE_OUT="$1" GITHUB_OUTPUT="$gh_out" bash -c "$rel_run_step_patched" >/dev/null
+  cat "$gh_out"
+}
+
+rel_parsed_a=$(run_release_yml_parse "$rela_out")
+assert_contains "AC-2: release.yml разбор вывода (a): should_release=true" "$rel_parsed_a" "should_release=true"
+assert_contains "AC-2: release.yml разбор вывода (a): tag=v0.2.0 в \$GITHUB_OUTPUT" "$rel_parsed_a" "tag=v0.2.0"
+assert_contains "AC-2: release.yml разбор вывода (a): notes в \$GITHUB_OUTPUT содержат коммиты после тега" "$rel_parsed_a" "add feature A"
+
+rel_parsed_b=$(run_release_yml_parse "$relb_out")
+assert_contains "AC-2: release.yml разбор вывода (b): should_release=false" "$rel_parsed_b" "should_release=false"
+assert_not_contains "AC-2: release.yml разбор вывода (b): без вердикта релиза тег в \$GITHUB_OUTPUT не выставляется" "$rel_parsed_b" "tag="
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then

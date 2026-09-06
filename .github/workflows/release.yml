@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine release
+        id: release
+        run: |
+          set -eo pipefail
+          out=$(.github/scripts/release-check.sh .)
+          echo "$out"
+          if [ "$(printf '%s\n' "$out" | sed -n 1p)" = "RELEASE" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$(printf '%s\n' "$out" | sed -n 2p)" >> "$GITHUB_OUTPUT"
+            {
+              echo "notes<<RELEASE_NOTES_EOF"
+              printf '%s\n' "$out" | tail -n +3
+              echo "RELEASE_NOTES_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Tag and create release
+        if: steps.release.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          NOTES: ${{ steps.release.outputs.notes }}
+        run: |
+          set -eo pipefail
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --notes "$NOTES"
