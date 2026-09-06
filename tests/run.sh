@@ -1120,14 +1120,19 @@ work_step2=$(md_section "$WORKMD" '^2\. \*\*' '^3\. \*\*')
 
 assert_contains "issue #159: work.md шаг 2 проверяет существующую ветку локально (git branch --list)" "$work_step2" 'git branch --list'
 assert_contains "issue #159: work.md шаг 2 проверяет существующую ветку на origin (git ls-remote --heads)" "$work_step2" 'git ls-remote --heads'
-assert_contains "issue #159: work.md шаг 2 — несколько кандидатов не выбираются самостоятельно, решает человек" "$work_step2" 'спроси пользователя, какую ветку продолжать'
-assert_contains "issue #159: work.md шаг 2 явно запрещает агенту выбирать кандидата самостоятельно" "$work_step2" 'не выбирай самостоятельно'
+assert_contains "issue #159: work.md шаг 2 — несколько кандидатов (или разошедшаяся история) не выбираются самостоятельно, решает человек" "$work_step2" 'спроси пользователя, какую ветку продолжать; не выбирай самостоятельно'
 assert_contains "issue #159: work.md шаг 2 переиспользует уже открытый PR по найденной ветке (не создаёт второй)" "$work_step2" 'не создавай второй'
 assert_contains "issue #159: work.md шаг 2 — ready-PR не откатывается обратно в draft" "$work_step2" 'не возвращай его в draft'
 assert_contains "issue #159: work.md шаг 2 актуализирует найденную ветку по рецепту шага 6" "$work_step2" 'рецепту шага 6'
 assert_not_contains "issue #159: work.md шаг 2 не пересказывает сам рецепт актуализации (ссылка на шаг 6, не дублирование)" "$work_step2" 'force-with-lease'
+assert_not_contains "issue #159: work.md шаг 2 не пересказывает команду rebase из рецепта шага 6" "$work_step2" 'rebase origin/main'
+assert_not_contains "issue #159: work.md шаг 2 не пересказывает force-push из рецепта шага 6" "$work_step2" 'push --force-with-lease'
 assert_contains "issue #159: work.md шаг 2 не трогает незакоммиченные изменения найденной ветки" "$work_step2" 'Не трогай незакоммиченные изменения'
 assert_contains "issue #159: work.md шаг 2 не переписывает WIP-коммиты найденной ветки" "$work_step2" 'не переписывай WIP-коммиты'
+assert_contains "issue #159: work.md шаг 2 на грязном дереве откладывает актуализацию вместо форсированного rebase (круг 1 ревью PR #169, блокер)" "$work_step2" 'рецепт шага 6 (rebase от main) неприменим'
+assert_contains "issue #159: work.md шаг 2 — origin ветки впереди локальной (допушили с другой сессии) тянется fast-forward'ом, не выбором вручную (круг 1 ревью PR #169, блокер)" "$work_step2" 'подтяни fast-forward'
+assert_contains "issue #159: work.md шаг 2 считает разошедшуюся историю локальной/origin веток неоднозначностью наравне с разными именами (круг 1 ревью PR #169, блокер)" "$work_step2" 'история разошлась, это неоднозначность'
+assert_contains "issue #159: work.md шаг 2 — REQUEST_CHANGES по уже-ready PR не полагается на draft как защиту от merge (круг 1 ревью PR #169, важно)" "$work_step2" 'черновик здесь не защищает от случайного merge'
 
 # ── SPEC-002 AC-2: формулировки отчётов соответствуют политике merge ─────────
 # Третий (мягкий) слой enforcement: при политиках с обязательным человеком
