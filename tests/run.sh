@@ -2478,6 +2478,24 @@ check_ac_doc "issue #122" "contract.md: пустой find даёт понятн�
 check_ac_doc "issue #122" "contract.md: назван конкретный симптом, который правка устраняет (голый cp: : No such file or directory)" \
   "$KIT/docs/contract.md" "cp: : No such file or directory"
 
+# ── Политика бампа версии плагина (issue #150, SPEC-004 AC-3): гейт бампа
+# (issue #151) и minor-бамп в /consolidate (issue #152) обязаны ссылаться
+# на письменное правило в docs/contract.md, а не пересказывать его.
+check_ac_doc AC-3 "contract.md перечисляет файлы плагина (commands/, agents/, skills/, hooks/, templates/, .claude-plugin/plugin.json)" \
+  "$KIT/docs/contract.md" "\`commands/\`, \`agents/\`, \`skills/\`, \`hooks/\`, \`templates/\`, \`.claude-plugin/plugin.json\`"
+check_ac_doc AC-3 "contract.md: правило patch — любой PR, меняющий файлы плагина" \
+  "$KIT/docs/contract.md" "**patch** — любой PR, меняющий файлы плагина"
+check_ac_doc AC-3 "contract.md: правило minor — закрытие вехи SPEC-NNN/CONS-NNN" \
+  "$KIT/docs/contract.md" "**minor** — закрытие вехи (SPEC-NNN или CONS-NNN)"
+check_ac_doc AC-3 "contract.md: правило major — ломающее изменение контракта scripts/check|test|fix, схемы журнала, формата adk.config.json" \
+  "$KIT/docs/contract.md" "**major** — ломающее изменение контракта (\`scripts/check|test|fix\`, схема журнала, формат \`adk.config.json\`)"
+check_ac_doc AC-3 "contract.md: до 1.0.0 major не используется — breaking помечается в релизе" \
+  "$KIT/docs/contract.md" "до 1.0.0 не используется — breaking помечается в релизе"
+check_ac_doc AC-3 "contract.md: всё остальное (docs/specs|adr|plans|observability, tests/, README, .github/, scripts/) бампа не требует" \
+  "$KIT/docs/contract.md" "Всё остальное (\`docs/specs\`, \`docs/adr\`, \`docs/plans\`, \`docs/observability\`, \`tests/\`, \`README\`, \`.github/\`, \`scripts/\`) бампа не требует"
+check_ac_doc AC-3 "contract.md: сравнение с base-веткой — работа CI, не локального scripts/check" \
+  "$KIT/docs/contract.md" "Сравнение с base-веткой PR делает CI-гейт, а не локальный \`scripts/check\`"
+
 claude_stub_guard() { # claude_stub_guard <bindir> — общая часть стаба claude
   # во всех ralph-фикстурах ниже: фейлится (маркер CLAUDE_PLUGIN_ROOT_MISSING
   # в claude-calls.log + exit 1), если CLAUDE_PLUGIN_ROOT не выставлен в
