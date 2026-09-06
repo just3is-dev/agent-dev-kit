@@ -19,12 +19,14 @@ GitHub-маркетплейс получает не HEAD репозитория,
 
 ### Политика бампа: механическая, трёхуровневая
 
-- **patch** — каждый PR в main, меняющий файлы плагина (commands/,
-  agents/, skills/, hooks/, templates/, plugin.json): в ките почти любой
-  файл — это поведение потребителя, включая md-инструкции команд.
-  PR только по docs/specs/, docs/adr/, docs/plans/, docs/observability/
-  и tests/ версию не бампает — это артефакты процесса самого кита,
-  потребителю они не отгружают поведение.
+- **patch** — каждый PR в main, меняющий файлы плагина (полный перечень
+  и критерий — docs/contract.md, не пересказывается здесь во избежание
+  расхождения между спекой и гейтом, issue #166): commands/, agents/,
+  skills/, hooks/, templates/, docs/contract.md, docs/config.md,
+  docs/adr/, plugin.json. PR только по docs/specs/, docs/plans/,
+  docs/observability/ и tests/ версию не бампает — это артефакты
+  процесса самого кита, не читаемые исполняемыми частями плагина в
+  рантайме.
 - **minor** — закрытие вехи (SPEC-NNN или CONS-NNN): бамп делает
   `/consolidate` на границе вехи, тем же шагом, что закрывает milestone.
 - **major** — ломающее изменение контракта с проектами (переименование
@@ -80,9 +82,10 @@ README (раздел установки) документирует:
 ## Критерии приёмки
 
 - [ ] AC-1 (ждёт #151): CI-гейт падает на PR, который меняет файлы плагина
-      (commands/agents/skills/hooks/templates/plugin.json), не меняя
-      `version`; PR только по docs/specs|adr|plans|observability и
-      tests/ проходит без бампа; сообщение гейта называет правило.
+      (перечень — docs/contract.md: commands/agents/skills/hooks/templates/
+      docs/contract.md/docs/config.md/docs/adr//plugin.json), не меняя
+      `version`; PR только по docs/specs|plans|observability и tests/
+      проходит без бампа; сообщение гейта называет правило.
 - [ ] AC-2: push в main с изменённым `version` создаёт git-тег `vX.Y.Z`
       и GitHub Release, notes которого содержат заголовки коммитов от
       предыдущего тега; push без изменения `version` тега не создаёт.
