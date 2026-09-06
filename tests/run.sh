@@ -3299,6 +3299,29 @@ rel_parsed_b=$(run_release_yml_parse "$relb_out")
 assert_contains "AC-2: release.yml разбор вывода (b): should_release=false" "$rel_parsed_b" "should_release=false"
 assert_not_contains "AC-2: release.yml разбор вывода (b): без вердикта релиза тег в \$GITHUB_OUTPUT не выставляется" "$rel_parsed_b" "tag="
 
+# ── README: установка через маркетплейс, обновление, двухступенчатость
+# (SPEC-004 AC-4, issue #153) ────────────────────────────────────────────────
+readme_install=$(md_section "$KIT/README.md" '^## Установка' '^## Как этим пользоваться')
+
+check_ac_doc AC-4 "README: пример settings.json — extraKnownMarketplaces регистрирует GitHub-маркетплейс" \
+  "$KIT/README.md" '"extraKnownMarketplaces": {'
+check_ac_doc AC-4 "README: пример settings.json — источник маркетплейса github" \
+  "$KIT/README.md" '"source": "github",'
+check_ac_doc AC-4 "README: пример settings.json — репозиторий маркетплейса just3is-dev/agent-dev-kit" \
+  "$KIT/README.md" '"repo": "just3is-dev/agent-dev-kit"'
+check_ac_doc AC-4 "README: пример settings.json — enabledPlugins включает плагин" \
+  "$KIT/README.md" '"enabledPlugins": {'
+check_ac_doc AC-4 "README: пример settings.json — ключ плагина agent-dev-kit@agent-dev-kit" \
+  "$KIT/README.md" '"agent-dev-kit@agent-dev-kit": true'
+check_ac_doc AC-4 "README: точная команда обновления плагина" \
+  "$KIT/README.md" 'claude plugin update agent-dev-kit@agent-dev-kit'
+assert_contains "AC-4: раздел установки называет обновление двухступенчатым" \
+  "$readme_install" 'двухступенчатое'
+assert_contains "AC-4: раздел установки ссылается на docs/contract.md за правилом второй ступени, а не пересказывает его" \
+  "$readme_install" '(docs/contract.md)'
+assert_not_contains "AC-4: README не дублирует команду копирования scripts/ac-check из docs/contract.md" \
+  "$(cat "$KIT/README.md")" 'AC_CHECK_SRC'
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
