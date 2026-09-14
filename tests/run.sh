@@ -1123,7 +1123,8 @@ assert_contains "issue #159: work.md шаг 2 проверяет существ�
 assert_contains "issue #159: work.md шаг 2 — несколько кандидатов (или разошедшаяся история) не выбираются самостоятельно, решает человек" "$work_step2" 'спроси пользователя, какую ветку продолжать; не выбирай самостоятельно'
 assert_contains "issue #159: work.md шаг 2 переиспользует уже открытый PR по найденной ветке (не создаёт второй)" "$work_step2" 'не создавай второй'
 assert_contains "issue #159: work.md шаг 2 — ready-PR не откатывается обратно в draft" "$work_step2" 'не возвращай его в draft'
-assert_contains "issue #159: work.md шаг 6 — REQUEST_CHANGES по уже-ready PR останавливает работу по месту действия (круг 2 ревью PR #169, важно)" "$(cat "$KIT/commands/work.md")" 'уже был переведён в ready'
+work_step6=$(md_section "$WORKMD" '^6\. \*\*' '^7\. \*\*')
+assert_contains "issue #159: work.md шаг 6 — REQUEST_CHANGES по уже-ready PR останавливает работу по месту действия (круг 2 ревью PR #169, важно)" "$work_step6" 'уже был переведён в ready'
 assert_contains "issue #159: work.md шаг 2 актуализирует найденную ветку по рецепту шага 6" "$work_step2" 'рецепту шага 6'
 assert_not_contains "issue #159: work.md шаг 2 не пересказывает сам рецепт актуализации (ссылка на шаг 6, не дублирование)" "$work_step2" 'force-with-lease'
 assert_not_contains "issue #159: work.md шаг 2 не пересказывает команду rebase из рецепта шага 6" "$work_step2" 'rebase origin/main'
@@ -1131,11 +1132,12 @@ assert_not_contains "issue #159: work.md шаг 2 не пересказывае�
 assert_contains "issue #159: work.md шаг 2 не трогает незакоммиченные изменения найденной ветки" "$work_step2" 'Не трогай незакоммиченные изменения'
 assert_contains "issue #159: work.md шаг 2 не переписывает WIP-коммиты найденной ветки" "$work_step2" 'не переписывай WIP-коммиты'
 assert_contains "issue #159: work.md шаг 2 на грязном дереве откладывает актуализацию вместо форсированного rebase (круг 1 ревью PR #169, блокер)" "$work_step2" 'рецепт шага 6 (rebase от main) неприменим'
-assert_contains "issue #159: work.md шаг 2 — origin ветки впереди локальной (допушили с другой сессии) тянется fast-forward'ом, не выбором вручную (круг 1 ревью PR #169, блокер)" "$work_step2" 'fast-forward локальной'
-assert_not_contains "issue #159: work.md шаг 2 — сверка не использует merge --ff-only на текущем HEAD (круг 2 ревью PR #169, блокер: перематывал main)" "$work_step2" 'merge --ff-only'
-assert_contains "issue #159: work.md шаг 2 — сверка веток не трогает текущий HEAD" "$work_step2" 'HEAD в сверке не участвует'
-assert_contains "issue #159: work.md шаг 2 считает разошедшуюся историю локальной/origin веток неоднозначностью наравне с разными именами (круг 1 ревью PR #169, блокер)" "$work_step2" 'история разошлась, это неоднозначность'
-assert_contains "issue #159: work.md — REQUEST_CHANGES по уже-ready PR не полагается на draft как защиту от merge (круг 1 ревью PR #169, важно; правило живёт в шаге 6)" "$(cat "$KIT/commands/work.md")" 'черновик от случайного merge больше не'
+assert_contains "issue #159: work.md шаг 2 — origin ветки впереди локальной (допушили с другой сессии) тянется ff-подтяжкой, не выбором вручную (круг 1 ревью PR #169, блокер)" "$work_step2" 'ff-подтяжка пройдёт'
+assert_contains "issue #159: work.md шаг 2 — сверка идёт из самой ветки-кандидата после checkout (круги 2-3 ревью PR #169: ff-merge на чужом HEAD перематывал main, fetch ветка:ветка отказывает на checked-out ветке)" "$work_step2" 'Сверка с origin — уже из ветки-кандидата'
+assert_not_contains "issue #159: work.md шаг 2 — сверка не использует fetch формы ветка:ветка (круг 3 ревью PR #169, блокер: refusing to fetch into checked out)" "$work_step2" ':issue-<N>-'
+assert_contains "issue #159: work.md шаг 2 — отказ checkout из-за конфликтующих незакоммиченных правок имеет предписанное действие (круг 3 ревью PR #169, мелочь)" "$work_step2" 'checkout отказал из-за незакоммиченных'
+assert_contains "issue #159: work.md шаг 2 считает разошедшуюся историю локальной/origin веток неоднозначностью наравне с разными именами (круг 1 ревью PR #169, блокер)" "$work_step2" 'история разошлась — неоднозначность'
+assert_contains "issue #159: work.md — REQUEST_CHANGES по уже-ready PR не полагается на draft как защиту от merge (круг 1 ревью PR #169, важно; правило живёт в шаге 6)" "$work_step6" 'черновик от случайного merge больше не'
 
 # ── SPEC-002 AC-2: формулировки отчётов соответствуют политике merge ─────────
 # Третий (мягкий) слой enforcement: при политиках с обязательным человеком
