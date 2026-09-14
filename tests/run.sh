@@ -1135,7 +1135,7 @@ assert_contains "issue #159: work.md шаг 2 — origin ветки вперед
 assert_not_contains "issue #159: work.md шаг 2 — сверка не использует merge --ff-only на текущем HEAD (круг 2 ревью PR #169, блокер: перематывал main)" "$work_step2" 'merge --ff-only'
 assert_contains "issue #159: work.md шаг 2 — сверка веток не трогает текущий HEAD" "$work_step2" 'HEAD в сверке не участвует'
 assert_contains "issue #159: work.md шаг 2 считает разошедшуюся историю локальной/origin веток неоднозначностью наравне с разными именами (круг 1 ревью PR #169, блокер)" "$work_step2" 'история разошлась, это неоднозначность'
-assert_contains "issue #159: work.md шаг 2 — REQUEST_CHANGES по уже-ready PR не полагается на draft как защиту от merge (круг 1 ревью PR #169, важно)" "$work_step2" 'черновик здесь не защищает от случайного merge'
+assert_contains "issue #159: work.md — REQUEST_CHANGES по уже-ready PR не полагается на draft как защиту от merge (круг 1 ревью PR #169, важно; правило живёт в шаге 6)" "$(cat "$KIT/commands/work.md")" 'черновик от случайного merge больше не'
 
 # ── SPEC-002 AC-2: формулировки отчётов соответствуют политике merge ─────────
 # Третий (мягкий) слой enforcement: при политиках с обязательным человеком
