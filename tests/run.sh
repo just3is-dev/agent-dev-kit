@@ -2091,14 +2091,18 @@ check_ac_doc AC-5 "planner: план показывает покрытие «AC-
   "$KIT/agents/planner.md" "AC-N → задачи"
 check_ac_doc AC-5 "planner: DoD задачи ссылается на номер AC" \
   "$KIT/agents/planner.md" "номер AC, который она закрывает"
+check_ac_doc "issue #171" "planner: не укорачивать префиксованный токен до номера критерия" \
+  "$KIT/agents/planner.md" "не укорачивай префиксованный токен"
 
 check_ac_doc AC-5 "/plan: покрытие показывается в формате «AC-N → задачи»" \
   "$KIT/commands/plan.md" "AC-N → задачи"
 check_ac_doc AC-5 "/plan: DoD в чате показывается со ссылкой на номер AC" \
   "$KIT/commands/plan.md" "номер AC"
 
-check_ac_doc AC-5 "/work: тесты по DoD помечаются номером AC" \
-  "$KIT/commands/work.md" "тем же номером AC"
+check_ac_doc AC-5 "/work: тесты по DoD помечаются тем же токеном целиком" \
+  "$KIT/commands/work.md" "тем же токеном целиком"
+check_ac_doc "issue #171" "/work: не укорачивать префиксованный токен до номера критерия" \
+  "$KIT/commands/work.md" "не укорачивай префиксованный токен"
 
 check_ac_doc AC-5 "reviewer: тег AC-N должен соответствовать сути критерия" \
   "$KIT/agents/reviewer.md" "соответствует сути критерия"
