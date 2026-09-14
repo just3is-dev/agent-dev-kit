@@ -2481,8 +2481,10 @@ check_ac_doc "issue #122" "contract.md: назван конкретный сим
 # ── Политика бампа версии плагина (issue #150, SPEC-004 AC-3): гейт бампа
 # (issue #151) и minor-бамп в /consolidate (issue #152) обязаны ссылаться
 # на письменное правило в docs/contract.md, а не пересказывать его.
-check_ac_doc AC-3 "contract.md перечисляет файлы плагина (commands/, agents/, skills/, hooks/, templates/, .claude-plugin/plugin.json)" \
+check_ac_doc AC-3 "contract.md перечисляет файлы плагина условия 1 (commands/, agents/, skills/, hooks/, templates/, plugin.json)" \
   "$KIT/docs/contract.md" "\`commands/\`, \`agents/\`, \`skills/\`, \`hooks/\`, \`templates/\`, \`.claude-plugin/plugin.json\`"
+check_ac_doc AC-3 "contract.md перечисляет файлы плагина условия 2 (docs/contract.md, docs/config.md, docs/adr/)" \
+  "$KIT/docs/contract.md" "\`docs/contract.md\` и \`docs/config.md\` — \`project-init.md\` читает"
 check_ac_doc AC-3 "contract.md: правило patch — любой PR, меняющий файлы плагина" \
   "$KIT/docs/contract.md" "**patch** — любой PR, меняющий файлы плагина"
 check_ac_doc AC-3 "contract.md: правило minor — закрытие вехи SPEC-NNN/CONS-NNN" \
@@ -2491,10 +2493,40 @@ check_ac_doc AC-3 "contract.md: правило major — ломающее изм
   "$KIT/docs/contract.md" "**major** — ломающее изменение контракта (\`scripts/check|test|fix\`, схема журнала, формат \`adk.config.json\`)"
 check_ac_doc AC-3 "contract.md: до 1.0.0 major не используется — breaking помечается в релизе" \
   "$KIT/docs/contract.md" "до 1.0.0 не используется — breaking помечается в релизе"
-check_ac_doc AC-3 "contract.md: всё остальное (docs/specs|adr|plans|observability, tests/, README, .github/, scripts/) бампа не требует" \
-  "$KIT/docs/contract.md" "Всё остальное (\`docs/specs\`, \`docs/adr\`, \`docs/plans\`, \`docs/observability\`, \`tests/\`, \`README\`, \`.github/\`, \`scripts/\`) бампа не требует"
+check_ac_doc AC-3 "contract.md: критерий — читается исполняемой частью плагина (командой, хуком, агентом, скиллом) из кэша в рантайме, не «это документация»" \
+  "$KIT/docs/contract.md" "если выполняется любое из двух условий"
+check_ac_doc "issue #166" "contract.md: условие 1 — commands/agents/skills/hooks/templates/plugin.json грузит механика Claude Code (не ложное основание про CLAUDE_PLUGIN_ROOT)" \
+  "$KIT/docs/contract.md" "загружается механикой Claude Code"
+check_ac_doc AC-3 "contract.md: docs/contract.md и docs/config.md — файлы плагина, потому что project-init.md читает их из кэша через CLAUDE_PLUGIN_ROOT" \
+  "$KIT/docs/contract.md" "\`docs/contract.md\` и \`docs/config.md\` — \`project-init.md\` читает их из кэша плагина через \`\${CLAUDE_PLUGIN_ROOT}\`"
+check_ac_doc AC-3 "contract.md: docs/adr/ целиком — файлы плагина, потому что stats.md читает 001-journal-event-schema.md через CLAUDE_PLUGIN_ROOT, а директория не файл" \
+  "$KIT/docs/contract.md" "\`docs/adr/\` целиком — \`stats.md\` читает \`docs/adr/001-journal-event-schema.md\` через \`\${CLAUDE_PLUGIN_ROOT}\`, а директория не файл"
+check_ac_doc AC-3 "contract.md: не требуют бампа (docs/specs|plans|observability, tests/, README, .github/, scripts/, marketplace.json) — не читаются исполняемыми частями плагина в рантайме" \
+  "$KIT/docs/contract.md" "Не требуют бампа — не выполняется ни одно из двух условий (Claude Code их частью плагина не грузит, исполняемые части плагина их из кэша не читают): \`docs/specs\`, \`docs/plans\`, \`docs/observability\`, \`tests/\`, \`README\`, \`.github/\`, \`scripts/\`, \`.claude-plugin/marketplace.json\`"
+check_ac_doc AC-3 "contract.md: docs/specs и docs/plans в commands/hooks — это пути проекта, использующего кит, а не кэш плагина" \
+  "$KIT/docs/contract.md" "это пути в репозитории ПРОЕКТА, использующего кит"
+check_ac_doc AC-3 "contract.md: marketplace.json явно классифицирован как метаданные листинга, не читаемые командами плагина" \
+  "$KIT/docs/contract.md" "метаданные листинга плагина в маркетплейсе"
 check_ac_doc AC-3 "contract.md: сравнение с base-веткой — работа CI, не локального scripts/check" \
   "$KIT/docs/contract.md" "Сравнение с base-веткой PR делает CI-гейт, а не локальный \`scripts/check\`"
+
+# ── issue #166: спека 004 не должна расходиться с contract.md по составу
+# «файлов плагина» — гейт (issue #151) реализуется по тексту спеки, не
+# contract.md, поэтому расхождение здесь молча закодировало бы в гейт
+# именно ту дыру, ради которой заведён #166 (docs/adr/ ошибочно считался
+# освобождённым от бампа и в политике, и в AC-1).
+spec004_content=$(cat "$KIT/docs/specs/004-plugin-versioning.md")
+assert_not_contains "issue #166: спека 004 (раздел политики) не считает docs/adr/ освобождённым от бампа" \
+  "$spec004_content" 'docs/adr/, docs/plans/'
+assert_not_contains "issue #166: AC-1 не считает docs/adr освобождённым от бампа" \
+  "$spec004_content" 'docs/specs|adr|plans|observability'
+check_ac_doc "issue #166" "спека 004: docs/contract.md — единственный источник перечня, спека его не дублирует" \
+  "$KIT/docs/specs/004-plugin-versioning.md" 'он единственный источник, спека перечень не дублирует'
+assert_not_contains "issue #166: спека 004 не содержит собственного перечня файлов плагина (инвариант против дрейфа со contract.md, круг 2 ревью PR #168)" \
+  "$spec004_content" 'commands/, agents/'
+assert_not_contains "issue #166: спека 004 не перечисляет пути плагина и в AC-1 (тот же инвариант)" \
+  "$spec004_content" 'commands/agents/skills'
+
 
 claude_stub_guard() { # claude_stub_guard <bindir> — общая часть стаба claude
   # во всех ralph-фикстурах ниже: фейлится (маркер CLAUDE_PLUGIN_ROOT_MISSING
