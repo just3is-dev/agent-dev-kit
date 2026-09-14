@@ -1713,6 +1713,94 @@ assert_exit "issue #54: ac-check: --complete не первым аргумент�
 "$HOOKS/ac-check.sh" "$TMP/no-such-root" >/dev/null 2>&1
 assert_exit "issue #54: ac-check: несуществующий корень проекта — ошибка" 1 $?
 
+# ── Спеко-именованные AC-токены AC-NNN-K (issue #171) ────────────────────────
+# Раньше ac-check.sh собирал AC-<n> в общий пул: тег с номером критерия N
+# в тестах засчитывал покрытие критерия N ЛЮБОЙ approved-спеки, где такой
+# номер встречался — у двух спек со случайно совпавшим номером критерия
+# покрытие одной маскировало отсутствие покрытия у другой. Токен AC-<NNN>-<K>
+# включает номер
+# спеки — привязка по построению: сопоставление идёт по литеральному
+# совпадению строки токена в спеке и в тесте, а не по разбору имени файла
+# спеки (см. ADR) — поэтому работает и для спеки, чьё имя файла не
+# начинается с числа.
+SCOPED="$TMP/ac-scoped-proj"
+mkdir -p "$SCOPED/docs/specs" "$SCOPED/tests"
+write_ac_spec "$SCOPED/docs/specs/001-a.md" "approved" "- [ ] AC-001-3: критерий спеки 001"
+write_ac_spec "$SCOPED/docs/specs/002-b.md" "approved" "- [ ] AC-002-3: критерий спеки 002 (тот же порядковый номер 3)"
+cat > "$SCOPED/tests/run.sh" <<'EOF'
+echo "AC-001-3: покрыт"
+EOF
+scoped_out=$("$HOOKS/ac-check.sh" "$SCOPED" 2>&1)
+scoped_st=$?
+assert_exit "issue #171: ac-check: тест AC-001-3 не засчитывает покрытие AC-002-3 другой спеки (тот же K=3)" 1 "$scoped_st"
+assert_contains "issue #171: ac-check: непокрытый AC-002-3 назван в выводе" "$scoped_out" "AC-002-3"
+assert_not_contains "issue #171: ac-check: AC-001-3 не попадает в непокрытые (он покрыт)" "$scoped_out" "AC-001-3"
+
+# добавили тег для второй спеки — обе покрыты своими префиксованными тегами
+cat > "$SCOPED/tests/run.sh" <<'EOF'
+echo "AC-001-3: покрыт"
+echo "AC-002-3: покрыт"
+EOF
+"$HOOKS/ac-check.sh" "$SCOPED" >/dev/null 2>&1
+assert_exit "issue #171: ac-check: обе спеки покрыты своими префиксованными тегами — exit 0" 0 $?
+
+# --complete тоже различает спеки по префиксу, не только «мягкий» режим
+cat > "$SCOPED/tests/run.sh" <<'EOF'
+echo "AC-001-3: покрыт"
+EOF
+comp_out=$("$HOOKS/ac-check.sh" --complete "$SCOPED" 2>&1)
+assert_exit "issue #171: ac-check --complete: тоже различает спеки по префиксу" 1 $?
+assert_contains "issue #171: ac-check --complete: непокрытый AC-002-3 назван" "$comp_out" "AC-002-3"
+
+# один тестовый файл с несколькими префиксованными тегами на одной строке —
+# оба извлекаются, а не только первый
+cat > "$SCOPED/tests/run.sh" <<'EOF'
+echo "AC-001-3 и AC-002-3 покрыты одной строкой"
+EOF
+"$HOOKS/ac-check.sh" "$SCOPED" >/dev/null 2>&1
+assert_exit "issue #171: ac-check: несколько префиксованных тегов на одной строке — оба засчитаны" 0 $?
+
+# спека, чьё имя файла не начинается с номера, — сопоставление всё равно
+# идёт по литеральному токену, а не по имени файла (граница из ревью #171)
+NONUM="$TMP/ac-nonum-proj"
+mkdir -p "$NONUM/docs/specs" "$NONUM/tests"
+write_ac_spec "$NONUM/docs/specs/hotfix-notes.md" "approved" "- [ ] AC-007-1: критерий спеки без номера в имени файла"
+: > "$NONUM/tests/run.sh"
+"$HOOKS/ac-check.sh" "$NONUM" >/dev/null 2>&1
+assert_exit "issue #171: ac-check: спека без номера в имени файла — непокрытый критерий виден" 1 $?
+echo "AC-007-1: покрыт" > "$NONUM/tests/run.sh"
+"$HOOKS/ac-check.sh" "$NONUM" >/dev/null 2>&1
+assert_exit "issue #171: ac-check: спека без номера в имени файла — покрытие по литеральному токену работает" 0 $?
+
+# аннотация «ждёт #N» работает и для префиксованного токена (issue #54 + #171)
+PENDSCOPED="$TMP/ac-pending-scoped-proj"
+mkdir -p "$PENDSCOPED/docs/specs" "$PENDSCOPED/tests"
+write_ac_spec "$PENDSCOPED/docs/specs/003-c.md" "approved" "- [ ] AC-003-1 (ждёт #90): критерий, тест которого появится в issue #90"
+: > "$PENDSCOPED/tests/run.sh"
+"$HOOKS/ac-check.sh" "$PENDSCOPED" >/dev/null 2>&1
+assert_exit "issue #171: ac-check: непокрытый префиксованный AC с аннотацией «ждёт #N» принимается" 0 $?
+pendscoped_out=$("$HOOKS/ac-check.sh" --complete "$PENDSCOPED" 2>&1)
+assert_exit "issue #171: ac-check --complete: аннотация не оправдывает префиксованный AC на границе милестоуна" 1 $?
+assert_contains "issue #171: ac-check --complete: непокрытый AC-003-1 назван" "$pendscoped_out" "AC-003-1"
+
+# ── Обратная совместимость: голый AC-K без префикса (issue #171) ────────────
+# Существующие проекты (в т.ч. сам кит) не обязаны мигрировать — голый токен
+# продолжает работать по-старому: глобальный пул, тест засчитывает покрытие
+# критерия с тем же номером в ЛЮБОЙ approved-спеке. Разница с прежним
+# поведением — только предупреждение в выводе, не молчаливая деградация.
+BARE="$TMP/ac-bare-proj"
+mkdir -p "$BARE/docs/specs" "$BARE/tests"
+write_ac_spec "$BARE/docs/specs/001-a.md" "approved" "- [ ] AC-9: критерий спеки 001"
+write_ac_spec "$BARE/docs/specs/002-b.md" "approved" "- [ ] AC-9: критерий спеки 002 (случайно тот же номер)"
+cat > "$BARE/tests/run.sh" <<'EOF'
+echo "AC-9: покрыт"
+EOF
+bare_out=$("$HOOKS/ac-check.sh" "$BARE" 2>&1)
+bare_st=$?
+assert_exit "issue #171: ac-check: голый AC-9 — старое поведение сохранено (глобальный пул, exit 0)" 0 "$bare_st"
+assert_contains "issue #171: ac-check: голый токен без привязки к спеке — предупреждение в выводе" "$bare_out" "без привязки к спеке"
+assert_contains "issue #171: ac-check: предупреждение ссылается на issue #171" "$bare_out" "issue #171"
+
 # ── AC-проверка подключена к контракту проекта (issue #7) ───────────────────
 # Используем реальный отгружаемый templates/monorepo/scripts/check (а не его
 # пересказ) — без пакетов у него нет внешних зависимостей (npx/uv), поэтому
@@ -1989,13 +2077,15 @@ guard_ac_check
 # Только markdown: проверяем, что нужный текст конвенции присутствует в
 # правильном месте каждого из семи файлов, а не просто что "AC-" где-то
 # встречается в файле.
-check_ac_doc AC-5 "spec-template: критерий приёмки — пронумерованный checkbox AC-1" \
-  "$KIT/templates/process/spec-template.md" "- [ ] AC-1:"
+check_ac_doc AC-5 "spec-template: критерий приёмки — пронумерованный checkbox AC-{{NNN}}-1" \
+  "$KIT/templates/process/spec-template.md" "- [ ] AC-{{NNN}}-1:"
 check_ac_doc AC-5 "spec-template: пример второго критерия пронумерован" \
-  "$KIT/templates/process/spec-template.md" "- [ ] AC-2:"
+  "$KIT/templates/process/spec-template.md" "- [ ] AC-{{NNN}}-2:"
+check_ac_doc "issue #171" "spec-template: номер спеки в токене не даёт коллизии между спеками" \
+  "$KIT/templates/process/spec-template.md" "issue #171"
 
-check_ac_doc AC-5 "/spec: правило нумерации критериев AC-1, AC-2, …" \
-  "$KIT/commands/spec.md" "AC-1, AC-2"
+check_ac_doc AC-5 "/spec: правило нумерации критериев AC-{{NNN}}-1, AC-{{NNN}}-2, …" \
+  "$KIT/commands/spec.md" "AC-{{NNN}}-1, AC-{{NNN}}-2"
 
 check_ac_doc AC-5 "planner: план показывает покрытие «AC-N → задачи»" \
   "$KIT/agents/planner.md" "AC-N → задачи"
