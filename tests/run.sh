@@ -1305,19 +1305,22 @@ check_ac_doc AC-3 "autopilot.md запрещает обходить блокир
 # отсутствующий label в репо и вешает его на создаваемые issues; тип
 # задаётся только label'ом, из текста issue не выводится.
 PLANMD="$KIT/commands/plan.md"
-plan_step3=$(md_section "$PLANMD" '^3\. \*\*' '^4\. \*\*')
+# issue #172 сдвинул нумерацию шагов /plan на один (новый шаг 1 —
+# определение режима «ветка спеки» / «спека уже в main»): создание issues
+# и label — теперь шаг 4, был шаг 3.
+plan_step3=$(md_section "$PLANMD" '^4\. \*\*' '^5\. \*\*')
 
-assert_contains "AC-4: plan.md шаг 3 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
+assert_contains "AC-4: plan.md шаг 4 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
   "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
-assert_contains "AC-4: plan.md шаг 3 перехватывает stderr gh label create, чтобы разобрать исход (не глушит его 2>/dev/null)" \
+assert_contains "AC-4: plan.md шаг 4 перехватывает stderr gh label create, чтобы разобрать исход (не глушит его 2>/dev/null)" \
   "$plan_step3" 'gh label create.*2>&1'
-assert_contains "AC-4: plan.md шаг 3 считает успехом идемпотентный случай «label уже есть» (already exists)" \
+assert_contains "AC-4: plan.md шаг 4 считает успехом идемпотентный случай «label уже есть» (already exists)" \
   "$plan_step3" 'already exists'
-assert_contains "K18 (issue #99): plan.md шаг 3 не глушит прочие ошибки gh label create — говорит явно, что label не создан" \
+assert_contains "K18 (issue #99): plan.md шаг 4 не глушит прочие ошибки gh label create — говорит явно, что label не создан" \
   "$plan_step3" 'label не создан'
-assert_contains "AC-4: plan.md шаг 3 создаёт label до создания issues" \
+assert_contains "AC-4: plan.md шаг 4 создаёт label до создания issues" \
   "$plan_step3" 'gh label create.*gh issue create'
-assert_contains "AC-4: plan.md шаг 3 проставляет label создаваемым issues (--label в gh issue create)" \
+assert_contains "AC-4: plan.md шаг 4 проставляет label создаваемым issues (--label в gh issue create)" \
   "$plan_step3" 'gh issue create.*--label'
 check_ac_doc AC-4 "plan.md: label — единственный источник типа, из текста issue тип не выводится" \
   "$PLANMD" "из текста issue не выводится"
@@ -2038,6 +2041,60 @@ check_ac_doc "issue #54" "reviewer: переходные состояния ге
   "$KIT/agents/reviewer.md" "Переходные состояния"
 check_ac_doc "issue #54" "контракт: аннотация «ждёт #N» и --complete описаны" \
   "$KIT/docs/contract.md" "ждёт #"
+
+# ── issue #172: /spec мержит approved-спеку до /plan — окно, где main
+# обязан быть красным, потому что аннотации «ждёт #N» умеет ставить
+# только /plan, а он по построению срабатывает позже merge спеки ─────────────
+# Репро механизма (полевой сигнал из тела issue): approved-спека без
+# тестов и без аннотаций, одна в проекте — уже красная для ac-check. Именно
+# в это состояние спека попадает, если её мержить сразу после апрува (как
+# сейчас велит /spec), не дожидаясь /plan.
+S172="$TMP/issue-172-window"
+mkdir -p "$S172/docs/specs" "$S172/tests"
+write_ac_spec "$S172/docs/specs/001-x.md" "approved" "- [ ] AC-201: первый критерий
+- [ ] AC-202: второй критерий"
+: > "$S172/tests/run.sh"
+"$HOOKS/ac-check.sh" "$S172" >/dev/null 2>&1
+assert_exit "issue #172: репро — approved-спека без тестов и без аннотаций красная для ac-check" 1 $?
+
+# Тот же файл с аннотациями (то, что /plan обязан успеть поставить ДО того,
+# как спека попадёт в main) — красного состояния уже нет.
+write_ac_spec "$S172/docs/specs/001-x.md" "approved" "- [ ] AC-201 (ждёт #501): первый критерий
+- [ ] AC-202 (ждёт #501): второй критерий"
+"$HOOKS/ac-check.sh" "$S172" >/dev/null 2>&1
+assert_exit "issue #172: та же спека с аннотациями «ждёт #N» — не красная" 0 $?
+
+# Вывод: единственный способ никогда не показывать main в первом состоянии —
+# не мержить спеку до того, как аннотации у неё уже есть (issue #172,
+# решение — поменять порядок команд, а не сам ac-check.sh: см. doc-тесты
+# ниже commands/spec.md и commands/plan.md).
+
+SPECMD="$KIT/commands/spec.md"
+spec_step3=$(md_section "$SPECMD" '^3\. \*\*' '^4\. \*\*')
+spec_step4=$(md_section "$SPECMD" '^4\. \*\*' '$')
+
+assert_not_contains "issue #172: /spec шаг 4 не велит мержить PR спеки сразу после апрува" \
+  "$spec_step4" "и смержи"
+assert_contains "issue #172: /spec шаг 4 явно запрещает переводить PR спеки в ready до /plan" \
+  "$spec_step4" "НЕ переводи"
+assert_contains "issue #172: /spec шаг 4 объясняет, почему — ссылкой на issue #172" \
+  "$spec_step4" "issue #172"
+assert_contains "issue #172: /spec шаг 3 говорит, что merge спеки происходит в /plan, не здесь" \
+  "$spec_step3" "issue #172"
+
+plan_step1=$(md_section "$PLANMD" '^1\. \*\*' '^2\. \*\*')
+assert_contains "issue #172: /plan шаг 1 переключается на ветку спеки, если её PR ещё не смержен" \
+  "$plan_step1" "переключись на эту ветку"
+assert_contains "issue #172: /plan шаг 1 сохраняет обратную совместимость со спеками, уже смерженными в main" \
+  "$plan_step1" "обратн"
+
+plan_landing=$(md_section "$PLANMD" '^5\. \*\*' '^6\. \*\*')
+assert_contains "issue #172: /plan коммитит аннотации в ветку спеки (режим «ветка спеки»)" \
+  "$plan_landing" "в ветку спеки"
+assert_contains "issue #172: /plan переводит PR спеки в ready и мержит его финальным шагом" \
+  "$plan_landing" "переведи PR спеки в ready"
+assert_contains "issue #172: /plan режим «спека уже в main» — аннотации обычным PR, как раньше" \
+  "$plan_landing" "спека уже в main"
 
 # ── Усиление чек-листа reviewer по контракту между компонентами (issue #81) ─
 check_ac_doc "issue #81" "reviewer: проверка всех сторон контракта формата/интерфейса" \
