@@ -2045,36 +2045,81 @@ check_ac_doc "issue #54" "контракт: аннотация «ждёт #N» �
 # ── issue #172: /spec мержит approved-спеку до /plan — окно, где main
 # обязан быть красным, потому что аннотации «ждёт #N» умеет ставить
 # только /plan, а он по построению срабатывает позже merge спеки ─────────────
-# Репро механизма (полевой сигнал из тела issue): approved-спека без
-# тестов и без аннотаций, одна в проекте — уже красная для ac-check. Именно
-# в это состояние спека попадает, если её мержить сразу после апрува (как
-# сейчас велит /spec), не дожидаясь /plan.
-S172="$TMP/issue-172-window"
-mkdir -p "$S172/docs/specs" "$S172/tests"
-write_ac_spec "$S172/docs/specs/001-x.md" "approved" "- [ ] AC-201: первый критерий
+# Git-фикстура сравнивает СТАРЫЙ порядок команд (спека мержится сразу,
+# аннотации — отдельным, более поздним коммитом в main) с НОВЫМ (спека
+# approved в ветке, main её не видит, пока не готовы аннотации; в main
+# спека и аннотации приезжают одним squash-коммитом) — проверяет реальную
+# последовательность состояний main через git, а не изолированные файлы.
+check_repo_ac() { # check_repo_ac <репо> — ac-check.sh на текущем HEAD репо
+  "$HOOKS/ac-check.sh" "$1" >/dev/null 2>&1
+}
+
+S172BASE="$TMP/issue-172-base"
+mkdir -p "$S172BASE/docs/specs" "$S172BASE/tests"
+: > "$S172BASE/tests/run.sh"
+(cd "$S172BASE" && git_c init -q -b main && git add -A && git_c commit -qm init)
+
+# СТАРЫЙ порядок: /spec мержит approved-спеку в main сама, аннотации от
+# /plan приходят отдельным, более поздним коммитом.
+OLDORD="$TMP/issue-172-old-order"
+cp -R "$S172BASE" "$OLDORD"
+write_ac_spec "$OLDORD/docs/specs/001-x.md" "approved" "- [ ] AC-201: первый критерий
 - [ ] AC-202: второй критерий"
-: > "$S172/tests/run.sh"
-"$HOOKS/ac-check.sh" "$S172" >/dev/null 2>&1
-assert_exit "issue #172: репро — approved-спека без тестов и без аннотаций красная для ac-check" 1 $?
+(cd "$OLDORD" && git add -A && git_c commit -qm "спека approved, смержена сразу (старый шаг 4 /spec)")
+check_repo_ac "$OLDORD"
+assert_exit "issue #172: старый порядок — main сразу после merge approved-спеки (до /plan) красный" 1 $?
 
-# Тот же файл с аннотациями (то, что /plan обязан успеть поставить ДО того,
-# как спека попадёт в main) — красного состояния уже нет.
-write_ac_spec "$S172/docs/specs/001-x.md" "approved" "- [ ] AC-201 (ждёт #501): первый критерий
+write_ac_spec "$OLDORD/docs/specs/001-x.md" "approved" "- [ ] AC-201 (ждёт #501): первый критерий
 - [ ] AC-202 (ждёт #501): второй критерий"
-"$HOOKS/ac-check.sh" "$S172" >/dev/null 2>&1
-assert_exit "issue #172: та же спека с аннотациями «ждёт #N» — не красная" 0 $?
+(cd "$OLDORD" && git add -A && git_c commit -qm "аннотации от /plan, отдельным более поздним коммитом")
+check_repo_ac "$OLDORD"
+assert_exit "issue #172: старый порядок — main снова зелёный только после отдельного коммита /plan" 0 $?
 
-# Вывод: единственный способ никогда не показывать main в первом состоянии —
-# не мержить спеку до того, как аннотации у неё уже есть (issue #172,
-# решение — поменять порядок команд, а не сам ac-check.sh: см. doc-тесты
-# ниже commands/spec.md и commands/plan.md).
+# НОВЫЙ порядок: approved-статус в ветке спеки, main не тронут; аннотации
+# коммитятся в ту же ветку; в main спека приходит уже готовой — squash.
+NEWORD="$TMP/issue-172-new-order"
+cp -R "$S172BASE" "$NEWORD"
+(cd "$NEWORD" && git_c checkout -q -b spec/001-x)
+write_ac_spec "$NEWORD/docs/specs/001-x.md" "approved" "- [ ] AC-201: первый критерий
+- [ ] AC-202: второй критерий"
+(cd "$NEWORD" && git add -A && git_c commit -qm "approved в ветке спеки (новый шаг 4 /spec, PR не мержится)")
+# Сама ветка спеки (её собственный draft-PR) корректно красная, пока
+# аннотаций нет — это ожидаемое состояние незавершённой работы, как
+# падающие тесты в разгар любой другой задачи (ADR-009), не то, что
+# фиксит issue #172.
+check_repo_ac "$NEWORD"
+assert_exit "issue #172: новый порядок — черновик ветки спеки красный для ac-check, пока аннотаций нет (ожидаемо, не блокер)" 1 $?
+# А вот main, пока PR спеки не смержен, эту спеку вообще не видит.
+(cd "$NEWORD" && git_c checkout -q main)
+check_repo_ac "$NEWORD"
+assert_exit "issue #172: новый порядок — main не видит approved-спеку, пока PR спеки не смержен" 0 $?
+
+(cd "$NEWORD" && git_c checkout -q spec/001-x)
+write_ac_spec "$NEWORD/docs/specs/001-x.md" "approved" "- [ ] AC-201 (ждёт #501): первый критерий
+- [ ] AC-202 (ждёт #501): второй критерий"
+(cd "$NEWORD" && git add -A && git_c commit -qm "аннотации в ту же ветку спеки (новый шаг 5 /plan)")
+(cd "$NEWORD" && git_c checkout -q main && git_c merge -q --squash spec/001-x >/dev/null && git_c commit -qm "spec: SPEC-001 approved + аннотации (squash, шаг 5 /plan)")
+check_repo_ac "$NEWORD"
+assert_exit "issue #172: новый порядок — main сразу после squash-merge спеки+аннотаций уже зелёный" 0 $?
+
+# Единственный коммит main, добавляющий файл спеки, уже несёт аннотации —
+# ни один коммит main за всю историю не был красным для ac-check.
+new_main_commits=$(cd "$NEWORD" && git log main --format=%H -- docs/specs/001-x.md)
+new_order_any_red=0
+for c in $new_main_commits; do
+  W="$TMP/issue-172-new-order-at-${c}"
+  git -C "$NEWORD" worktree add -q --detach "$W" "$c" >/dev/null 2>&1
+  check_repo_ac "$W" || new_order_any_red=1
+  git -C "$NEWORD" worktree remove -f "$W" >/dev/null 2>&1
+done
+assert_exit "issue #172: новый порядок — ни один коммит main с этой спекой не красный для ac-check" 0 "$new_order_any_red"
 
 SPECMD="$KIT/commands/spec.md"
 spec_step3=$(md_section "$SPECMD" '^3\. \*\*' '^4\. \*\*')
 spec_step4=$(md_section "$SPECMD" '^4\. \*\*' '$')
 
 assert_not_contains "issue #172: /spec шаг 4 не велит мержить PR спеки сразу после апрува" \
-  "$spec_step4" "и смержи"
+  "$spec_step4" "переведи PR в ready и смержи"
 assert_contains "issue #172: /spec шаг 4 явно запрещает переводить PR спеки в ready до /plan" \
   "$spec_step4" "НЕ переводи"
 assert_contains "issue #172: /spec шаг 4 объясняет, почему — ссылкой на issue #172" \
@@ -2086,13 +2131,21 @@ plan_step1=$(md_section "$PLANMD" '^1\. \*\*' '^2\. \*\*')
 assert_contains "issue #172: /plan шаг 1 переключается на ветку спеки, если её PR ещё не смержен" \
   "$plan_step1" "переключись на эту ветку"
 assert_contains "issue #172: /plan шаг 1 сохраняет обратную совместимость со спеками, уже смерженными в main" \
-  "$plan_step1" "обратн"
+  "$plan_step1" "обратная совместимость"
+assert_contains "issue #172: /plan шаг 1 по умолчанию (без \$ARGUMENTS) ищет approved-спеку среди открытых веток spec/*, не только в main" \
+  "$plan_step1" 'search "head:spec/"'
+assert_contains "issue #172: /plan шаг 1 не выбирает режим сам, если PR ветки спеки закрыт без merge" \
+  "$plan_step1" "CLOSED"
 
 plan_landing=$(md_section "$PLANMD" '^5\. \*\*' '^6\. \*\*')
 assert_contains "issue #172: /plan коммитит аннотации в ветку спеки (режим «ветка спеки»)" \
   "$plan_landing" "в ветку спеки"
 assert_contains "issue #172: /plan переводит PR спеки в ready и мержит его финальным шагом" \
   "$plan_landing" "переведи PR спеки в ready"
+assert_contains "issue #172: /plan учитывает policies.merge при финальном merge спеки (не обходит хук)" \
+  "$plan_landing" "policies.merge"
+assert_contains "issue #172: /plan: merge спеки заблокирован политикой — PR остаётся ready, не ошибка" \
+  "$plan_landing" "ждёт человека"
 assert_contains "issue #172: /plan режим «спека уже в main» — аннотации обычным PR, как раньше" \
   "$plan_landing" "спека уже в main"
 
