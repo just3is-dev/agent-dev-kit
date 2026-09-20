@@ -3659,6 +3659,99 @@ rel_parsed_b=$(run_release_yml_parse "$relb_out")
 assert_contains "AC-2: release.yml разбор вывода (b): should_release=false" "$rel_parsed_b" "should_release=false"
 assert_not_contains "AC-2: release.yml разбор вывода (b): без вердикта релиза тег в \$GITHUB_OUTPUT не выставляется" "$rel_parsed_b" "tag="
 
+# ── .github/scripts/version-bump-check.sh + .github/workflows/
+# version-bump-check.yml: CI-гейт бампа version на PR (issue #151, SPEC-004
+# AC-1). Скрипт — чистая функция: список изменённых путей на stdin, две
+# версии аргументами, без сети/git внутри — сравнение с base-веткой PR
+# делает вызывающий workflow. Перечень «файлов плагина» здесь СИНХРОНИЗИРОВАН
+# с docs/contract.md (условия 1 и 2, раздел «Версионирование плагина») ──────
+VBC="$KIT/.github/scripts/version-bump-check.sh"
+
+run_vbc() { # run_vbc <base_version> <head_version> <path...> — прогон скрипта с путями на stdin (stdout+stderr вместе)
+  local base="$1" head="$2"
+  shift 2
+  printf '%s\n' "$@" | "$VBC" "$base" "$head" 2>&1
+}
+
+# (а) изменён файл из commands/ / hooks/ / templates/ при одинаковых
+# версиях — ненулевой exit, в тексте названо правило бампа и docs/contract.md
+vbc_a1_out=$(run_vbc 0.1.8 0.1.8 "commands/work.md")
+assert_exit "AC-1: version-bump-check(a): commands/ при одинаковых версиях — ненулевой exit" 1 $?
+assert_contains "AC-1: version-bump-check(a): commands/ — сообщение называет правило бампа version" "$vbc_a1_out" "version"
+assert_contains "AC-1: version-bump-check(a): commands/ — сообщение ссылается на docs/contract.md" "$vbc_a1_out" "docs/contract.md"
+
+vbc_a2_out=$(run_vbc 0.1.8 0.1.8 "hooks/scripts/adk-log.sh")
+assert_exit "AC-1: version-bump-check(a): hooks/ при одинаковых версиях — ненулевой exit" 1 $?
+assert_contains "AC-1: version-bump-check(a): hooks/ — сообщение называет правило бампа version" "$vbc_a2_out" "version"
+
+vbc_a3_out=$(run_vbc 0.1.8 0.1.8 "templates/base/gitignore")
+assert_exit "AC-1: version-bump-check(a): templates/ при одинаковых версиях — ненулевой exit" 1 $?
+assert_contains "AC-1: version-bump-check(a): templates/ — сообщение называет правило бампа version" "$vbc_a3_out" "version"
+
+# (б) те же файлы при разных версиях — exit 0
+vbc_b_out=$(run_vbc 0.1.8 0.1.9 "commands/work.md" "hooks/scripts/adk-log.sh" "templates/base/gitignore")
+assert_exit "AC-1: version-bump-check(б): те же файлы при разных версиях — exit 0" 0 $?
+
+# (в) изменены только docs/specs/, docs/plans/, docs/observability/, tests/
+# при одинаковых версиях — exit 0
+vbc_v_out=$(run_vbc 0.1.8 0.1.8 "docs/specs/004-plugin-versioning.md" "docs/plans/foo.md" "docs/observability/bar.md" "tests/run.sh")
+assert_exit "AC-1: version-bump-check(в): docs/specs|plans|observability, tests/ при одинаковых версиях — exit 0" 0 $?
+
+# (в2) изменён только docs/adr/ при одинаковых версиях — ненулевой exit
+# (docs/adr/ — файл плагина по условию 2 contract.md)
+vbc_v2_out=$(run_vbc 0.1.8 0.1.8 "docs/adr/012-nextjs-nestjs-tool-detection.md")
+assert_exit "AC-1: version-bump-check(в2): docs/adr/ при одинаковых версиях — ненулевой exit" 1 $?
+assert_contains "AC-1: version-bump-check(в2): docs/adr/ — сообщение ссылается на docs/contract.md" "$vbc_v2_out" "docs/contract.md"
+
+# (г) изменён .claude-plugin/plugin.json без смены version — ненулевой exit
+vbc_g_out=$(run_vbc 0.1.8 0.1.8 ".claude-plugin/plugin.json")
+assert_exit "AC-1: version-bump-check(г): .claude-plugin/plugin.json без смены version — ненулевой exit" 1 $?
+
+# docs/contract.md и docs/config.md — тоже файлы плагина по условию 2,
+# симметрично docs/adr/ (не входят в фикстуры issue буквально, но
+# перечислены в docs/contract.md — гейт обязан ловить их так же)
+vbc_contract_out=$(run_vbc 0.1.8 0.1.8 "docs/contract.md")
+assert_exit "AC-1: version-bump-check: docs/contract.md при одинаковых версиях — ненулевой exit (условие 2)" 1 $?
+
+vbc_config_out=$(run_vbc 0.1.8 0.1.8 "docs/config.md")
+assert_exit "AC-1: version-bump-check: docs/config.md при одинаковых версиях — ненулевой exit (условие 2)" 1 $?
+
+# Явные исключения contract.md — README, .github/, scripts/,
+# .claude-plugin/marketplace.json — не требуют бампа
+vbc_excl_out=$(run_vbc 0.1.8 0.1.8 "README.md" ".github/workflows/ci.yml" "scripts/check" ".claude-plugin/marketplace.json")
+assert_exit "AC-1: version-bump-check: README/.github, scripts/, marketplace.json при одинаковых версиях — exit 0 (исключения)" 0 $?
+
+# Смешанный набор — хотя бы один файл плагина среди прочих всё равно ловится
+vbc_mixed_out=$(run_vbc 0.1.8 0.1.8 "README.md" "commands/work.md")
+assert_exit "AC-1: version-bump-check: смешанный набор с файлом плагина — ненулевой exit" 1 $?
+
+# Пустой список изменённых путей — нечего проверять, exit 0
+vbc_empty_out=$(printf '' | "$VBC" 0.1.8 0.1.8 2>&1)
+assert_exit "AC-1: version-bump-check: пустой список путей — exit 0" 0 $?
+
+# ── .github/workflows/version-bump-check.yml: тонкая обёртка над
+# version-bump-check.sh на pull_request (issue #151) ────────────────────────
+VBC_WORKFLOW="$KIT/.github/workflows/version-bump-check.yml"
+
+ruby -ryaml -e "YAML.load_file(ARGV[0])" "$VBC_WORKFLOW" >/dev/null 2>&1
+assert_exit "AC-1: version-bump-check.yml — валиден как YAML" 0 $?
+
+vbc_workflow_probe=$(ruby -ryaml -e '
+y = YAML.load_file(ARGV[0])
+on = y[true] || y["on"] || {}
+puts "has_pull_request=#{on.key?("pull_request")}"
+puts "has_push=#{on.key?("push")}"
+steps = (y["jobs"] || {}).values.flat_map { |j| j["steps"] || [] }
+checkout_step = steps.find { |s| (s["uses"] || "").start_with?("actions/checkout") }
+puts "fetch_depth=#{(checkout_step || {}).dig("with", "fetch-depth")}"
+calls_script = steps.any? { |s| (s["run"] || "").include?(".github/scripts/version-bump-check.sh") }
+puts "calls_script=#{calls_script}"
+' "$VBC_WORKFLOW" 2>&1)
+assert_contains "AC-1: version-bump-check.yml — срабатывает на pull_request" "$vbc_workflow_probe" "has_pull_request=true"
+assert_not_contains "AC-1: version-bump-check.yml — не срабатывает на push (гейт сравнивает с base PR, на push в main смысла не имеет)" "$vbc_workflow_probe" "has_push=true"
+assert_contains "AC-1: version-bump-check.yml — checkout с полной историей (fetch-depth: 0)" "$vbc_workflow_probe" "fetch_depth=0"
+assert_contains "AC-1: version-bump-check.yml — вызывает .github/scripts/version-bump-check.sh" "$vbc_workflow_probe" "calls_script=true"
+
 # ── README: установка через маркетплейс, обновление, двухступенчатость
 # (SPEC-004 AC-4, issue #153) ────────────────────────────────────────────────
 readme_install=$(md_section "$KIT/README.md" '^## Установка' '^## Как этим пользоваться')
