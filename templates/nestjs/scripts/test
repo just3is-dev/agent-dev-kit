@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
-# Контракт agent-dev-kit: все тесты проекта (NestJS по умолчанию использует jest).
+# Контракт agent-dev-kit: все тесты проекта.
 # --passWithNoTests: свежий проект без тестов не должен блокировать Stop-гейт.
+# Тест-раннер детектится по package.json (issue #170) — см. scripts/check.
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
-npx jest --passWithNoTests
+TEST_RUNNER=$(node -e '
+let pkg = {};
+try { pkg = require("./package.json"); } catch (e) {}
+const deps = Object.assign({}, pkg.dependencies, pkg.devDependencies);
+if (deps.vitest) process.stdout.write("vitest");
+else if (deps.jest) process.stdout.write("jest");
+')
+if [ -z "$TEST_RUNNER" ]; then
+  echo "scripts/test: в package.json нет ни vitest, ни jest — контракт agent-dev-kit ожидает один из них в dependencies/devDependencies" >&2
+  exit 1
+fi
+
+if [ "$TEST_RUNNER" = "vitest" ]; then
+  npx vitest run --passWithNoTests
+else
+  npx jest --passWithNoTests
+fi
