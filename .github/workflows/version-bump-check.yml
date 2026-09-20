@@ -21,4 +21,5 @@ jobs:
           }
           base_version=$(read_version "$BASE_SHA")
           head_version=$(read_version "$HEAD_SHA")
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" | .github/scripts/version-bump-check.sh "$base_version" "$head_version"
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          git diff --name-only "$merge_base" "$HEAD_SHA" | .github/scripts/version-bump-check.sh "$base_version" "$head_version"
