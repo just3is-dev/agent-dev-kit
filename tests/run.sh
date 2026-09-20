@@ -2790,7 +2790,7 @@ assert_contains "AC-3: consolidate.md шаг 6 — бамп версии при�
 assert_contains "AC-3: consolidate.md шаг 6 бампает версию именно в .claude-plugin/plugin.json" \
   "$consolidate_step6" '.claude-plugin/plugin.json'
 assert_contains "AC-3: consolidate.md шаг 6 — бамп действует только если в репозитории есть .claude-plugin/plugin.json" \
-  "$consolidate_step6" 'Нет \`.claude-plugin/plugin.json\` в репозитории'
+  "$consolidate_step6" 'Нет `.claude-plugin/plugin.json` в репозитории'
 assert_contains "AC-3: consolidate.md шаг 6 — в проекте-потребителе без plugin.json шаг молча пропускается и ничего не создаёт" \
   "$consolidate_step6" 'пропускается молча, ничего не создаёт'
 assert_contains "AC-3: consolidate.md шаг 6 — бамп отдельным коммитом/PR по обычным правилам" \
