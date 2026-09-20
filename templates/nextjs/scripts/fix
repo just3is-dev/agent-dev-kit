@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # Контракт agent-dev-kit: автоформат + авто-исправимый линт.
 # Молча правит что может; оставшиеся проблемы — забота scripts/check.
+# Линтер детектится по package.json (issue #170) — см. scripts/check.
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
+LINT_TOOL=$(node -e '
+const pkg = require("./package.json");
+const deps = Object.assign({}, pkg.dependencies, pkg.devDependencies);
+if (deps.oxlint) process.stdout.write("oxlint");
+else if (deps.eslint) process.stdout.write("eslint");
+')
+
 if [ $# -gt 0 ]; then
   npx prettier --write --ignore-unknown "$@"
-  npx eslint --fix --no-error-on-unmatched-pattern "$@" >/dev/null 2>&1 || true
+  [ -n "$LINT_TOOL" ] && npx "$LINT_TOOL" --fix --no-error-on-unmatched-pattern "$@" >/dev/null 2>&1 || true
 else
   npx prettier --write --ignore-unknown .
-  npx eslint --fix . >/dev/null 2>&1 || true
+  [ -n "$LINT_TOOL" ] && npx "$LINT_TOOL" --fix . >/dev/null 2>&1 || true
 fi

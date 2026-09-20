@@ -3602,6 +3602,111 @@ check_ac_doc AC-4 "README: пример settings.json уточняет путь 
 assert_not_contains "AC-4: spec 004 не несёт аннотацию (ждёт #153) на AC-4 — тест уже покрывает критерий" \
   "$(cat "$KIT/docs/specs/004-plugin-versioning.md")" 'AC-4 (ждёт #153)'
 
+# ── Шаблоны nextjs/nestjs: детект линтера/тест-раннера вместо хардкода
+# (issue #170) ────────────────────────────────────────────────────────────────
+# Оба шаблона используют один и тот же инлайн-детект — проверяем это
+# инвариантом, а поведение детекта гоняем один раз на общей копии скриптов.
+for f in check test fix; do
+  diff "$KIT/templates/nextjs/scripts/$f" "$KIT/templates/nestjs/scripts/$f" >/dev/null 2>&1
+  assert_exit "issue #170: templates/nextjs/scripts/$f и templates/nestjs/scripts/$f идентичны (общий детект)" 0 $?
+done
+
+NJDET="$TMP/nextjs-detect-proj"
+NBIN="$TMP/nextjs-detect-bin"
+mkdir -p "$NJDET" "$NBIN"
+cp -R "$KIT/templates/nextjs/scripts" "$NJDET/scripts"
+NPX_LOG="$TMP/nextjs-detect-npx.log"
+cat > "$NBIN/npx" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$NPX_LOG"
+case "$1" in
+  tsc) exit "${NPX_STUB_TSC_EXIT:-0}" ;;
+  oxlint) exit "${NPX_STUB_OXLINT_EXIT:-0}" ;;
+  eslint) exit "${NPX_STUB_ESLINT_EXIT:-0}" ;;
+  vitest) exit "${NPX_STUB_VITEST_EXIT:-0}" ;;
+  jest) exit "${NPX_STUB_JEST_EXIT:-0}" ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$NBIN/npx"
+DPATH="$NBIN:$PATH"
+
+# oxlint + vitest объявлены (как реальный `nest new` сегодня, issue #170) —
+# check зовёт oxlint (не eslint), с явным --ignore-pattern node_modules на
+# полном прогоне; test зовёт vitest (не jest)
+cat > "$NJDET/package.json" <<'EOF'
+{"devDependencies": {"oxlint": "^1.0.0", "vitest": "^4.0.0"}}
+EOF
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/check 2>&1)
+nj_st=$?
+assert_exit "issue #170: check с oxlint+vitest в package.json — exit 0" 0 "$nj_st"
+nj_log=$(cat "$NPX_LOG")
+assert_contains "issue #170: check выбирает oxlint, когда он объявлен" "$nj_log" "oxlint --max-warnings 0 --ignore-pattern node_modules ."
+assert_not_contains "issue #170: check не зовёт eslint, когда объявлен oxlint" "$nj_log" "eslint"
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/test 2>&1)
+nj_st=$?
+assert_exit "issue #170: test с vitest в package.json — exit 0" 0 "$nj_st"
+nj_log=$(cat "$NPX_LOG")
+assert_contains "issue #170: test выбирает vitest, когда он объявлен" "$nj_log" "vitest run --passWithNoTests"
+assert_not_contains "issue #170: test не зовёт jest, когда объявлен vitest" "$nj_log" "jest"
+
+# eslint + jest объявлены (как классический nextjs/nestjs раньше) — check
+# зовёт eslint без --ignore-pattern (флаг специфичен для oxlint-ветки),
+# test зовёт jest
+cat > "$NJDET/package.json" <<'EOF'
+{"devDependencies": {"eslint": "^9.0.0", "jest": "^29.0.0"}}
+EOF
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/check 2>&1)
+nj_st=$?
+assert_exit "issue #170: check с eslint+jest в package.json — exit 0" 0 "$nj_st"
+nj_log=$(cat "$NPX_LOG")
+assert_contains "issue #170: check выбирает eslint, когда oxlint не объявлен" "$nj_log" "eslint --max-warnings 0 ."
+assert_not_contains "issue #170: check не зовёт oxlint, когда объявлен только eslint" "$nj_log" "oxlint"
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/test 2>&1)
+nj_st=$?
+assert_exit "issue #170: test с jest в package.json — exit 0" 0 "$nj_st"
+nj_log=$(cat "$NPX_LOG")
+assert_contains "issue #170: test выбирает jest, когда vitest не объявлен" "$nj_log" "jest --passWithNoTests"
+assert_not_contains "issue #170: test не зовёт vitest, когда объявлен только jest" "$nj_log" "vitest"
+
+# check <файл> с oxlint объявленным — линт целевого файла тем же
+# инструментом, не директории целиком
+: > "$NPX_LOG"
+cat > "$NJDET/package.json" <<'EOF'
+{"devDependencies": {"oxlint": "^1.0.0", "vitest": "^4.0.0"}}
+EOF
+mkdir -p "$NJDET/src"
+: > "$NJDET/src/a.ts"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/check src/a.ts 2>&1)
+nj_st=$?
+assert_exit "issue #170: check <файл> с oxlint — exit 0" 0 "$nj_st"
+nj_log=$(cat "$NPX_LOG")
+assert_contains "issue #170: check <файл> зовёт oxlint именно на переданный файл" "$nj_log" "oxlint --max-warnings 0 --no-error-on-unmatched-pattern src/a.ts"
+
+# ни oxlint, ни eslint / ни vitest, ни jest не объявлены — громкая ошибка,
+# а не тихий npx-транзит стороннего пакета (обоснование ADR-012)
+cat > "$NJDET/package.json" <<'EOF'
+{"devDependencies": {}}
+EOF
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/check 2>&1)
+nj_st=$?
+assert_exit "issue #170: check без известного линтера — падает громко (exit 1)" 1 "$nj_st"
+assert_contains "issue #170: check называет оба ожидаемых линтера в сообщении об ошибке" "$nj_out" "oxlint"
+nj_log=$(cat "$NPX_LOG")
+assert_not_contains "issue #170: check не зовёт ни один линтер, если ни один не найден" "$nj_log" "eslint"
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/test 2>&1)
+nj_st=$?
+assert_exit "issue #170: test без известного тест-раннера — падает громко (exit 1)" 1 "$nj_st"
+assert_contains "issue #170: test называет оба ожидаемых тест-раннера в сообщении об ошибке" "$nj_out" "vitest"
+nj_log=$(cat "$NPX_LOG")
+assert_not_contains "issue #170: test не зовёт npx вовсе, если ни один тест-раннер не найден" "$nj_log" "vitest run"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
