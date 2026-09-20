@@ -2766,7 +2766,15 @@ assert_not_contains "issue #166: спека 004 не содержит собст
   "$spec004_content" 'commands/, agents/'
 assert_not_contains "issue #166: спека 004 не перечисляет пути плагина и в AC-1 (тот же инвариант)" \
   "$spec004_content" 'commands/agents/skills'
-
+# ── issue #173 (fast-follow, круг 3 ревью PR #168): предыдущие два сторожа
+# буквальные — мутация с тем же перечнем в другой вёрстке (например
+# маркированным списком «- commands/\n- agents/\n…» вместо inline-строки
+# через запятую) проходит оба. Строгий assert_not_contains на голое
+# `commands/` ловит перечень в любой вёрстке, а не только конкретную.
+assert_not_contains "issue #173: спека 004 не содержит подстроки commands/ ни в какой вёрстке (строгий сторож против дрейфа перечня, любая разметка)" \
+  "$spec004_content" 'commands/'
+assert_not_contains "issue #173: спека 004 не содержит подстроки agents/ ни в какой вёрстке (тот же строгий сторож)" \
+  "$spec004_content" 'agents/'
 
 claude_stub_guard() { # claude_stub_guard <bindir> — общая часть стаба claude
   # во всех ralph-фикстурах ниже: фейлится (маркер CLAUDE_PLUGIN_ROOT_MISSING
