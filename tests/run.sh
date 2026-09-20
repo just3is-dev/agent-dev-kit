@@ -3295,6 +3295,69 @@ assert_contains "AC-1: adk-ralph: needs-human-каскад — issue #70 (зас
 assert_not_contains "AC-1: adk-ralph: needs-human-каскад — issue #71 (уже needs-human) не получает повторный issue edit от ralph" \
   "$edit_nh_log" "issue edit 71"
 
+# ── Label-резерв owner:human (issue #158): очередь из двух доступных issues,
+# у первого (#90) метка owner:human — ralph пропускает его молча (не берёт в
+# работу, не мержит, не помечает, не логирует) и берёт второй (#91). Отличие
+# от каскада needs-human выше: #90 не «застрял» и не «пропущен по
+# зависимостям» — он вообще не был кандидатом этого прогона, поэтому по нему
+# не должно быть ни единой записи журнала, ни строки в issue-edit.log ────────
+RALPH_OH="$TMP/ralph-oh-proj"
+RBIN_OH="$TMP/ralph-oh-bin"
+mkdir -p "$RALPH_OH" "$RBIN_OH"
+(cd "$RALPH_OH" && git_c init -q -b main)
+cat > "$RBIN_OH/issues-fixture.json" <<'EOF'
+[
+  {"number": 90, "labels": [{"name":"type:task"},{"name":"owner:human"}], "body": "Зависит от: —"},
+  {"number": 91, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_OH/prs-fixture.json" <<'EOF'
+[
+  {"number": 401, "isDraft": false, "headRefName": "issue-91-z"}
+]
+EOF
+gh_ralph_stub "$RBIN_OH" "$RBIN_OH/issues-fixture.json" "$RBIN_OH/prs-fixture.json"
+claude_stub_guard "$RBIN_OH"
+cat >> "$RBIN_OH/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+exit 0
+EOF
+chmod +x "$RBIN_OH/claude"
+RALPH_OH_LOGS="$TMP/ralph-oh-logs"
+
+ralph_oh_out=$(cd "$RALPH_OH" && PATH="$RBIN_OH:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OH" \
+  ADK_LOGS_DIR="$RALPH_OH_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-oh-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1 (issue #158): adk-ralph: owner:human — прогон завершается штатно" 0 $?
+assert_contains "AC-1 (issue #158): adk-ralph: owner:human — сводка перечисляет ready #91 (второй issue взят)" \
+  "$ralph_oh_out" "#91"
+assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — сводка нигде не упоминает #90 (не застрял, не пропущен)" \
+  "$ralph_oh_out" "#90"
+assert_contains "AC-1 (issue #158): adk-ralph: owner:human — сводка называет отдельной строкой число зарезервированных человеком" \
+  "$ralph_oh_out" "Зарезервировано человеком: 1"
+
+ralph_oh_log=$(cat "$RALPH_OH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+oh_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=91|type=bug|result=ready' \
+  'event=run_end|done=0|ready=1|stuck=0|skipped=0|reason=очередь пуста')
+oh_valid=$(jsonl_check "$RALPH_OH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 3 "$oh_spec")
+assert_exit "AC-1 (issue #158): adk-ralph: owner:human — журнал содержит ровно run_start + issue #91 ready + run_end, ничего по #90" \
+  1 "$oh_valid"
+assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — журнал не содержит ни одной записи по issue #90" \
+  "$ralph_oh_log" '"issue": "90"'
+
+edit_oh_log=$(cat "$RBIN_OH/issue-edit.log" 2>/dev/null)
+assert_exit "AC-1 (issue #158): adk-ralph: owner:human — gh issue edit ни разу не вызван по #90 (метка не снята и не поставлена ралфом)" \
+  0 "$([ -z "$edit_oh_log" ] && echo 0 || echo 1)"
+
+oh_claude_calls=$(cat "$RBIN_OH/claude-calls.log" 2>/dev/null)
+oh_claude_call_count=$(printf '%s' "$oh_claude_calls" | grep -c "Инструкция ралфа")
+assert_exit "AC-1 (issue #158): adk-ralph: owner:human — headless-процесс запущен ровно один раз (issue #90 не исполнялся вовсе)" \
+  1 "$oh_claude_call_count"
+assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-процесс не вызывался с номером #90" \
+  "$oh_claude_calls" "issue #90"
+
 # ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
 # issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
 # дороже: пропущенный в выборке PR читается как «PR не создан». Три
@@ -3716,6 +3779,23 @@ nj_st=$?
 assert_exit "issue #170: check без package.json — падает громко (exit 1), не крашем node" 1 "$nj_st"
 assert_contains "issue #170: check без package.json печатает собственное сообщение, а не трейс node" "$nj_out" "нет ни oxlint, ни eslint"
 assert_not_contains "issue #170: check без package.json не протекает необработанным исключением require()" "$nj_out" "Cannot find module"
+
+# ── Label-резерв owner:human (issue #158): doc-тесты — autopilot.md шаг 1
+# называет owner:human в фильтре выбора, README описывает три режима работы
+# и label-резерв ────────────────────────────────────────────────────────────
+autopilot_step1=$(md_section "$KIT/commands/autopilot.md" '^1\. \*\*' '^2\. \*\*')
+assert_contains "issue #158: autopilot.md шаг 1 называет owner:human в фильтре выбора задачи" \
+  "$autopilot_step1" "owner:human"
+assert_contains "issue #158: autopilot.md шаг 1 — owner:human пропускается молча, не как застревание/skip" \
+  "$autopilot_step1" "пропускай молча"
+
+readme_full=$(tr '\n' ' ' < "$KIT/README.md" | tr -s ' ')
+assert_contains "issue #158: README описывает режим «Делегирование»" "$readme_full" "Делегирование"
+assert_contains "issue #158: README описывает режим «Пара в сессии»" "$readme_full" "Пара в сессии"
+assert_contains "issue #158: README описывает режим «Самостоятельно»" "$readme_full" "Самостоятельно"
+assert_contains "issue #158: README документирует label-резерв owner:human" "$readme_full" "owner:human"
+assert_contains "issue #158: README показывает идемпотентную команду создания label" "$readme_full" "gh label create owner:human"
+assert_contains "issue #158: README показывает снятие резерва" "$readme_full" "gh issue edit <N> --remove-label owner:human"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"

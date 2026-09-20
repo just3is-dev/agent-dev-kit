@@ -16,6 +16,15 @@
 # ralph как скрипт не обладает суждением «какой milestone сейчас текущий»
 # (см. ADR-007).
 #
+# Label-резерв owner:human (issue #158): issue с этой меткой пропускается тем
+# же способом, что needs-human, — молча, вне кандидатов, без записи в журнал
+# и без needs-human/уведомления. Ставит и снимает метку человек в любой
+# момент (`gh issue edit N --add-label|--remove-label owner:human`); ralph её
+# не трогает — только читает при каждом select_next. Отличие от needs-human:
+# это не застревание и не skip по зависимости, поэтому счётчик
+# зарезервированных не входит ни в ready/stuck/skipped журнала, только в
+# отдельную строку сводки прогона.
+#
 # Тесты: hooks/scripts/adk-ralph.sh стабами claude/gh на суженном PATH,
 # журнал — $ADK_LOGS_DIR, уведомления — $ADK_NOTIFY_FILE (notify-send.sh),
 # конфиг — $ADK_CONFIG_FILE (lib/config.sh) — все три уже поддержаны
@@ -118,6 +127,18 @@ if [ "$fetched_count" -eq "$issue_fetch_limit" ] 2>/dev/null; then
     "что открытых issues действительно не осталось." >&2
 fi
 
+# Число открытых issues с owner:human (issue #158) — считается один раз с
+# начальной выборки issues_file (не меняется в ходе прогона: список не
+# перезапрашивается между итерациями, см. select_next ниже). Только для
+# итоговой сводки — не журнал (это не result=, не аномалия).
+reserved_count=$(python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    issues = json.load(f)
+print(sum(1 for it in issues
+           if "owner:human" in {l.get("name", "") for l in (it.get("labels") or [])}))
+' "$issues_file" 2>/dev/null || echo 0)
+
 csv_add() { # csv_add <csv> <значение> — печатает csv с добавленным значением
   if [ -z "$1" ]; then printf '%s' "$2"; else printf '%s,%s' "$1" "$2"; fi
 }
@@ -210,6 +231,11 @@ for it in issues:
     if n in excluded:
         continue
     if "needs-human" in labels_of(it):
+        continue
+    if "owner:human" in labels_of(it):
+        # Зарезервирован человеком (issue #158) — не кандидат этого прогона,
+        # но и не «застрял»/«пропущен»: остаётся открытым, дальше по циклу.
+        # Дальнейшие исходы (needs-human/result=) на неё не действуют.
         continue
     if blockers(it.get("body")) & open_numbers:
         continue
@@ -406,6 +432,7 @@ summary="=== Ralph: итог прогона ===
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
+Зарезервировано человеком: $reserved_count
 Причина остановки: $stop_reason"
 
 echo "$summary"
