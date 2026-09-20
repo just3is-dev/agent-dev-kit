@@ -3913,6 +3913,13 @@ assert_contains "issue #158: README документирует label-резер�
 assert_contains "issue #158: README показывает идемпотентную команду создания label" "$readme_full" "gh label create owner:human"
 assert_contains "issue #158: README показывает снятие резерва" "$readme_full" "gh issue edit <N> --remove-label owner:human"
 
+readme_sostav=$(md_section "$KIT/README.md" '^## Состав репозитория' '^## Статус')
+assert_contains "issue #148: README называет adk-ralph.sh среди точек входа hooks/" "$readme_sostav" "adk-ralph.sh"
+assert_contains "issue #148: README описывает adk-ralph.sh как headless-цикл по очереди issues" "$readme_sostav" "headless-цикл по очереди issues"
+assert_contains "issue #148: README ссылается на SPEC-003 у adk-ralph.sh" "$readme_sostav" "SPEC-003"
+assert_contains "issue #148: README называет спеку docs/specs/003-autonomy.md" "$readme_sostav" "docs/specs/003-autonomy.md"
+assert_contains "issue #148: README называет способ запуска adk-ralph.sh из корня проекта" "$readme_sostav" "hooks/scripts/adk-ralph.sh из корня проекта"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then

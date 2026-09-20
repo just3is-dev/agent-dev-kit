@@ -345,7 +345,10 @@ protection по `policies` — merge в main только через PR с зе�
 .claude-plugin/   манифест плагина и marketplace для локальной установки
 hooks/            гейты: PostToolUse → check, Stop → test, PreToolUse →
                   запреты; плюс журналирование прогонов и агрегация
-                  (adk-log.sh, adk-stats.sh) и AC-трассируемость (ac-check.sh)
+                  (adk-log.sh, adk-stats.sh), AC-трассируемость (ac-check.sh)
+                  и headless-цикл по очереди issues (adk-ralph.sh, SPEC-003:
+                  docs/specs/003-autonomy.md; запуск —
+                  hooks/scripts/adk-ralph.sh из корня проекта)
 commands/         /project-init, /spec, /plan, /work, /review, /autopilot,
                   /stats, /consolidate
 agents/           planner, reviewer
