@@ -1040,6 +1040,33 @@ assert_not_contains "AC-8: review.md шаг 3 не возвращает дере
 check_ac_doc AC-8 "002-process-config.md: AC-8 называет исполнителем актуализации и /review, не только /work и /autopilot (issue #80)" \
   "$KIT/docs/specs/002-process-config.md" "\`/work\`, \`/autopilot\` и \`/review\`"
 
+# ── issue #174 (fast-follow, вердикт APPROVE круга 5 PR #169): /review
+# закрывает ту же дыру инварианта «ready ⟺ APPROVE по текущей голове»,
+# что work.md шаги 2/6 закрыли в #169, — симметрично для своих шагов 3 и 5.
+# Шаг 3 (доработка) пушил коммиты в ready-PR без возврата в draft: reviewer
+# ещё не видел допушенное, а PR уже мержибелен. Проверяем не просто
+# наличие строки 'ready --undo', а то, что рядом объяснён сам инвариант
+# (ready — свойство отревьюенной головы) и что повторный ready назначен
+# именно шагу 5 — иначе мутация вида "верни в draft и тут же обратно"
+# прошла бы незамеченной.
+assert_contains "issue #174: review.md шаг 3 — PR уже в ready перед пушем доработки распознаётся явной проверкой" "$review_step3" 'PR уже переведён в ready'
+assert_contains "issue #174: review.md шаг 3 — перед пушем в ready-PR возвращает его в draft (gh pr ready --undo), симметрично work.md шагу 2" "$review_step3" 'gh pr ready --undo'
+assert_contains "issue #174: review.md шаг 3 — объясняет инвариант (ready — свойство отревьюенной головы, новые коммиты её меняют)" "$review_step3" 'ready — свойство отревьюенной головы'
+assert_contains "issue #174: review.md шаг 3 — повторный перевод в ready назначен шагу 5, не самому шагу 3" "$review_step3" 'повторный перевод в ready — только шаг 5'
+assert_contains "issue #174: review.md шаг 3 — нечего дорабатывать (все замечания уже закрыты) не отменяет ready (легальное промежуточное состояние не ломается)" "$review_step3" 'ready не трогай'
+
+# Шаг 5: REQUEST_CHANGES на PR, который остался ready с предыдущего APPROVE
+# (доработки не было — шаг 3 нечего было пушить, ready не трогал), должен
+# сам вернуть PR в draft — иначе он маршрутизирует прогон в APPROVE-ветку
+# «остаётся draft» молча, а сам PR так и остаётся ready без действующего
+# одобрения. Формулировка — по образцу симметричного сторожа work.md шага 6
+# (тест ниже, work_step6), но применённого к своему условию (шаг 3 review.md,
+# а не шаг 2 work.md).
+assert_contains "issue #174: review.md шаг 5 — REQUEST_CHANGES на всё ещё ready PR сначала возвращает его в draft (симметрично work.md шагу 6)" "$review_ready" 'если PR всё ещё ready'
+assert_contains "issue #174: review.md шаг 5 — команда возврата та же (gh pr ready --undo)" "$review_ready" 'gh pr ready --undo <PR>'
+assert_contains "issue #174: review.md шаг 5 — инвариант назван явно: ready без действующего APPROVE — нарушение, а не рабочее состояние" "$review_ready" 'ready без действующего APPROVE —'
+assert_contains "issue #174: review.md шаг 5 — сторож не подменяет обычный путь: PR, который никогда не был ready, просто остаётся draft" "$review_ready" 'PR остаётся draft'
+
 # ── /work: события журнала (AC-1) ────────────────────────────────────────────
 WORKMD="$KIT/commands/work.md"
 step1=$(md_section "$WORKMD" '^1\. \*\*' '^2\. \*\*')
