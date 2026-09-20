@@ -2779,6 +2779,29 @@ check_ac_doc AC-3 "contract.md: marketplace.json явно классифицир
 check_ac_doc AC-3 "contract.md: сравнение с base-веткой — работа CI, не локального scripts/check" \
   "$KIT/docs/contract.md" "Сравнение с base-веткой PR делает CI-гейт, а не локальный \`scripts/check\`"
 
+# ── issue #152, SPEC-004 AC-3 (вторая половина): minor-бамп версии на
+# границе вехи делает /consolidate тем же шагом, что закрывает milestone —
+# единственная точка, где веха фактически заканчивается.
+consolidate_step6=$(md_section "$KIT/commands/consolidate.md" '^6\. \*\*' '^7\. \*\*')
+assert_contains "AC-3: consolidate.md шаг 6 бампает minor version в .claude-plugin/plugin.json" \
+  "$consolidate_step6" 'бампни minor `version`'
+assert_contains "AC-3: consolidate.md шаг 6 — бамп версии привязан к тому же шагу, что закрывает milestone" \
+  "$consolidate_step6" 'этим же шагом'
+assert_contains "AC-3: consolidate.md шаг 6 бампает версию именно в .claude-plugin/plugin.json" \
+  "$consolidate_step6" '.claude-plugin/plugin.json'
+assert_contains "AC-3: consolidate.md шаг 6 — бамп действует только если в репозитории есть .claude-plugin/plugin.json" \
+  "$consolidate_step6" 'Нет \`.claude-plugin/plugin.json\` в репозитории'
+assert_contains "AC-3: consolidate.md шаг 6 — в проекте-потребителе без plugin.json шаг молча пропускается и ничего не создаёт" \
+  "$consolidate_step6" 'пропускается молча, ничего не создаёт'
+assert_contains "AC-3: consolidate.md шаг 6 — бамп отдельным коммитом/PR по обычным правилам" \
+  "$consolidate_step6" 'отдельным коммитом/PR по обычным правилам'
+assert_contains "AC-3: consolidate.md шаг 6 — закрытая веха без бампа тоже забытый шаг" \
+  "$consolidate_step6" 'закрытая веха без бампа — тоже забытый шаг'
+assert_contains "AC-3: consolidate.md шаг 6 ссылается на docs/contract.md, не пересказывает правила patch/minor/major" \
+  "$consolidate_step6" 'docs/contract.md'
+assert_not_contains "AC-3: consolidate.md шаг 6 не пересказывает правило patch (ссылка на contract.md, не дублирование)" \
+  "$consolidate_step6" 'любой PR, меняющий файлы плагина'
+
 # ── issue #166: спека 004 не должна расходиться с contract.md по составу
 # «файлов плагина» — гейт (issue #151) реализуется по тексту спеки, не
 # contract.md, поэтому расхождение здесь молча закодировало бы в гейт
