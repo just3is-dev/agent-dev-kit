@@ -6,7 +6,8 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 
 LINT_TOOL=$(node -e '
-const pkg = require("./package.json");
+let pkg = {};
+try { pkg = require("./package.json"); } catch (e) {}
 const deps = Object.assign({}, pkg.dependencies, pkg.devDependencies);
 if (deps.oxlint) process.stdout.write("oxlint");
 else if (deps.eslint) process.stdout.write("eslint");

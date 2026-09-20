@@ -6,7 +6,8 @@ set -eo pipefail
 cd "$(dirname "$0")/.."
 
 TEST_RUNNER=$(node -e '
-const pkg = require("./package.json");
+let pkg = {};
+try { pkg = require("./package.json"); } catch (e) {}
 const deps = Object.assign({}, pkg.dependencies, pkg.devDependencies);
 if (deps.vitest) process.stdout.write("vitest");
 else if (deps.jest) process.stdout.write("jest");

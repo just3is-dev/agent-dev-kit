@@ -3707,6 +3707,16 @@ assert_contains "issue #170: test называет оба ожидаемых т�
 nj_log=$(cat "$NPX_LOG")
 assert_not_contains "issue #170: test не зовёт npx вовсе, если ни один тест-раннер не найден" "$nj_log" "vitest run"
 
+# package.json отсутствует (кейс из ревью PR #181) — детект не должен ронять
+# скрипт необработанным исключением node, только сообщением скрипта
+rm -f "$NJDET/package.json"
+: > "$NPX_LOG"
+nj_out=$(cd "$NJDET" && PATH="$DPATH" NPX_LOG="$NPX_LOG" ./scripts/check 2>&1)
+nj_st=$?
+assert_exit "issue #170: check без package.json — падает громко (exit 1), не крашем node" 1 "$nj_st"
+assert_contains "issue #170: check без package.json печатает собственное сообщение, а не трейс node" "$nj_out" "нет ни oxlint, ни eslint"
+assert_not_contains "issue #170: check без package.json не протекает необработанным исключением require()" "$nj_out" "Cannot find module"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then

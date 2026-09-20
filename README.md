@@ -321,7 +321,7 @@ templates/
   process/        шаблоны SPEC и ADR
   nextjs/         scripts/check|test|fix (tsc + линтер/тест-раннер по
                   package.json: eslint|oxlint, vitest|jest) + ci.yml
-  nestjs/         то же самое детект-логика (issue #170)
+  nestjs/         та же детект-логика (issue #170)
   python-service/ ruff, mypy, pytest (окружение uv) + ci.yml
   swift-ios/      swift format (lint+fix, Xcode 16+), swift build/test по
                   SPM-пакетам, smoke xcodebuild + ci.yml (macOS) и .swift-format
