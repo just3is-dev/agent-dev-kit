@@ -5,8 +5,8 @@
 # вручную из корня проекта: hooks/scripts/adk-ralph.sh
 #
 # issue #139 — только базовый цикл (AC-1) и запрет
-# --dangerously-skip-permissions (AC-7). Бюджеты ready-PR — следующая
-# задача плана (issue #131, SPEC-003, всё ещё не смержена). Breaker уровня
+# --dangerously-skip-permissions (AC-7). Бюджеты задачи/прогона — issues
+# #131/#138, SPEC-003 (ещё не реализованы). Breaker уровня
 # системы — issue #135, ADR-015: красные гейты main перед каждой итерацией,
 # отказ записи журнала, серия git-конфликтов актуализации подряд. Breaker
 # уровня прогона — issue #134, ADR-016: накопленные застревания и доля
@@ -316,12 +316,12 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # (доступных задач не осталось).
 select_next() {
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
-    "$blocked_on_ready_nums" \
+    "$blocked_on_ready_nums" "$merged_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv = sys.argv[1:7]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[7:11]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv = sys.argv[1:8]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[8:12]
 
 
 def csv_ints(s):
@@ -332,12 +332,23 @@ handled = csv_ints(handled_csv)
 unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
 ready_now = csv_ints(ready_csv)
 prev_blocked_on_ready = csv_ints(prev_bor_csv)
+merged_now = csv_ints(merged_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
 issues.sort(key=lambda it: it["number"])
 
-open_numbers = {it["number"] for it in issues}
+# issues_file — снимок "gh issue list --state open" на старте прогона
+# (не перезапрашивается между итерациями), поэтому смерженный этим прогоном
+# issue остаётся в снимке как «открытый». merged_now вычитается из
+# open_numbers (issue #129, ADR-019 §10): "Blocked by #<смерженный>" не
+# должен вечно висеть неразрешённым блокером — merge закрывает issue на
+# GitHub (Closes #N в теле PR, конвенция шага 5 commands/work.md) так же
+# определённо, как issue, отсутствующий в снимке вовсе. Без вычитания
+# зависимая задача не становится ни NEXT, ни blocked-on-ready (у неё нет
+# собственного ready-PR, чтобы попасть в эту ветку) и молча выпадает из
+# сводки прогона — регрессия ADR-014/issue #147 для новой ветки исходов.
+open_numbers = {it["number"] for it in issues} - merged_now
 
 
 def blockers(body):
@@ -536,7 +547,7 @@ except Exception:
 ' "$issue_num"
 }
 
-# resolve_ready_pr <issue_num> <issue_type> — исход «PR ready» (issue #129,
+# resolve_ready_pr <issue_num> — исход «PR ready» (issue #129,
 # SPEC-003 AC-1, ADR-019): решает, мержить ли ready-PR по политике проекта,
 # и при необходимости актуализирует ветку и мержит. Печатает ровно одну из
 # трёх строк (тот же приём, что SKIP/BLOCKED_ON_READY у select_next — вызывающий
@@ -555,8 +566,9 @@ except Exception:
 # каждого пункта):
 # - ralph не знает mergeStateStatus заранее и не сидит на ветке PR между
 #   итерациями — конфликтность/ветка берутся явным `gh pr view`, отставание —
-#   явным `git fetch` + `git rev-list origin/<ветка>..origin/main` (тот же
-#   приём, что шаг 3 /autopilot, не от HEAD);
+#   явным `git fetch` + `git rev-list origin/<ветка>..origin/<default_branch>`
+#   (тот же приём, что шаг 3 /autopilot, не от HEAD; `default_branch` — та
+#   же переменная, что ADR-007 §6, не хардкод "main");
 # - `gh pr view --json mergeable` иногда отвечает "UNKNOWN", пока GitHub
 #   считает mergeability — до 3 попыток с паузой 1с (ADR-019 §2), после чего
 #   неопределённость — тоже причина застревания, не бесконечный ретрай;
@@ -651,12 +663,23 @@ resolve_ready_pr() {
     printf 'STUCK не удалось обновить origin (git fetch)'
     return 0
   fi
-  local behind
-  behind=$(cd "$root" && git rev-list --count "origin/$pr_branch..origin/main" 2>/dev/null)
-  behind="${behind:-0}"
+  # default_branch — та же переменная, что вычисляет цикл ниже фактически
+  # (ADR-007 §6, `git symbolic-ref --short refs/remotes/origin/HEAD`, не
+  # хардкод "main"): она уже присвоена глобально к моменту вызова этой
+  # функции (вызывается только изнутри цикла, после присваивания). Отказ
+  # или пустой/нечисловой вывод rev-list — неопределённое состояние
+  # отставания, не «ветка актуальна»: fail-open здесь означал бы merge без
+  # актуализации и без повторного прогона гейтов (круг 1 ревью PR #195).
+  local behind behind_rc
+  behind=$(cd "$root" && git rev-list --count "origin/$pr_branch..origin/$default_branch" 2>/dev/null)
+  behind_rc=$?
   case "$behind" in
-    ''|*[!0-9]*) behind=0 ;;
+    ''|*[!0-9]*) behind_rc=1 ;;
   esac
+  if [ "$behind_rc" -ne 0 ]; then
+    printf 'STUCK не удалось определить отставание ветки (git rev-list)'
+    return 0
+  fi
 
   if [ "$behind" -gt 0 ]; then
     # Способ актуализации — conventions.branchUpdate, тот же атрибут, что шаг
@@ -678,10 +701,10 @@ resolve_ready_pr() {
 
     local update_rc
     if [ "$branch_update" = "merge" ]; then
-      (cd "$root" && git merge origin/main) >"$work_dir/git-update-merge.err" 2>&1
+      (cd "$root" && git merge "origin/$default_branch") >"$work_dir/git-update-merge.err" 2>&1
       update_rc=$?
     else
-      (cd "$root" && git rebase origin/main) >"$work_dir/git-update-merge.err" 2>&1
+      (cd "$root" && git rebase "origin/$default_branch") >"$work_dir/git-update-merge.err" 2>&1
       update_rc=$?
     fi
     if [ "$update_rc" -ne 0 ]; then
@@ -727,13 +750,16 @@ resolve_ready_pr() {
   # Флаг слияния — производная conventions.squash × conventions.branchUpdate
   # (adk_config_merge_method, lib/config.sh), не хардкод squash (issue #129
   # DoD: «не зашивать squash»).
+  # adk_merge_method (lib/config.sh) — чистая функция, печатает ровно одно
+  # из трёх значений ниже (нет четвёртого случая для defensive-ветки: круг
+  # 1 ревью PR #195 — defensive `*) --squash` сама была бы хардкодом,
+  # которого просит избежать issue #129 DoD).
   local merge_method merge_flag
   merge_method=$(adk_config_merge_method)
   case "$merge_method" in
     squash-merge) merge_flag="--squash" ;;
     rebase-merge) merge_flag="--rebase" ;;
     merge-commit) merge_flag="--merge" ;;
-    *) merge_flag="--squash" ;;
   esac
 
   if ! (cd "$root" && gh pr merge "$pr_number" "$merge_flag" --delete-branch) \
