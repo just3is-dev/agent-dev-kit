@@ -3545,29 +3545,42 @@ assert_contains "issue #146: adk-ralph: очередь берёт #701" "$ralph_
 assert_contains "issue #146: adk-ralph: очередь берёт #702" "$ralph_blk_out" "#702"
 assert_contains "issue #146: adk-ralph: ни одна задача не застряла (все три блокера учтены верно)" \
   "$ralph_blk_out" "Застряло: нет"
+
+# По ADR-014 #500-#502 легально уходят в blocked-on-ready (их реальный
+# блокер стал ready), не пропадают молча — проверяем, что каждый привязан
+# именно к своему (второму) номеру, извлечённому регэкспом #146.
+ralph_blk_ready_line=$(printf '%s' "$ralph_blk_out" | grep '^Ready (ждут человека):')
+ralph_blk_bor_line=$(printf '%s' "$ralph_blk_out" | grep '^Заблокировано ready-PR блокера:')
 assert_not_contains "issue #146: adk-ralph: #500 (Blocked by #199 and #700, словесный разделитель) не выбрана как NEXT — #700 всё ещё открыт" \
-  "$ralph_blk_out" "#500"
-assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) остаётся заблокированной, как раньше" \
-  "$ralph_blk_out" "#501"
-assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) остаётся заблокированной, как раньше" \
-  "$ralph_blk_out" "#502"
+  "$ralph_blk_ready_line" "#500"
+assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) не выбрана как NEXT" \
+  "$ralph_blk_ready_line" "#501"
+assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) не выбрана как NEXT" \
+  "$ralph_blk_ready_line" "#502"
+assert_contains "issue #146: adk-ralph: #500 верно привязан к своему настоящему (второму) блокеру #700 — уходит в blocked-on-ready, не теряется" \
+  "$ralph_blk_bor_line" "#500"
+assert_contains "issue #146: adk-ralph: #501 верно привязан к #701 — blocked-on-ready" \
+  "$ralph_blk_bor_line" "#501"
+assert_contains "issue #146: adk-ralph: #502 верно привязан к #702 (раздельные строки Blocked by) — blocked-on-ready" \
+  "$ralph_blk_bor_line" "#502"
+
+claude_blk_calls=$(cat "$RBIN_BLK/claude-calls.log" 2>/dev/null | grep -c .)
+assert_exit "issue #146: adk-ralph: headless-процесс не вызван ни разу (все шесть issues разрешились через reused-ready/blocked-on-ready, ни одна не стала NEXT)" \
+  0 "$claude_blk_calls"
 
 ralph_blk_log=$(cat "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
-blk_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+blk_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
-  'event=task|issue=700|type=task|result=ready' \
-  'event=task|issue=701|type=task|result=ready' \
-  'event=task|issue=702|type=task|result=ready' \
-  'event=run_end|done=0|ready=3|stuck=0|skipped=0|reason=очередь пуста')
-blk_valid=$(jsonl_check "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 5 "$blk_spec")
-assert_exit "issue #146: adk-ralph: журнал — run_start, #700/#701/#702 ready, run_end без stuck/skipped, ничего по #500-#502" \
+  'event=task|issue=700|type=task|result=ready|reused=true' \
+  'event=task|issue=500|type=task|result=blocked-on-ready' \
+  'event=task|issue=701|type=task|result=ready|reused=true' \
+  'event=task|issue=501|type=task|result=blocked-on-ready' \
+  'event=task|issue=702|type=task|result=ready|reused=true' \
+  'event=task|issue=502|type=task|result=blocked-on-ready' \
+  'event=run_end|done=0|ready=3|stuck=0|skipped=0|blocked_on_ready=3')
+blk_valid=$(jsonl_check "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 8 "$blk_spec")
+assert_exit "issue #146: adk-ralph: журнал — #700/#701/#702 ready(reused), #500/#501/#502 blocked-on-ready каждый сразу за своим блокером, run_end без stuck/skipped, blocked_on_ready=3" \
   1 "$blk_valid"
-assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #500" \
-  "$ralph_blk_log" '"issue": "500"'
-assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #501" \
-  "$ralph_blk_log" '"issue": "501"'
-assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #502" \
-  "$ralph_blk_log" '"issue": "502"'
 
 # ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
 # issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
@@ -3747,9 +3760,7 @@ cat > "$RBIN_CHECKOUTFAIL/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_CHECKOUTFAIL/prs-fixture.json" <<'EOF'
-[
-  {"number": 901, "isDraft": false, "headRefName": "issue-801-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL/issues-fixture.json" "$RBIN_CHECKOUTFAIL/prs-fixture.json"
 claude_stub_guard "$RBIN_CHECKOUTFAIL"
@@ -3761,6 +3772,9 @@ if [ "$issue_num" = "801" ]; then
   echo committed-change > seed.txt
   git -c user.email=t@t -c user.name=t add seed.txt
   git -c user.email=t@t -c user.name=t commit -q -m "task change"
+  cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 901, "isDraft": false, "headRefName": "issue-801-x"}]
+PRJSON
   echo dirty-uncommitted >> seed.txt
 fi
 exit 0
@@ -3925,10 +3939,7 @@ cat > "$RBIN_DEFBRANCH/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_DEFBRANCH/prs-fixture.json" <<'EOF'
-[
-  {"number": 721, "isDraft": false, "headRefName": "issue-621-x"},
-  {"number": 722, "isDraft": false, "headRefName": "issue-622-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_DEFBRANCH" "$RBIN_DEFBRANCH/issues-fixture.json" "$RBIN_DEFBRANCH/prs-fixture.json"
 claude_stub_guard "$RBIN_DEFBRANCH"
@@ -3936,6 +3947,10 @@ cat >> "$RBIN_DEFBRANCH/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
 git checkout -q -b "issue-${issue_num}-x"
+pr_num=$((720 + issue_num - 620))
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": $pr_num, "isDraft": false, "headRefName": "issue-${issue_num}-x"}]
+PRJSON
 exit 0
 EOF
 chmod +x "$RBIN_DEFBRANCH/claude"
