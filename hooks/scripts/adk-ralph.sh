@@ -967,6 +967,44 @@ run_main_gates() {
   return 0
 }
 
+# ── Бюджеты времени (issue #131, SPEC-003 «Жёсткие бюджеты», временная
+# половина AC-3; ADR-017) — в отличие от breaker'ов выше, это не реакция на
+# содержимое очереди issues, а безусловный потолок длительности: одной
+# задачи (task_budget_seconds) и прогона целиком (run_budget_seconds).
+# adk_budget_seconds <путь> <дефолт-минуты> — печатает валидированный бюджет
+# в целых секундах ($SECONDS — bash-таймер целых секунд, секунды здесь
+# внутреннее удобство измерения, конфиг остаётся в минутах, докс —
+# docs/config.md). Ноль, отрицательное и нечисловое значение — та же
+# дисциплина, что у run_breaker_check_stuck/run_breaker_check_skipped_share
+# выше: предупреждение в stderr, использован дефолт. Ноль/отрицательное — не
+# «без лимита» (ADR-017 §3): бюджеты спеки жёсткие, спека не описывает
+# способа их отключить.
+adk_budget_seconds() {
+  local path="$1" default_minutes="$2" raw
+  raw=$(adk_config_get "$path" "$default_minutes")
+  python3 -c '
+import sys
+path, raw, default_minutes = sys.argv[1:4]
+try:
+    minutes = float(raw)
+    if minutes <= 0:
+        raise ValueError
+except (TypeError, ValueError):
+    sys.stderr.write(
+        "adk-ralph: %s=%r — не положительное число минут, использован дефолт %s\n"
+        % (path, raw, default_minutes)
+    )
+    minutes = float(default_minutes)
+print(max(1, int(round(minutes * 60))))
+' "$path" "$raw" "$default_minutes"
+}
+
+task_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.task.maxMinutes" "45")
+run_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.run.maxMinutes" "240")
+# Снимок $SECONDS перед стартом цикла — элапсед прогона везде далее считается
+# относительно этой точки, не относительно старта самого интерпретатора bash.
+run_start_seconds=$SECONDS
+
 # ── Цикл ──────────────────────────────────────────────────────────────────
 # exit_code уже != 0 здесь, если gh issue list выше не удался или отказала
 # запись event=run_start в журнал (journal_break, issue #135) —
@@ -989,11 +1027,29 @@ while [ "$exit_code" -eq 0 ]; do
   run_breaker_reason=""
 
   # Системный breaker «красные гейты main» — перед стартом КАЖДОЙ итерации,
-  # раньше выбора следующей задачи (issue #135): красные гейты запрещают
-  # итерацию немедленно, безусловно, даже если следующим шагом был бы
-  # просто SKIP/BLOCKED_ON_READY без единого вызова claude.
+  # раньше выбора следующей задачи (issue #135) и раньше бюджета прогона
+  # ниже: красные гейты запрещают итерацию немедленно, безусловно, даже
+  # если следующим шагом был бы просто SKIP/BLOCKED_ON_READY без единого
+  # вызова claude. Порядок относительно бюджета прогона — тем же принципом,
+  # что и actualization_breaker_tripped vs run_breaker_reason в хвосте
+  # итерации ниже: системный уровень (инфраструктура прогона сломана)
+  # серьёзнее, чем run-уровень (бюджеты/breaker'ы содержимого очереди),
+  # поэтому при коллизии сводка обязана называть системный breaker, не
+  # исчерпанный бюджет прогона (ADR-017 §2).
   if ! run_main_gates; then
     stop_reason="системный breaker: красные гейты main"
+    exit_code=1
+    break
+  fi
+
+  # Бюджет прогона (issue #131, ADR-017 §2) — после стоп-файла и системного
+  # breaker'а, но раньше выбора следующей задачи: исчерпание не обрывает уже
+  # выполняемую задачу (она обработана предыдущей итерацией до этой точки),
+  # а лишь запрещает НАЧАТЬ следующую — чистая остановка, текущая задача
+  # доведена до вердикта. Сравнение >= (не >): исчерпание ровно на границе
+  # выбора тоже останавливает цикл.
+  if [ $((SECONDS - run_start_seconds)) -ge "$run_budget_seconds" ]; then
+    stop_reason="бюджет прогона по времени"
     exit_code=1
     break
   fi
@@ -1120,27 +1176,72 @@ while [ "$exit_code" -eq 0 ]; do
 Инструкция ралфа (adk-ralph.sh, issue #139, SPEC-003): выполни шаги выше
 целиком для задачи issue #$issue_num. Путь к проекту: $root."
 
-    (cd "$root" && claude -p "$prompt")
-    claude_rc=$?
-    if [ "$claude_rc" -ne 0 ]; then
-      # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
-      # разово споткнулся) — до find_pr_state дела не дошло, значит нет и
-      # факта «PR не создан» (ADR-007 §4, тот же принцип, что ниже для gh
-      # pr list). Останавливаем прогон целиком: причина обычно не
-      # специфична для этого issue и повторится на следующей итерации тем
-      # же образом — не штампуем needs-human вслепую по всей очереди.
-      echo "adk-ralph: claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num — прогон остановлен." >&2
-      stop_reason="claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num"
-      exit_code=1
-      # Возврат дерева на default branch — тот же путь, что и в конце штатной
-      # итерации (issue #144, п.2): без него дерево осталось бы на ветке
-      # задачи, на которую переключился claude -p до сбоя. Отказ здесь не
-      # переопределяет stop_reason выше (сбой claude -p — первичная причина
-      # остановки), но всё равно печатает своё громкое предупреждение.
-      return_to_default_branch || true
-      break
+  # Бюджет задачи (issue #131, ADR-017 §1) — claude -p запускается в фоне
+  # (exec в подпроцессе — $claude_pid остаётся PID'ом самого claude,
+  # независимо от версии bash, а не прослойки subshell), опрос $SECONDS
+  # каждые 0.2s решает, жив ли ещё процесс и не истёк ли бюджет. Превышение
+  # — SIGTERM, до пяти опросов на грациозное завершение, затем безусловный
+  # SIGKILL: headless-процесс не обязан реагировать на SIGTERM мгновенно.
+  task_iter_start=$SECONDS
+  (cd "$root" || exit 1; exec claude -p "$prompt") &
+  claude_pid=$!
+  task_budget_hit=0
+  # Группа с общим `2>/dev/null` (не редирект на отдельных строках) —
+  # убитый SIGTERM/SIGKILL background job заставляет сам bash напечатать
+  # своё системное «Terminated: 15  ( ... )» в stderr текущего процесса при
+  # первой же проверке статуса задачи (kill -0/wait), не как вывод самой
+  # команды kill/wait — редирект только на строке wait его не перехватывает,
+  # нужна вся группа целиком (проверено эмпирически на bash 3.2 и 5).
+  {
+    while kill -0 "$claude_pid" 2>/dev/null; do
+      if [ $((SECONDS - task_iter_start)) -ge "$task_budget_seconds" ]; then
+        task_budget_hit=1
+        kill "$claude_pid" 2>/dev/null || true
+        break
+      fi
+      sleep 0.2
+    done
+    if [ "$task_budget_hit" -eq 1 ]; then
+      for _ in 1 2 3 4 5; do
+        kill -0 "$claude_pid" 2>/dev/null || break
+        sleep 0.2
+      done
+      kill -9 "$claude_pid" 2>/dev/null || true
     fi
+    wait "$claude_pid"
+    claude_rc=$?
+  } 2>/dev/null
 
+  if [ "$task_budget_hit" -eq 0 ] && [ "$claude_rc" -ne 0 ]; then
+    # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
+    # разово споткнулся) — до find_pr_state дела не дошло, значит нет и
+    # факта «PR не создан» (ADR-007 §4, тот же принцип, что ниже для gh
+    # pr list). Останавливаем прогон целиком: причина обычно не
+    # специфична для этого issue и повторится на следующей итерации тем
+    # же образом — не штампуем needs-human вслепую по всей очереди.
+    echo "adk-ralph: claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num — прогон остановлен." >&2
+    stop_reason="claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num"
+    exit_code=1
+    # Возврат дерева на default branch — тот же путь, что и в конце штатной
+    # итерации (issue #144, п.2): без него дерево осталось бы на ветке
+    # задачи, на которую переключился claude -p до сбоя. Отказ здесь не
+    # переопределяет stop_reason выше (сбой claude -p — первичная причина
+    # остановки), но всё равно печатает своё громкое предупреждение.
+    return_to_default_branch || true
+    break
+  fi
+
+  if [ "$task_budget_hit" -eq 1 ]; then
+    # Бюджет задачи по времени превышен — застревание уровня задачи (ADR-017
+    # §1), НЕ остановка всего прогона в отличие от обычного сбоя claude -p
+    # выше: find_pr_state не вызывается вовсе (состояние PR после прерванного
+    # процесса не имеет значения — исход зафиксирован причиной budget), пути
+    # ниже сходятся в тот же stuck-код, что и «PR остался черновиком»/«PR не
+    # создан».
+    echo "adk-ralph: claude -p превысил бюджет задачи по времени" \
+      "(${task_budget_seconds}s) при issue #$issue_num — процесс прерван." >&2
+    pr_state="budget-exceeded"
+  else
     pr_state=$(find_pr_state "$issue_num")
 
     if [ "$pr_state" = "error" ]; then
@@ -1157,6 +1258,7 @@ while [ "$exit_code" -eq 0 ]; do
       break
     fi
   fi
+fi
 
   handled=$(csv_add "$handled" "$issue_num")
 
@@ -1170,7 +1272,9 @@ while [ "$exit_code" -eq 0 ]; do
       break
     fi
   else
-    if [ "$pr_state" = "draft" ]; then
+    if [ "$pr_state" = "budget-exceeded" ]; then
+      reason="бюджет задачи по времени"
+    elif [ "$pr_state" = "draft" ]; then
       reason="PR остался черновиком"
     else
       reason="PR не создан"

@@ -6413,6 +6413,211 @@ ralph_mb_log=$(cat "$TMP/ralph-mb-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev
 assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит запись по #2081 (не пропала молча)" \
   "$ralph_mb_log" '"issue": "2081"'
 
+# ── issue #131, ADR-017: бюджет времени на задачу — превышение прерывает
+# claude -p (SIGTERM/SIGKILL, стаб #911 сам заменяет себя на `sleep 5`),
+# застревание уровня задачи (needs-human, уведомление, result=stuck с
+# причиной), цикл ПРОДОЛЖАЕТСЯ — независимый #912 всё равно исполняется и
+# получает ready ────────────────────────────────────────────────────────────
+RALPH_BUDGET_TASK="$TMP/ralph-budget-task-proj"
+RBIN_BUDGET_TASK="$TMP/ralph-budget-task-bin"
+mkdir -p "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK"
+(cd "$RALPH_BUDGET_TASK" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_TASK/issues-fixture.json" <<'EOF'
+[
+  {"number": 911, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 912, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_TASK/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_TASK" "$RBIN_BUDGET_TASK/issues-fixture.json" "$RBIN_BUDGET_TASK/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_TASK"
+cat >> "$RBIN_BUDGET_TASK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  911)
+    # #911 — «завис»: заменяет себя на sleep, дольше бюджета задачи ниже
+    # (1s). exec — не форк, PID стаба остаётся PID'ом sleep, adk-ralph.sh
+    # прерывает его напрямую SIGTERM/SIGKILL.
+    exec sleep 5
+    ;;
+  912)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9912, "isDraft": false, "headRefName": "issue-912-x"}]
+PRJSON
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_TASK/claude"
+
+RALPH_BUDGET_TASK_CFG="$TMP/ralph-budget-task-config.json"
+cat > "$RALPH_BUDGET_TASK_CFG" <<'EOF'
+{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.02}}}}}
+EOF
+
+RALPH_BUDGET_TASK_LOGS="$TMP/ralph-budget-task-logs"
+RALPH_BUDGET_TASK_NOTIFY="$TMP/ralph-budget-task-notify.log"
+
+ralph_budget_task_out=$(cd "$RALPH_BUDGET_TASK" && PATH="$RBIN_BUDGET_TASK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_TASK" \
+  ADK_LOGS_DIR="$RALPH_BUDGET_TASK_LOGS" ADK_CONFIG_FILE="$RALPH_BUDGET_TASK_CFG" \
+  ADK_NOTIFY_FILE="$RALPH_BUDGET_TASK_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи превышен — прогон всё равно доигрывает очередь до конца (exit 0)" \
+  0 $?
+assert_contains "AC-3: adk-ralph: (issue #131) сводка называет застрявшую по бюджету задачу с причиной" \
+  "$ralph_budget_task_out" "#911 (бюджет задачи по времени)"
+assert_contains "AC-3: adk-ralph: (issue #131) сводка перечисляет ready-задачу #912 — цикл продолжился" \
+  "$ralph_budget_task_out" "#912"
+
+budget_task_call_count=$(cat "$RBIN_BUDGET_TASK/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #131) headless-процесс вызван дважды — #912 исполнен, не пропущен" \
+  2 "$budget_task_call_count"
+
+budget_task_edit_log=$(cat "$RBIN_BUDGET_TASK/issue-edit.log" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) #911 помечен needs-human из-за бюджета задачи" \
+  "$budget_task_edit_log" "issue edit 911 --add-label needs-human"
+budget_task_notify=$(cat "$RALPH_BUDGET_TASK_NOTIFY" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) уведомление о застревании #911 называет бюджет задачи" \
+  "$budget_task_notify" "issue #911 застрял: бюджет задачи по времени"
+
+budget_task_log="$RALPH_BUDGET_TASK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+budget_task_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=911|type=task|result=stuck|reason=бюджет задачи по времени' \
+  'event=task|issue=912|type=task|result=ready' \
+  'event=run_end|done=0|ready=1|stuck=1|reason=очередь пуста')
+budget_task_valid=$(jsonl_check "$budget_task_log" 4 "$budget_task_spec")
+assert_exit "AC-3: adk-ralph: (issue #131) журнал — #911 stuck с причиной бюджета, #912 ready, run_end «очередь пуста»" \
+  1 "$budget_task_valid"
+
+# ── issue #131, ADR-017: бюджет времени на прогон — превышение чисто
+# останавливает цикл: ТЕКУЩАЯ задача (#921, медленнее бюджета прогона, но
+# быстрее бюджета задачи — переходное состояние «остаток бюджета прогона
+# меньше бюджета задачи») доводится до вердикта (event=task result=ready),
+# СЛЕДУЮЩАЯ (#922) не начинается вовсе ─────────────────────────────────────
+RALPH_BUDGET_RUN="$TMP/ralph-budget-run-proj"
+RBIN_BUDGET_RUN="$TMP/ralph-budget-run-bin"
+mkdir -p "$RALPH_BUDGET_RUN" "$RBIN_BUDGET_RUN"
+(cd "$RALPH_BUDGET_RUN" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_RUN/issues-fixture.json" <<'EOF'
+[
+  {"number": 921, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 922, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_RUN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_RUN" "$RBIN_BUDGET_RUN/issues-fixture.json" "$RBIN_BUDGET_RUN/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_RUN"
+cat >> "$RBIN_BUDGET_RUN/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  921)
+    # 2s реальной работы — дольше дефолтного бюджета прогона ниже (1s), но
+    # на порядки быстрее дефолтного бюджета задачи (45 минут): задача
+    # обязана доиграть до ready, не быть прерванной по budget задачи.
+    sleep 2
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9921, "isDraft": false, "headRefName": "issue-921-x"}]
+PRJSON
+    exit 0
+    ;;
+  922)
+    echo "922 NOT SUPPOSED TO RUN" >> "$d/claude-calls.log"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_RUN/claude"
+
+RALPH_BUDGET_RUN_CFG="$TMP/ralph-budget-run-config.json"
+cat > "$RALPH_BUDGET_RUN_CFG" <<'EOF'
+{"policies": {"autopilot": {"budget": {"run": {"maxMinutes": 0.0166667}}}}}
+EOF
+
+RALPH_BUDGET_RUN_LOGS="$TMP/ralph-budget-run-logs"
+RALPH_BUDGET_RUN_NOTIFY="$TMP/ralph-budget-run-notify.log"
+
+ralph_budget_run_out=$(cd "$RALPH_BUDGET_RUN" && PATH="$RBIN_BUDGET_RUN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_RUN" \
+  ADK_LOGS_DIR="$RALPH_BUDGET_RUN_LOGS" ADK_CONFIG_FILE="$RALPH_BUDGET_RUN_CFG" \
+  ADK_NOTIFY_FILE="$RALPH_BUDGET_RUN_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) бюджет прогона исчерпан — прогон останавливается с ошибкой (exit 1)" \
+  1 $?
+assert_contains "AC-3: adk-ralph: (issue #131) сводка называет причину «бюджет прогона по времени»" \
+  "$ralph_budget_run_out" "бюджет прогона по времени"
+assert_contains "AC-3: adk-ralph: (issue #131) сводка перечисляет доигранную ready-задачу #921" \
+  "$ralph_budget_run_out" "#921"
+
+budget_run_call_count=$(cat "$RBIN_BUDGET_RUN/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #131) headless-процесс вызван один раз — #922 не начат вовсе" \
+  1 "$budget_run_call_count"
+assert_not_contains "AC-3: adk-ralph: (issue #131) #922 не запущен — маркер стаба отсутствует в логе" \
+  "$(cat "$RBIN_BUDGET_RUN/claude-calls.log" 2>/dev/null)" "922 NOT SUPPOSED TO RUN"
+
+budget_run_log="$RALPH_BUDGET_RUN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+budget_run_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=921|type=task|result=ready' \
+  'event=run_end|done=0|ready=1|reason=бюджет прогона по времени')
+budget_run_valid=$(jsonl_check "$budget_run_log" 3 "$budget_run_spec")
+assert_exit "AC-3: adk-ralph: (issue #131) журнал — #921 доведён до ready, run_end с причиной бюджета прогона" \
+  1 "$budget_run_valid"
+
+# ── issue #131, ADR-017 §3: ноль в конфиге — опечатка, не «без лимита»:
+# предупреждение в stderr, использован дефолт (45 минут) — быстрая задача
+# доигрывает штатно, не «застревает мгновенно» ──────────────────────────────
+RALPH_BUDGET_ZERO="$TMP/ralph-budget-zero-proj"
+RBIN_BUDGET_ZERO="$TMP/ralph-budget-zero-bin"
+mkdir -p "$RALPH_BUDGET_ZERO" "$RBIN_BUDGET_ZERO"
+(cd "$RALPH_BUDGET_ZERO" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_ZERO/issues-fixture.json" <<'EOF'
+[
+  {"number": 931, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_ZERO/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_ZERO" "$RBIN_BUDGET_ZERO/issues-fixture.json" "$RBIN_BUDGET_ZERO/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_ZERO"
+cat >> "$RBIN_BUDGET_ZERO/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9931, "isDraft": false, "headRefName": "issue-931-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_ZERO/claude"
+
+RALPH_BUDGET_ZERO_CFG="$TMP/ralph-budget-zero-config.json"
+cat > "$RALPH_BUDGET_ZERO_CFG" <<'EOF'
+{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0}}}}}
+EOF
+
+ralph_budget_zero_out=$(cd "$RALPH_BUDGET_ZERO" && PATH="$RBIN_BUDGET_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_ZERO" \
+  ADK_LOGS_DIR="$TMP/ralph-budget-zero-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_ZERO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-budget-zero-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) maxMinutes=0 — опечатка не ломает прогон (exit 0)" \
+  0 $?
+assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — предупреждение в stderr, использован дефолт" \
+  "$ralph_budget_zero_out" "не положительное число минут, использован дефолт"
+assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача доигрывает штатно до ready (дефолт, не мгновенный stuck)" \
+  "$ralph_budget_zero_out" "#931"
+assert_not_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача НЕ помечена stuck по бюджету" \
+  "$ralph_budget_zero_out" "бюджет задачи по времени"
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
