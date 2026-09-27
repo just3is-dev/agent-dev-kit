@@ -75,7 +75,6 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 1
 fi
 
-logs_dir=$(adk_logs_dir "$root")
 run_unit="autopilot-$(date +%Y-%m-%d)"
 logger="$SCRIPT_DIR/adk-log.sh"
 notifier="$SCRIPT_DIR/notify-send.sh"
