@@ -88,17 +88,13 @@ consolidate_label=$(adk_config_get "types.consolidate.label" "type:consolidate")
 handled=""  # issue-номера, по которым уже записана строка event=task
 stuck=""    # issue-номера, застрявшие в этом прогоне (needs-human поставлен)
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
-ready_nums=""  # issue-номера, ставшие ready в этом прогоне (issue #147,
-               # ADR-014) — подмножество handled; передаётся в select_next,
-               # чтобы отличить «блокер ещё не решён» от «блокер стал ready
-               # этим же прогоном, но issue блокера ещё не смерджен»
+ready_nums=""  # issue-номера, ставшие ready в этом прогоне (подмножество
+               # handled) — вход select_next для ADR-014 (issue #147)
 ready_count=0
 stuck_count=0
 skipped_count=0
-blocked_on_ready_count=0  # issue #147, ADR-014: задачи, чей единственный
-                          # путь к кандидатству блокирован issue, который
-                          # сам стал ready этим прогоном (не «застрял», не
-                          # «пропущен» — ждёт мерджа человеком)
+blocked_on_ready_count=0  # задачи, заблокированные ready-но-не-смерженным
+                          # блокером этого прогона (ADR-014, issue #147)
 ready_list=""
 stuck_summary=""
 skipped_summary=""
@@ -234,11 +230,44 @@ for it in new_skips:
     print(f"SKIP {it['number']} {type_of(it)}")
 
 excluded = handled | new_skip_numbers
+
+# issue #147, ADR-014 (круг 1 ревью PR #186 — блокер и «важно»): задача, чей
+# блокер формально ещё открыт (issue блокера не смерджен/не закрыт), по
+# прежнему не кандидат — зависимость не решена, это не аномалия. Но если
+# блокер стал ready именно этим прогоном, задача не должна молча пропасть из
+# вывода — она реально «на подвеске», готова стартовать, как только человек
+# смержит блокера. Оба условия ниже обязательны: (а) ВСЕ открытые блокеры
+# задачи должны быть resolved_ready (не «хотя бы один» — иначе задача с одним
+# ready-блокером и одним обычным ещё не тронутым блокером ложно попала бы
+# сюда вместо того, чтобы просто ждать своей очереди как всегда); (б)
+# resolved_ready — это не только issue, ставшие ready в этом прогоне
+# (ready_now), но и уже найденные blocked-on-ready задачи — фиксированная
+# точка до неподвижности, тем же приёмом, что каскад SKIP выше (иначе цепочка
+# «C заблокирован B, B заблокирован A, A стал ready» теряла бы C: B попадал
+# бы в blocked-on-ready, а C — никуда).
+resolved_ready = set(ready_now)
+blocked_on_ready_numbers = set()
+changed = True
+while changed:
+    changed = False
+    for it in issues:
+        n = it["number"]
+        if n in excluded or n in blocked_on_ready_numbers:
+            continue
+        if "needs-human" in labels_of(it):
+            continue
+        if "owner:human" in labels_of(it):
+            continue
+        open_blockers = blockers(it.get("body")) & open_numbers
+        if open_blockers and open_blockers <= resolved_ready:
+            blocked_on_ready_numbers.add(n)
+            resolved_ready.add(n)
+            changed = True
+
 candidate = None
-blocked_on_ready = []
 for it in issues:
     n = it["number"]
-    if n in excluded:
+    if n in excluded or n in blocked_on_ready_numbers:
         continue
     if "needs-human" in labels_of(it):
         continue
@@ -247,24 +276,14 @@ for it in issues:
         # но и не «застрял»/«пропущен»: остаётся открытым, дальше по циклу.
         # Дальнейшие исходы (needs-human/result=) на неё не действуют.
         continue
-    open_blockers = blockers(it.get("body")) & open_numbers
-    if open_blockers:
-        # issue #147, ADR-014: блокер формально ещё открыт (issue блокера не
-        # смерджен/не закрыт), поэтому эта задача по-прежнему не кандидат —
-        # это не баг, а корректное «зависимость не решена». Но если блокер
-        # среди тех, что стали ready именно этим прогоном, задача не должна
-        # молча пропасть из вывода (как раньше): она реально «на подвеске» —
-        # готова стартовать, как только человек смержит блокера. Обычная
-        # задача, блокированная другим ещё не тронутым issue, — не аномалия
-        # и не печатается: это просто очередь, ждущая своей итерации.
-        if open_blockers & ready_now:
-            blocked_on_ready.append(it)
+    if blockers(it.get("body")) & open_numbers:
         continue
     candidate = it
     break
 
-for it in blocked_on_ready:
-    print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
+for it in issues:
+    if it["number"] in blocked_on_ready_numbers:
+        print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
 
 if candidate:
     print(f"NEXT {candidate['number']} {type_of(candidate)}")
@@ -406,13 +425,9 @@ while [ "$exit_code" -eq 0 ]; do
         skipped_summary="$skipped_summary #$skip_num"
         ;;
       BLOCKED_ON_READY\ *)
-        # issue #147, ADR-014: блокер этой задачи стал ready именно этим
-        # прогоном, но сам ещё не смерджен — задача формально не кандидат
-        # (зависимость не решена), но и не должна пропадать из вывода
-        # молча, как раньше. handled — чтобы select_next не печатал её
-        # заново на следующей итерации (реальное решение зависимости —
-        # только мердж человеком/`/autopilot`, не что-то, что случится
-        # внутри этого прогона).
+        # ADR-014 (issue #147) — задача ждёт мерджа блокера, а не «застряла»
+        # или «пропущена». handled — чтобы select_next не печатал её заново
+        # на следующей итерации этого же прогона.
         bor_num=$(printf '%s' "$line" | awk '{print $2}')
         bor_type=$(printf '%s' "$line" | awk '{print $3}')
         "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready || true
@@ -449,15 +464,10 @@ while [ "$exit_code" -eq 0 ]; do
       ;;
   esac
 
-  # ── Предстартовая проверка PR (issue #147, ADR-014) ──────────────────────
-  # find_pr_state ДО запуска claude -p, не только после (как раньше): issue
-  # с уже открытым ready-PR (готов, не смерджен — обычно результат прошлого
-  # прогона на той же очереди, поскольку `handled` этого процесса не
-  # переживает завершение скрипта) не должен гонять work.md с нуля заново —
-  # это трата ресурсов и риск того, что шаг 2 /work вернёт уже отревьюенный
-  # PR в draft, хотя пушить нечего. "draft"/"none" — не короткое замыкание:
-  # claude -p запускается как обычно, а find_pr_state после него (ниже)
-  # видит уже актуальное состояние.
+  # ── Предстартовая проверка PR (ADR-014, issue #147) ──────────────────────
+  # find_pr_state ДО запуска claude -p, не только после: issue с уже открытым
+  # ready-PR не должен гонять work.md с нуля заново. "draft"/"none" — не
+  # короткое замыкание, claude -p запускается как обычно.
   pre_pr_state=$(find_pr_state "$issue_num")
 
   if [ "$pre_pr_state" = "error" ]; then
@@ -469,10 +479,8 @@ while [ "$exit_code" -eq 0 ]; do
   fi
 
   if [ "$pre_pr_state" = "ready" ]; then
-    # reused=true в журнале — то самое «явно логирует/помечает иначе, чем
-    # полное повторное исполнение» из DoD issue #147: result=ready тот же,
-    # что и у обычного исхода ниже, но это отличимо от «стал ready именно
-    # в этом запуске claude -p».
+    # reused=true отличает «уже был ready» от «стал ready в этом запуске»
+    # (ADR-014) — сам result тот же, что у обычного исхода ниже.
     "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true || true
     handled=$(csv_add "$handled" "$issue_num")
     ready_nums=$(csv_add "$ready_nums" "$issue_num")

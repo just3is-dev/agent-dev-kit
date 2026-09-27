@@ -3314,7 +3314,8 @@ assert_contains "AC-1: adk-ralph: сообщение об ошибке назы�
   "$ralph_cfail_out" "claude -p завершился с ошибкой (exit 1) при issue #41"
 assert_not_contains "AC-1: adk-ralph: claude -p падает — issue #41 НЕ штампуется needs-human вслепую (не «PR не создан»)" \
   "$ralph_cfail_out" "issue #41 застрял"
-pr_list_calls_cfail=$(count_lines "$RBIN_CFAIL/pr-list-calls.log" 2>/dev/null || echo 0)
+pr_list_calls_cfail=0
+[ -f "$RBIN_CFAIL/pr-list-calls.log" ] && pr_list_calls_cfail=$(count_lines "$RBIN_CFAIL/pr-list-calls.log")
 assert_exit "issue #147: adk-ralph: claude -p падает — pr list вызван ровно один раз (предстартовая проверка), не повторно после падения" \
   1 "$pr_list_calls_cfail"
 [ ! -f "$RBIN_CFAIL/issue-edit.log" ]
@@ -4102,6 +4103,116 @@ bor_spec=$(printf '%s\n%s\n%s\n%s' \
 bor_valid=$(jsonl_check "$RALPH_BOR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 4 "$bor_spec")
 assert_exit "issue #147: adk-ralph: журнал — run_start, #71 ready, #72 blocked-on-ready, run_end с blocked_on_ready=1" \
   1 "$bor_valid"
+
+# ── issue #147 (круг 1 ревью PR #186, блокер): несколько блокеров — только
+# ЧАСТЬ из них ready этим прогоном, другая застряла. #72 «Blocked by #71,
+# #73» — #71 становится ready, #73 застревает (черновик). #72 обязан
+# остаться в обычном каскаде SKIP (как на main до этого PR), а не попасть в
+# blocked-on-ready — иначе задача, реально зависящая от застрявшей, ложно
+# считалась бы «просто ждёт мерджа», занижая maxSkippedShare (issue #134) ──
+RALPH_BOR_MIX="$TMP/ralph-bor-mixed-proj"
+RBIN_BOR_MIX="$TMP/ralph-bor-mixed-bin"
+mkdir -p "$RALPH_BOR_MIX" "$RBIN_BOR_MIX"
+(cd "$RALPH_BOR_MIX" && git_c init -q -b main)
+cat > "$RBIN_BOR_MIX/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71, #73"},
+  {"number": 73, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BOR_MIX/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR_MIX" "$RBIN_BOR_MIX/issues-fixture.json" "$RBIN_BOR_MIX/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR_MIX"
+cat >> "$RBIN_BOR_MIX/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  71)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+    ;;
+  73)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}, {"number": 703, "isDraft": true, "headRefName": "issue-73-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BOR_MIX/claude"
+RALPH_BOR_MIX_LOGS="$TMP/ralph-bor-mixed-logs"
+
+ralph_bor_mix_out=$(cd "$RALPH_BOR_MIX" && PATH="$RBIN_BOR_MIX:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_MIX" \
+  ADK_LOGS_DIR="$RALPH_BOR_MIX_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-mixed-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: смешанные блокеры (один ready, другой застрял) — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: смешанные блокеры — #72 идёт в обычный каскад SKIP, не blocked-on-ready" \
+  "$ralph_bor_mix_out" "Пропущено (зависимость от застрявшей задачи):  #72"
+assert_not_contains "issue #147: adk-ralph: смешанные блокеры — #72 НЕ попадает в бакет blocked-on-ready (не все блокеры ready)" \
+  "$ralph_bor_mix_out" "Заблокировано ready-PR блокера:  #72"
+ralph_bor_mix_log=$(cat "$RALPH_BOR_MIX_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "issue #147: adk-ralph: смешанные блокеры — журнал: #72 result=skipped" \
+  "$ralph_bor_mix_log" '"issue": "72", "type": "task", "result": "skipped"'
+assert_contains "issue #147: adk-ralph: смешанные блокеры — run_end: blocked_on_ready=0" \
+  "$ralph_bor_mix_log" '"blocked_on_ready": "0"'
+
+# ── issue #147 (круг 1 ревью PR #186, «важно»): цепочка blocked-on-ready —
+# #74 «Blocked by #72», #72 «Blocked by #71», #71 становится ready этим
+# прогоном. #72 — blocked-on-ready (единственный блокер стал ready); #74
+# зависит от #72 (который сам не «застрял», а «на подвеске» из-за ready-PR)
+# — #74 обязан попасть в тот же бакет, а не пропасть из вывода/журнала
+# молча, как раньше пропадала #2 из issue #147 ──────────────────────────────
+RALPH_BOR_CHAIN="$TMP/ralph-bor-chain-proj"
+RBIN_BOR_CHAIN="$TMP/ralph-bor-chain-bin"
+mkdir -p "$RALPH_BOR_CHAIN" "$RBIN_BOR_CHAIN"
+(cd "$RALPH_BOR_CHAIN" && git_c init -q -b main)
+cat > "$RBIN_BOR_CHAIN/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"},
+  {"number": 74, "labels": [{"name":"type:bug"}], "body": "Зависит от: Blocked by #72"}
+]
+EOF
+cat > "$RBIN_BOR_CHAIN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR_CHAIN" "$RBIN_BOR_CHAIN/issues-fixture.json" "$RBIN_BOR_CHAIN/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR_CHAIN"
+cat >> "$RBIN_BOR_CHAIN/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_BOR_CHAIN/claude"
+RALPH_BOR_CHAIN_LOGS="$TMP/ralph-bor-chain-logs"
+
+ralph_bor_chain_out=$(cd "$RALPH_BOR_CHAIN" && PATH="$RBIN_BOR_CHAIN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_CHAIN" \
+  ADK_LOGS_DIR="$RALPH_BOR_CHAIN_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-chain-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: цепочка blocked-on-ready (#74 зависит от #72, #72 от ready #71) — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: цепочка — #72 в бакете blocked-on-ready" \
+  "$ralph_bor_chain_out" "Заблокировано ready-PR блокера:  #72 #74"
+assert_not_contains "issue #147: adk-ralph: цепочка — прогон не рапортует «очередь пуста»" \
+  "$ralph_bor_chain_out" "очередь пуста"
+claude_bor_chain_calls=$(cat "$RBIN_BOR_CHAIN/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #147: adk-ralph: цепочка — headless-процесс запущен ровно один раз (#72 и #74 не исполнялись, оба не кандидаты)" \
+  1 "$claude_bor_chain_calls"
+ralph_bor_chain_log=$(cat "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+bor_chain_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=71|type=task|result=ready' \
+  'event=task|issue=72|type=task|result=blocked-on-ready' \
+  'event=task|issue=74|type=bug|result=blocked-on-ready' \
+  'event=run_end|ready=1|stuck=0|skipped=0|blocked_on_ready=2')
+bor_chain_valid=$(jsonl_check "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 5 "$bor_chain_spec")
+assert_exit "issue #147: adk-ralph: журнал цепочки — #71 ready, #72 и #74 blocked-on-ready, run_end blocked_on_ready=2" \
+  1 "$bor_chain_valid"
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
