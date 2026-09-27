@@ -4659,6 +4659,16 @@ assert_not_contains "AC-5: adk-ralph: (issue #135) отказ журнала в�
 assert_not_contains "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла — #483 не залогирован (цикл остановлен до NEXT)" \
   "$midlogfail_preserved_log" '"issue": "483"'
 
+# issue #134 (ADR-016, круг ревью PR #192): #482 — SKIP, чья запись в журнал
+# отказала (проверено выше) — тем не менее назван в сводке терминала как
+# пропущенный. Симметрия с уже проверенным issue #135 поведением result=ready/
+# result=stuck (сводка не должна молчать об исходе, если журнал сломан,
+# единственный оставшийся канал) — распространена и на SKIP/BLOCKED_ON_READY
+# правкой issue #134: счётчики (handled/skipped/skipped_count/skipped_summary)
+# обновляются ДО попытки записи в журнал, а не после.
+assert_contains "AC-5: adk-ralph: (issue #134) отказ журнала на SKIP #482 — сводка терминала всё равно называет #482 пропущенным (счётчики до записи в журнал, симметрично ready/stuck)" \
+  "$ralph_midlogfail_out" "#482"
+
 # ── issue #135: breaker уровня системы №3 — серия подряд идущих
 # git-конфликтов при актуализации default branch между итерациями
 # (ADR-015: порог 2, различение через MERGE_HEAD). Настоящий клон с
@@ -4878,11 +4888,11 @@ assert_contains "AC-5: adk-ralph: (issue #134) уведомление о сра�
 # ── issue #134: переходное состояние — прогон короче минимального
 # знаменателя (4) не останавливается, даже если доля пропущенных из
 # доступных на данный момент данных уже выше порога (ADR-016 §2). issue
-# #721 без блокеров застревает; #722 «Blocked by #721» пропускается
-# каскадом — знаменатель 1+0+1=2 < 4, доля 1/2=0.5 никогда не оценивается,
-# несмотря на то что 2 из 3 (0.667) уже выше дефолтного порога 0.5, если
-# бы оценка происходила без минимума. Прогон доигрывает штатно до «очередь
-# пуста», exit 0 ─────────────────────────────────────────────────────────
+# #721 без блокеров застревает; #722,#723 «Blocked by #721» пропускаются
+# каскадом одним батчем — знаменатель 1(stuck)+0(ready)+2(skip)=3 < 4, доля
+# 2/3≈0.667 никогда не оценивается, несмотря на то что она уже выше
+# дефолтного порога 0.5, если бы оценка происходила без минимума. Прогон
+# доигрывает штатно до «очередь пуста», exit 0 ─────────────────────────────
 RALPH_RB_SMALLN="$TMP/ralph-rb-smalln-proj"
 RBIN_RB_SMALLN="$TMP/ralph-rb-smalln-bin"
 mkdir -p "$RALPH_RB_SMALLN" "$RBIN_RB_SMALLN"
@@ -4912,7 +4922,7 @@ chmod +x "$RBIN_RB_SMALLN/claude"
 ralph_rb_smalln_out=$(cd "$RALPH_RB_SMALLN" && PATH="$RBIN_RB_SMALLN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SMALLN" \
   ADK_LOGS_DIR="$TMP/ralph-rb-smalln-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-smalln-notify.log" \
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
-assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаменателя (2 задачи < 4) — не останавливается (exit 0)" \
+assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаменателя (3 задачи < 4) — не останавливается (exit 0)" \
   0 $?
 assert_contains "AC-5: adk-ralph: (issue #134) прогон короче знаменателя — доигрывает до «очередь пуста»" \
   "$ralph_rb_smalln_out" "очередь пуста"
@@ -5139,6 +5149,68 @@ assert_contains "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 — свод�
 rb_sharecfg_call_count=$(cat "$RBIN_RB_SHARECFG/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
 assert_exit "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 — headless-процесс НЕ вызван для #765 (два вызова: #761,#762)" \
   2 "$rb_sharecfg_call_count"
+
+# ── issue #134: граница строгого «>» (ADR-016 §3) — та же фикстура, что и
+# override выше (761 stuck, 762 ready, 763/764 skip, 765 indep), но БЕЗ
+# конфига (дефолт maxSkippedShare=0.5). Доля в момент первой оценки — РОВНО
+# 0.5 (не выше) — breaker НЕ должен сработать, прогон обязан продолжить и
+# взять #765, а затем штатно завершиться «очередь пуста». Регрессия против
+# «>=» вместо строгого «>» в run_breaker_check_skipped_share ───────────────
+RALPH_RB_SHARE_BOUNDARY="$TMP/ralph-rb-share-boundary-proj"
+RBIN_RB_SHARE_BOUNDARY="$TMP/ralph-rb-share-boundary-bin"
+mkdir -p "$RALPH_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY"
+(cd "$RALPH_RB_SHARE_BOUNDARY" && git_c init -q -b main)
+
+cat > "$RBIN_RB_SHARE_BOUNDARY/issues-fixture.json" <<'EOF'
+[
+  {"number": 761, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 762, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 763, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #761"},
+  {"number": 764, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #761"},
+  {"number": 765, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_SHARE_BOUNDARY/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY/issues-fixture.json" "$RBIN_RB_SHARE_BOUNDARY/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_SHARE_BOUNDARY"
+cat >> "$RBIN_RB_SHARE_BOUNDARY/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  761)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9761, "isDraft": true, "headRefName": "issue-761-x"}]
+PRJSON
+    ;;
+  762)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9761, "isDraft": true, "headRefName": "issue-761-x"}, {"number": 9762, "isDraft": false, "headRefName": "issue-762-x"}]
+PRJSON
+    ;;
+  765)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9761, "isDraft": true, "headRefName": "issue-761-x"}, {"number": 9762, "isDraft": false, "headRefName": "issue-762-x"}, {"number": 9765, "isDraft": false, "headRefName": "issue-765-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_RB_SHARE_BOUNDARY/claude"
+
+ralph_rb_share_boundary_out=$(cd "$RALPH_RB_SHARE_BOUNDARY" && PATH="$RBIN_RB_SHARE_BOUNDARY:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARE_BOUNDARY" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-share-boundary-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-share-boundary-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) доля РОВНО на дефолтном пороге 0.5 (строгое «>») — прогон НЕ останавливается (exit 0)" \
+  0 $?
+assert_contains "AC-5: adk-ralph: (issue #134) доля на пороге — доигрывает до «очередь пуста»" \
+  "$ralph_rb_share_boundary_out" "очередь пуста"
+assert_not_contains "AC-5: adk-ralph: (issue #134) доля на пороге — breaker доли пропущенных не срабатывает (строгое «>», не «>=»)" \
+  "$ralph_rb_share_boundary_out" "breaker: доля пропущенных"
+rb_share_boundary_call_count=$(cat "$RBIN_RB_SHARE_BOUNDARY/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) доля на пороге — headless-процесс вызван на #765 тоже (три вызова)" \
+  3 "$rb_share_boundary_call_count"
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
