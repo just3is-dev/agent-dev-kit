@@ -3381,6 +3381,79 @@ assert_exit "AC-1 (issue #158): adk-ralph: owner:human — headless-процес
 assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-процесс не вызывался с номером #90" \
   "$oh_claude_calls" "issue #90"
 
+# ── issue #146: разбор «Blocked by #N» устойчив к любому текстовому
+# разделителю между номерами, не только запятой/пробелу. #500 объявляет
+# блокеры словом («#199 and #700»), #501 — запятой («#199, #701», уже
+# работавший формат), #502 — раздельными строками («#199» и «#702» на
+# разных строках, тоже уже работавший формат). #199 нигде не встречается
+# среди открытых issues (закрыт), #700/#701/#702 — открыты и без
+# собственных блокеров. Правильный разбор держит #500-#502 заблокированными
+# все три (не выбраны как NEXT ни разу за прогон, зависимость от второго
+# номера в каждой паре не теряется), очередь берёт только #700-#702 ────────
+RALPH_BLK="$TMP/ralph-blk-proj"
+RBIN_BLK="$TMP/ralph-blk-bin"
+mkdir -p "$RALPH_BLK" "$RBIN_BLK"
+(cd "$RALPH_BLK" && git_c init -q -b main)
+cat > "$RBIN_BLK/issues-fixture.json" <<'EOF'
+[
+  {"number": 500, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #199 and #700"},
+  {"number": 501, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #199, #701"},
+  {"number": 502, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #199\nBlocked by #702"},
+  {"number": 700, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 701, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 702, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BLK/prs-fixture.json" <<'EOF'
+[
+  {"number": 900, "isDraft": false, "headRefName": "issue-700-a"},
+  {"number": 901, "isDraft": false, "headRefName": "issue-701-b"},
+  {"number": 902, "isDraft": false, "headRefName": "issue-702-c"}
+]
+EOF
+gh_ralph_stub "$RBIN_BLK" "$RBIN_BLK/issues-fixture.json" "$RBIN_BLK/prs-fixture.json"
+claude_stub_guard "$RBIN_BLK"
+cat >> "$RBIN_BLK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+exit 0
+EOF
+chmod +x "$RBIN_BLK/claude"
+RALPH_BLK_LOGS="$TMP/ralph-blk-logs"
+
+ralph_blk_out=$(cd "$RALPH_BLK" && PATH="$RBIN_BLK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BLK" \
+  ADK_LOGS_DIR="$RALPH_BLK_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-blk-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #146: adk-ralph: словесный разделитель в «Blocked by» — прогон завершается штатно" 0 $?
+assert_contains "issue #146: adk-ralph: очередь берёт независимые #700-#702" \
+  "$ralph_blk_out" "#700"
+assert_contains "issue #146: adk-ralph: очередь берёт #701" "$ralph_blk_out" "#701"
+assert_contains "issue #146: adk-ralph: очередь берёт #702" "$ralph_blk_out" "#702"
+assert_contains "issue #146: adk-ralph: ни одна задача не застряла (все три блокера учтены верно)" \
+  "$ralph_blk_out" "Застряло: нет"
+assert_not_contains "issue #146: adk-ralph: #500 (Blocked by #199 and #700, словесный разделитель) не выбрана как NEXT — #700 всё ещё открыт" \
+  "$ralph_blk_out" "#500"
+assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) остаётся заблокированной, как раньше" \
+  "$ralph_blk_out" "#501"
+assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) остаётся заблокированной, как раньше" \
+  "$ralph_blk_out" "#502"
+
+ralph_blk_log=$(cat "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+blk_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=700|type=task|result=ready' \
+  'event=task|issue=701|type=task|result=ready' \
+  'event=task|issue=702|type=task|result=ready' \
+  'event=run_end|done=0|ready=3|stuck=0|skipped=0|reason=очередь пуста')
+blk_valid=$(jsonl_check "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 5 "$blk_spec")
+assert_exit "issue #146: adk-ralph: журнал — run_start, #700/#701/#702 ready, run_end без stuck/skipped, ничего по #500-#502" \
+  1 "$blk_valid"
+assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #500" \
+  "$ralph_blk_log" '"issue": "500"'
+assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #501" \
+  "$ralph_blk_log" '"issue": "501"'
+assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #502" \
+  "$ralph_blk_log" '"issue": "502"'
+
 # ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
 # issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
 # дороже: пропущенный в выборке PR читается как «PR не создан». Три

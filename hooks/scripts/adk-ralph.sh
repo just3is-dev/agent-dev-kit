@@ -173,8 +173,8 @@ open_numbers = {it["number"] for it in issues}
 
 def blockers(body):
     out = set()
-    for m in re.finditer(r"Blocked by\s+((?:#\d+[,\s]*)+)", body or ""):
-        out.update(int(x) for x in re.findall(r"\d+", m.group(1)))
+    for m in re.finditer(r"Blocked by\s+([^\n]*)", body or ""):
+        out.update(int(x) for x in re.findall(r"#(\d+)", m.group(1)))
     return out
 
 
