@@ -5,13 +5,15 @@
 # вручную из корня проекта: hooks/scripts/adk-ralph.sh
 #
 # issue #139 — только базовый цикл (AC-1) и запрет
-# --dangerously-skip-permissions (AC-7). Бюджеты, стоп-файл, breaker уровня
-# прогона и merge ready-PR — следующие задачи плана (issues #129-134, 138,
-# SPEC-003): эта версия после ready-PR всегда собирает задачу в список
-# «ждут человека» (result=ready, ADR-003), никогда не мержит. Breaker
-# уровня системы — issue #135, ADR-015: красные гейты main перед каждой
-# итерацией, отказ записи журнала, серия git-конфликтов актуализации
-# подряд — реализован в этой версии.
+# --dangerously-skip-permissions (AC-7). Бюджеты, стоп-файл и merge ready-PR
+# — следующие задачи плана (issues #129-131, 138, SPEC-003): эта версия
+# после ready-PR всегда собирает задачу в список «ждут человека»
+# (result=ready, ADR-003), никогда не мержит. Breaker уровня системы —
+# issue #135, ADR-015: красные гейты main перед каждой итерацией, отказ
+# записи журнала, серия git-конфликтов актуализации подряд. Breaker уровня
+# прогона — issue #134, ADR-016: накопленные застревания и доля
+# пропущенных из-за зависимостей за прогон. Оба уровня breaker'а
+# реализованы в этой версии.
 #
 # Правило выбора следующей задачи — то же, что шаг 1 commands/autopilot.md:
 # открытый issue, без метки needs-human, все «Зависит от: Blocked by #N»
@@ -114,9 +116,9 @@ exit_code=0
 # отказ записи журнала (journal_break сразу под этим блоком) и серия
 # подряд идущих git-конфликтов актуализации default branch между
 # итерациями (actualization_conflict_streak, считает return_to_default_branch
-# ниже). В отличие от breaker'а уровня прогона (issue #134, вне рамок этой
-# задачи — maxStuckPerRun/maxSkippedShare) система не разбирает содержимое
-# очереди issues, а реагирует на отказ самой инфраструктуры прогона.
+# ниже). В отличие от breaker'а уровня прогона ниже (issue #134,
+# maxStuckPerRun/maxSkippedShare) система не разбирает содержимое очереди
+# issues, а реагирует на отказ самой инфраструктуры прогона.
 actualization_conflict_streak=0
 # Порог — не атрибут конфига (в отличие от maxStuckPerRun/maxSkippedShare
 # run-уровня): системный breaker — безусловная защита инфраструктуры, не
@@ -124,6 +126,86 @@ actualization_conflict_streak=0
 # дефолт, что и у maxStuckPerRun (SPEC-003 «Стадийный circuit breaker»).
 actualization_conflict_threshold=2
 actualization_breaker_tripped=0
+
+# ── Breaker уровня прогона (issue #134, SPEC-003 «Прогон», вторая половина
+# AC-5; ADR-016) — в отличие от системного breaker'а выше, разбирает именно
+# содержимое очереди этого прогона: накопленные застревания
+# (policies.autopilot.breaker.maxStuckPerRun) и доля пропущенных
+# из-за зависимостей (policies.autopilot.breaker.maxSkippedShare).
+# run_breaker_min_denominator — минимальный знаменатель доли (ready+stuck+
+# skipped), ниже которого доля статистически не значима и не оценивается
+# вовсе; фиксированная константа, не атрибут конфига — тем же принципом,
+# что actualization_conflict_threshold выше (ADR-016 §2). run_breaker_reason
+# — сбрасывается в начале каждой итерации цикла, выставляется внутри ветки
+# result=stuck сразу после инкремента stuck_count (ADR-016 §1) и проверяется
+# после return_to_default_branch, рядом с actualization_breaker_tripped.
+run_breaker_min_denominator=4
+run_breaker_reason=""
+
+# run_breaker_check_stuck — true (exit 0), когда stuck_count достиг
+# maxStuckPerRun (дефолт 2). Вызывается ТОЛЬКО сразу после того, как
+# stuck_count уже вырос на новом result=stuck этого прогона — поэтому порог
+# 0 или 1 останавливает цикл на первом же застревании, а не до старта
+# прогона (когда stuck_count ещё 0, но функция вовсе не вызывается): условие
+# «застревания достигли порога» иначе бессмысленно проверять там, где
+# застревания ещё не было (ADR-016 §1). Неизвестное/нечисловое значение
+# конфига — предупреждение в stderr и дефолт 2 (та же дисциплина, что и
+# остальной разбор конфига в этом скрипте).
+run_breaker_check_stuck() {
+  local raw
+  raw=$(adk_config_get "policies.autopilot.breaker.maxStuckPerRun" "2")
+  python3 -c '
+import sys
+raw, stuck = sys.argv[1], int(sys.argv[2])
+try:
+    threshold = int(raw)
+    if threshold < 0:
+        raise ValueError
+except (TypeError, ValueError):
+    sys.stderr.write(
+        "adk-ralph: policies.autopilot.breaker.maxStuckPerRun=%r — не целое"
+        " неотрицательное число, использован дефолт 2\n" % (raw,)
+    )
+    threshold = 2
+sys.exit(0 if stuck >= threshold else 1)
+' "$raw" "$stuck_count"
+}
+
+# run_breaker_check_skipped_share — true (exit 0), когда доля пропущенных
+# из-за зависимостей выше maxSkippedShare (дефолт 0.5; сравнение строгое —
+# «выше», значение ровно на пороге не останавливает цикл). Знаменатель —
+# ready_count + stuck_count + skipped_count: задачи, реально доигранные до
+# исхода этим прогоном. Не включает blocked-on-ready (ADR-014: «семантически
+# не неудача») и не включает owner:human/уже-needs-human issues — они и так
+# не входят ни в один из трёх счётчиков (ADR-007, ADR-014). Ниже
+# run_breaker_min_denominator доля не оценивается вовсе, функция
+# безусловно возвращает false — вызывается на входе каждой итерации, не
+# только сразу после каскада SKIP: доля способна впервые достичь минимума
+# знаменателя и на исходе ready/stuck обычной задачи, не только на пропуске
+# (ADR-016 §2-3).
+run_breaker_check_skipped_share() {
+  local raw total
+  raw=$(adk_config_get "policies.autopilot.breaker.maxSkippedShare" "0.5")
+  total=$((ready_count + stuck_count + skipped_count))
+  python3 -c '
+import sys
+raw, skipped, total, min_denominator = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+try:
+    threshold = float(raw)
+    if threshold < 0:
+        raise ValueError
+except (TypeError, ValueError):
+    sys.stderr.write(
+        "adk-ralph: policies.autopilot.breaker.maxSkippedShare=%r — не число,"
+        " использован дефолт 0.5\n" % (raw,)
+    )
+    threshold = 0.5
+if total < min_denominator:
+    sys.exit(1)
+share = skipped / total
+sys.exit(0 if share > threshold else 1)
+' "$raw" "$skipped_count" "$total" "$run_breaker_min_denominator"
+}
 
 journal_break() { # journal_break — общая точка остановки на отказе
   # adk-log.sh (issue #135): здесь журнал — несущая часть предохранителей,
@@ -502,6 +584,10 @@ run_main_gates() {
 # (stop_reason уже выставлен тем же путём) — цикл в этом случае не
 # стартует вовсе, run_end/уведомление печатает общий хвост ниже.
 while [ "$exit_code" -eq 0 ]; do
+  # Сброс на каждую итерацию (issue #134, ADR-016): выставляется только
+  # внутри ветки result=stuck этой же итерации, ниже.
+  run_breaker_reason=""
+
   # Системный breaker «красные гейты main» — перед стартом КАЖДОЙ итерации,
   # раньше выбора следующей задачи (issue #135): красные гейты запрещают
   # итерацию немедленно, безусловно, даже если следующим шагом был бы
@@ -519,29 +605,37 @@ while [ "$exit_code" -eq 0 ]; do
       SKIP\ *)
         skip_num=$(printf '%s' "$line" | awk '{print $2}')
         skip_type=$(printf '%s' "$line" | awk '{print $3}')
-        if ! "$logger" "$run_unit" event=task issue="$skip_num" type="$skip_type" result=skipped; then
-          journal_break
-          break
-        fi
+        # Счётчики — до записи в журнал, той же логикой и по той же причине,
+        # что и у result=ready/result=stuck (issue #135, круг 1 ревью PR #191:
+        # если "$logger" ниже откажет, сводка/уведомление — единственный
+        # оставшийся канал — не должны потерять пропущенную задачу молча).
+        # До этой правки (issue #134) SKIP/BLOCKED_ON_READY обновляли счётчики
+        # ПОСЛЕ записи — асимметрия с уже исправленными ready/stuck, замеченная
+        # круг 1 ревью PR #191 как отдельная находка вне рамок той задачи.
         handled=$(csv_add "$handled" "$skip_num")
         skipped=$(csv_add "$skipped" "$skip_num")
         skipped_count=$((skipped_count + 1))
         skipped_summary="$skipped_summary #$skip_num"
+        if ! "$logger" "$run_unit" event=task issue="$skip_num" type="$skip_type" result=skipped; then
+          journal_break
+          break
+        fi
         ;;
       BLOCKED_ON_READY\ *)
         # ADR-014 (issue #147) — задача ждёт мерджа блокера, а не «застряла»
         # или «пропущена». handled — чтобы select_next не печатал её заново
-        # на следующей итерации этого же прогона.
+        # на следующей итерации этого же прогона. Счётчики до записи в
+        # журнал — та же симметрия с ready/stuck/skipped, что и выше.
         bor_num=$(printf '%s' "$line" | awk '{print $2}')
         bor_type=$(printf '%s' "$line" | awk '{print $3}')
-        if ! "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready; then
-          journal_break
-          break
-        fi
         handled=$(csv_add "$handled" "$bor_num")
         blocked_on_ready_nums=$(csv_add "$blocked_on_ready_nums" "$bor_num")
         blocked_on_ready_count=$((blocked_on_ready_count + 1))
         blocked_on_ready_summary="$blocked_on_ready_summary #$bor_num"
+        if ! "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready; then
+          journal_break
+          break
+        fi
         ;;
     esac
   done <<<"$select_out"
@@ -551,6 +645,17 @@ while [ "$exit_code" -eq 0 ]; do
   # `break` останавливает и внешний цикл, чтобы не дойти до NEXT/claude -p
   # с уже выставленным exit_code (issue #135).
   if [ "$exit_code" -ne 0 ]; then
+    break
+  fi
+
+  # Breaker уровня прогона — доля пропущенных (issue #134, ADR-016 §2-3).
+  # Проверяется на входе каждой итерации, не только сразу после каскада
+  # SKIP выше: знаменатель доли способен впервые достичь минимума и на
+  # исходе обычной ready/stuck задачи ниже по циклу (без единого нового
+  # SKIP в этой итерации).
+  if run_breaker_check_skipped_share; then
+    stop_reason="breaker: доля пропущенных за прогон"
+    exit_code=1
     break
   fi
 
@@ -698,6 +803,17 @@ while [ "$exit_code" -eq 0 ]; do
       return_to_default_branch || true
       break
     fi
+    # Breaker уровня прогона — накопленные застревания (issue #134,
+    # ADR-016 §1). Проверяется сразу после инкремента stuck_count выше
+    # (не в ready-ветке), поэтому порог 0/1 не может сработать до первого
+    # реального застревания этого прогона. Само срабатывание откладывается
+    # до общей точки ниже (после return_to_default_branch, рядом с
+    # actualization_breaker_tripped) — claude -p уже отработал на ветке
+    # задачи, дерево обязано вернуться на default branch прежде, чем цикл
+    # остановится.
+    if run_breaker_check_stuck; then
+      run_breaker_reason="breaker: застревания за прогон"
+    fi
   fi
 
   # Возврат дерева на default branch между итерациями — см.
@@ -721,8 +837,24 @@ while [ "$exit_code" -eq 0 ]; do
     # Системный breaker «серия git-конфликтов при актуализации подряд»
     # (issue #135, SPEC-003 «Система», ADR-015) — return_to_default_branch
     # выше насчитала actualization_conflict_threshold конфликтов слияния
-    # подряд при `git pull` default branch между итерациями.
+    # подряд при `git pull` default branch между итерациями. Проверяется
+    # раньше breaker'а уровня прогона ниже — системный уровень серьёзнее
+    # (ADR-015/ADR-016), хотя оба триггера в одной итерации практически не
+    # пересекаются.
     stop_reason="системный breaker: серия конфликтов актуализации"
+    exit_code=1
+    break
+  fi
+  if [ -n "$run_breaker_reason" ]; then
+    # Breaker уровня прогона «застревания» (issue #134, ADR-016 §1, §4) —
+    # выставлен внутри ветки result=stuck выше. Проверяется здесь, ПОСЛЕ
+    # return_to_default_branch и системного breaker'а: дерево уже вернулось
+    # на default branch, а если на последней доступной задаче этот breaker
+    # совпал с тем, что следующий select_next и так вернул бы «NONE»
+    # («очередь пуста»), причина сводки — этот breaker, а не «очередь
+    # пуста» — он проверяется раньше следующего select_next (ADR-016 §4:
+    # системная сигнальность важнее того, что очередь и так закончилась бы).
+    stop_reason="$run_breaker_reason"
     exit_code=1
     break
   fi

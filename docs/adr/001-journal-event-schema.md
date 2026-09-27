@@ -149,3 +149,14 @@ Issue #4 (`/stats`, эта задача) зависит только от #1 (`a
   breaker», половина AC-5; вторая половина, уровень прогона —
   `maxStuckPerRun`/`maxSkippedShare`, issue #134 — ещё не реализована).
   Реестр ADR-007 §3 обновлён синхронно.
+- 2026-09-27 (issue #134, ADR-016): десятое-одиннадцатое значения
+  `event=run_end.reason`, тоже только `adk-ralph.sh`: `"breaker:
+  застревания за прогон"` (накопленные `result=stuck` за прогон достигли
+  `policies.autopilot.breaker.maxStuckPerRun`) и `"breaker: доля
+  пропущенных за прогон"` (доля `result=skipped` от суммы
+  `ready+stuck+skipped` выше `policies.autopilot.breaker.maxSkippedShare`,
+  при знаменателе не ниже 4) — breaker уровня прогона, вторая половина
+  AC-5 (первая — уровень системы, issue #135 выше). Никаких новых полей
+  на `event=run_end` сверх `reason`: `ready`/`stuck`/`skipped` уже
+  считаются существующими счётчиками. Реестр ADR-007 §3 обновлён
+  синхронно.
