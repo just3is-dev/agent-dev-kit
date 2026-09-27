@@ -235,6 +235,54 @@ gh label create owner:human 2>/dev/null; gh issue edit <N> --add-label owner:hum
 gh issue edit <N> --remove-label owner:human
 ```
 
+### Разрешения headless-процесса (ralph)
+
+Изоляция v1 — на уровне разрешений Claude Code, а не sandbox: `adk-ralph.sh`
+не передаёт `--dangerously-skip-permissions` дочернему `claude -p` (AC-7
+SPEC-003, `docs/specs/003-autonomy.md`). Инструмент, не разрешённый заранее,
+остановит headless-процесс на интерактивном запросе разрешения — спросить
+там некого, и первый же ночной прогон зависнет. Прежде чем оставлять ralph
+без присмотра, `.claude/settings.json` проекта должен разрешать минимум,
+которым пользуется `/work`:
+
+- **git**: `status`, `diff` (в т.ч. `diff main... --shortstat`), `add`,
+  `commit`, `push` (в т.ч. `push --force-with-lease` после rebase), `fetch`,
+  `pull`, `checkout` (в т.ч. `checkout -b`), `branch --list`,
+  `ls-remote --heads`, `rebase`/`rebase --abort`,
+  `merge`/`merge --ff-only`/`merge --abort`, `rev-list --count`;
+- **gh**: `issue view`, `issue list`, `pr list`, `pr create`, `pr view`,
+  `pr diff` (использует reviewer-агент шага 6 `/work` — субагент того же
+  headless-процесса, делит с ним этот allowlist), `pr edit`, `pr comment`,
+  `pr ready` (в т.ч. `pr ready --undo`);
+- **скрипты плагина** — лежат вне корня проекта и вне `scripts/*`,
+  резолвятся через `${CLAUDE_PLUGIN_ROOT}`: `hooks/scripts/adk-config.sh`
+  (чтение конфига — уже на шаге 1, определение типа задачи по label) и
+  `hooks/scripts/adk-log.sh` (журналирование старта/итога);
+- контрактные `scripts/*` проекта: `scripts/check`, `scripts/test` (и
+  `scripts/fix`, если шаблон стека его определяет);
+- чтение и запись файлов в корне проекта, без выхода за пределы рабочего
+  дерева репозитория.
+
+Список — минимум для `/work` (`commands/work.md`) и субагентов, которых
+он запускает в том же headless-процессе (reviewer-агент на шаге 6), а не
+всего, что умеет `gh`: команды резервирования задачи человеком (`gh issue
+edit ... --add-label owner:human`, «Три режима работы над очередью issues»
+выше) и needs-human у самого ralph (`adk-ralph.sh`, вне headless-процесса
+`claude -p`) в этот allowlist не входят — они не выполняются изнутри
+`/work`.
+
+Отсутствие `--dangerously-skip-permissions` — не единственный слой защиты:
+защита в глубину headless-запуска та же, что и в интерактивной сессии —
+хуки-гейты (PostToolUse `check`, Stop `test`, PreToolUse запреты),
+секрет-скан перед коммитом, механика draft-PR (ready только после APPROVE
+ревьюера) и серверная защита ветки main. Allowlist разрешений не заменяет
+эти слои — он лишь снимает интерактивный запрос там, где headless-процессу
+и так предстоит выполнить разрешённое действие.
+
+Полная OS-изоляция headless-процесса — не часть v1: она описана как
+задел без реализации, `policies.autopilot.sandbox`, в таблице атрибутов
+`docs/config.md`.
+
 ## Справочник
 
 ### Команды

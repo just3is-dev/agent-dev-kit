@@ -2975,6 +2975,44 @@ assert_not_contains "AC-7: adk-ralph: строка запуска не соде�
 assert_contains "AC-1: adk-ralph: инструкции headless-процесса называют номер обрабатываемой задачи" \
   "$claude_calls" "issue #1"
 
+# ── Документация изоляции v1 и задел OS-sandbox (issue #137, AC-7) ─────────
+check_ac_doc AC-7 "README называет категорию git в allowlist headless-процесса" \
+  "$KIT/README.md" "**git**:"
+check_ac_doc AC-7 "README: allowlist git покрывает сверку веток с origin (ls-remote)" \
+  "$KIT/README.md" "ls-remote --heads"
+check_ac_doc AC-7 "README: allowlist git покрывает проверку отставания от main (rev-list)" \
+  "$KIT/README.md" "rev-list --count"
+check_ac_doc AC-7 "README: allowlist git покрывает обновление main перед новой веткой (pull)" \
+  "$KIT/README.md" "\`fetch\`, \`pull\`,"
+check_ac_doc AC-7 "README называет категорию gh в allowlist headless-процесса" \
+  "$KIT/README.md" "**gh**:"
+check_ac_doc AC-7 "README: allowlist gh покрывает поиск существующего PR по ветке (pr list)" \
+  "$KIT/README.md" "\`pr list\`"
+check_ac_doc AC-7 "README: allowlist gh покрывает чтение диффа PR ревьюером (pr diff)" \
+  "$KIT/README.md" "\`pr diff\` (использует reviewer-агент шага 6"
+check_ac_doc AC-7 "README называет плагинные скрипты (adk-config.sh, adk-log.sh) в allowlist headless-процесса" \
+  "$KIT/README.md" "**скрипты плагина**"
+check_ac_doc AC-7 "README: allowlist плагинных скриптов называет adk-config.sh" \
+  "$KIT/README.md" "hooks/scripts/adk-config.sh\` (чтение конфига"
+check_ac_doc AC-7 "README: allowlist плагинных скриптов называет adk-log.sh" \
+  "$KIT/README.md" "hooks/scripts/adk-log.sh\` (журналирование старта/итога)"
+check_ac_doc AC-7 "README называет контрактные scripts/* в allowlist headless-процесса" \
+  "$KIT/README.md" "контрактные \`scripts/*\` проекта: \`scripts/check\`, \`scripts/test\`"
+check_ac_doc AC-7 "README называет чтение/запись в корне проекта в allowlist headless-процесса" \
+  "$KIT/README.md" "чтение и запись файлов в корне проекта, без выхода за пределы рабочего"
+check_ac_doc AC-7 "README явным текстом фиксирует отсутствие --dangerously-skip-permissions у ralph" \
+  "$KIT/README.md" "\`adk-ralph.sh\` не передаёт \`--dangerously-skip-permissions\` дочернему \`claude -p\`"
+check_ac_doc AC-7 "README: защита в глубину headless-запуска та же, что в интерактивной сессии" \
+  "$KIT/README.md" "защита в глубину headless-запуска та же, что и в интерактивной сессии"
+check_ac_doc AC-7 "README перечисляет слои защиты в глубину (хуки-гейты, секрет-скан, draft-PR, защита main)" \
+  "$KIT/README.md" "секрет-скан перед коммитом, механика draft-PR (ready только после APPROVE"
+check_ac_doc AC-7 "README ссылается на docs/config.md по задела OS-sandbox" \
+  "$KIT/README.md" "задел без реализации, \`policies.autopilot.sandbox\`, в таблице атрибутов"
+check_ac_doc AC-7 "docs/config.md: policies.autopilot.sandbox помечен зарезервированным без потребителя" \
+  "$KIT/docs/config.md" "\`policies.autopilot.sandbox\` | объект (профиль \`sandbox-exec\`) | не задан | Зарезервирован, потребителя нет"
+check_ac_doc AC-7 "docs/config.md: policies.autopilot.sandbox описан как задел без реализации" \
+  "$KIT/docs/config.md" "Ни \`adk-ralph.sh\`, ни \`/autopilot\` этот атрибут сегодня не читают — реализации нет"
+
 # ── Блокер круга 4 ревью PR #141: adk-ralph.sh обязан пробросить
 # CLAUDE_PLUGIN_ROOT дочернему headless-процессу claude -p — иначе 10+ мест
 # ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/... в commands/work.md резолвятся в
