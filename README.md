@@ -245,14 +245,27 @@ SPEC-003, `docs/specs/003-autonomy.md`). Инструмент, не разреш
 без присмотра, `.claude/settings.json` проекта должен разрешать минимум,
 которым пользуется `/work`:
 
-- **git**: `status`, `diff`, `add`, `commit`, `push`, `fetch`, `checkout`,
-  `branch`, `rebase`/`merge`, `log`;
-- **gh**: `issue view/edit/list`, `pr create/view/edit/comment/ready`,
-  `label create`;
+- **git**: `status`, `diff` (в т.ч. `diff main... --shortstat`), `add`,
+  `commit`, `push` (в т.ч. `push --force-with-lease` после rebase), `fetch`,
+  `checkout` (в т.ч. `checkout -b`), `branch --list`, `ls-remote --heads`,
+  `rebase`/`rebase --abort`, `merge`/`merge --ff-only`/`merge --abort`,
+  `rev-list --count`;
+- **gh**: `issue view`, `issue list`, `pr list`, `pr create`, `pr view`,
+  `pr edit`, `pr comment`, `pr ready` (в т.ч. `pr ready --undo`);
+- **скрипты плагина** — лежат вне корня проекта и вне `scripts/*`,
+  резолвятся через `${CLAUDE_PLUGIN_ROOT}`: `hooks/scripts/adk-config.sh`
+  (чтение конфига — уже на шаге 1, определение типа задачи по label) и
+  `hooks/scripts/adk-log.sh` (журналирование старта/итога);
 - контрактные `scripts/*` проекта: `scripts/check`, `scripts/test` (и
   `scripts/fix`, если шаблон стека его определяет);
 - чтение и запись файлов в корне проекта, без выхода за пределы рабочего
   дерева репозитория.
+
+Список — минимум для `/work` (`commands/work.md`), а не всего, что умеет
+`gh`: команды резервирования задачи человеком (`gh issue edit ... --add-label
+owner:human`, «Три режима работы над очередью issues» выше) и needs-human
+у самого ralph (`adk-ralph.sh`, вне headless-процесса `claude -p`) в этот
+allowlist не входят — они не выполняются изнутри `/work`.
 
 Отсутствие `--dangerously-skip-permissions` — не единственный слой защиты:
 защита в глубину headless-запуска та же, что и в интерактивной сессии —

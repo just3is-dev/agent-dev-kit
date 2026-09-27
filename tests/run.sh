@@ -2977,9 +2977,21 @@ assert_contains "AC-1: adk-ralph: инструкции headless-процесса
 
 # ── Документация изоляции v1 и задел OS-sandbox (issue #137, AC-7) ─────────
 check_ac_doc AC-7 "README называет категорию git в allowlist headless-процесса" \
-  "$KIT/README.md" "**git**: \`status\`, \`diff\`, \`add\`, \`commit\`, \`push\`, \`fetch\`, \`checkout\`,"
+  "$KIT/README.md" "**git**:"
+check_ac_doc AC-7 "README: allowlist git покрывает сверку веток с origin (ls-remote)" \
+  "$KIT/README.md" "ls-remote --heads"
+check_ac_doc AC-7 "README: allowlist git покрывает проверку отставания от main (rev-list)" \
+  "$KIT/README.md" "rev-list --count"
 check_ac_doc AC-7 "README называет категорию gh в allowlist headless-процесса" \
-  "$KIT/README.md" "**gh**: \`issue view/edit/list\`, \`pr create/view/edit/comment/ready\`,"
+  "$KIT/README.md" "**gh**:"
+check_ac_doc AC-7 "README: allowlist gh покрывает поиск существующего PR по ветке (pr list)" \
+  "$KIT/README.md" "\`pr list\`"
+check_ac_doc AC-7 "README называет плагинные скрипты (adk-config.sh, adk-log.sh) в allowlist headless-процесса" \
+  "$KIT/README.md" "**скрипты плагина**"
+check_ac_doc AC-7 "README: allowlist плагинных скриптов называет adk-config.sh" \
+  "$KIT/README.md" "hooks/scripts/adk-config.sh\` (чтение конфига"
+check_ac_doc AC-7 "README: allowlist плагинных скриптов называет adk-log.sh" \
+  "$KIT/README.md" "hooks/scripts/adk-log.sh\` (журналирование старта/итога)"
 check_ac_doc AC-7 "README называет контрактные scripts/* в allowlist headless-процесса" \
   "$KIT/README.md" "контрактные \`scripts/*\` проекта: \`scripts/check\`, \`scripts/test\`"
 check_ac_doc AC-7 "README называет чтение/запись в корне проекта в allowlist headless-процесса" \
