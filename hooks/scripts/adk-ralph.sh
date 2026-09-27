@@ -5,10 +5,13 @@
 # вручную из корня проекта: hooks/scripts/adk-ralph.sh
 #
 # issue #139 — только базовый цикл (AC-1) и запрет
-# --dangerously-skip-permissions (AC-7). Бюджеты, стоп-файл, breaker и merge
-# ready-PR — следующие задачи плана (issues #129-138, SPEC-003): эта версия
-# после ready-PR всегда собирает задачу в список «ждут человека»
-# (result=ready, ADR-003), никогда не мержит.
+# --dangerously-skip-permissions (AC-7). Бюджеты, стоп-файл, breaker уровня
+# прогона и merge ready-PR — следующие задачи плана (issues #129-134, 138,
+# SPEC-003): эта версия после ready-PR всегда собирает задачу в список
+# «ждут человека» (result=ready, ADR-003), никогда не мержит. Breaker
+# уровня системы — issue #135, ADR-015: красные гейты main перед каждой
+# итерацией, отказ записи журнала, серия git-конфликтов актуализации
+# подряд — реализован в этой версии.
 #
 # Правило выбора следующей задачи — то же, что шаг 1 commands/autopilot.md:
 # открытый issue, без метки needs-human, все «Зависит от: Blocked by #N»
@@ -105,14 +108,52 @@ blocked_on_ready_summary=""
 stop_reason=""
 exit_code=0
 
+# ── Breaker уровня системы (issue #135, SPEC-003 «Система», половина AC-5
+# уровня системы; ADR-015) — три независимых триггера немедленного полного
+# стопа: красные гейты main (run_main_gates, определена ниже, у цикла),
+# отказ записи журнала (journal_break сразу под этим блоком) и серия
+# подряд идущих git-конфликтов актуализации default branch между
+# итерациями (actualization_conflict_streak, считает return_to_default_branch
+# ниже). В отличие от breaker'а уровня прогона (issue #134, вне рамок этой
+# задачи — maxStuckPerRun/maxSkippedShare) система не разбирает содержимое
+# очереди issues, а реагирует на отказ самой инфраструктуры прогона.
+actualization_conflict_streak=0
+# Порог — не атрибут конфига (в отличие от maxStuckPerRun/maxSkippedShare
+# run-уровня): системный breaker — безусловная защита инфраструктуры, не
+# настраиваемая политика прогона (ADR-015). 2 — тот же консервативный
+# дефолт, что и у maxStuckPerRun (SPEC-003 «Стадийный circuit breaker»).
+actualization_conflict_threshold=2
+actualization_breaker_tripped=0
+
+journal_break() { # journal_break — общая точка остановки на отказе
+  # adk-log.sh (issue #135): здесь журнал — несущая часть предохранителей,
+  # не наблюдаемость, поэтому, в отличие от "|| true" в commands/*.md
+  # (журнал необязателен для самой задачи), отказ записи немедленно
+  # останавливает весь прогон. Вызывающий код сам решает, нужен ли перед
+  # `break` возврат дерева на default branch — эта функция только
+  # выставляет причину и код выхода.
+  echo "adk-ralph: adk-log.sh не удался — журнал недоступен, немедленный стоп" \
+    "(issue #135, SPEC-003 «Система»: здесь журнал несущая часть предохранителей)." >&2
+  stop_reason="системный breaker: отказ записи журнала"
+  exit_code=1
+}
+
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 issues_file="$work_dir/issues.json"
 
-"$logger" "$run_unit" event=run_start || true
+if ! "$logger" "$run_unit" event=run_start; then
+  journal_break
+fi
 
 issue_fetch_limit=100
-if ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
+# Guard на exit_code — иначе отказ journal_break выше был бы молча
+# переписан причиной gh issue list (issue #135, круг 1 ревью PR #191):
+# оба пути ведут к одному общему хвосту (run_end/summary/notify), но
+# причина должна остаться первой настоящей, а не последней проверенной;
+# заодно этот read-only вызов gh не тратится впустую, когда журнал уже
+# сломан и прогон и так не стартует.
+if [ "$exit_code" -eq 0 ] && ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
   >"$issues_file" 2>"$work_dir/gh-issue-list.err"; then
   # Единообразно с остальными путями отказа этого скрипта: run_start уже
   # записан, поэтому этот сбой обязан дописать run_end/reason и
@@ -375,7 +416,7 @@ default_branch="${default_branch:-main}"
 # самому гадать, какую ветку/состояние восстанавливать (данные потенциально
 # ещё нужны человеку — не наше дело отбрасывать их force-чекаутом).
 return_to_default_branch() {
-  local current checkout_err rc
+  local current checkout_err rc pull_err pull_rc
   # `git symbolic-ref --short HEAD` (не `git rev-parse --abbrev-ref HEAD`)
   # — единственный способ узнать текущую ветку, который не падает на
   # unborn-ветке (репозиторий без единого коммита, HEAD ещё ни на что не
@@ -397,15 +438,80 @@ return_to_default_branch() {
       return 1
     fi
   fi
-  (cd "$root" && git pull >/dev/null 2>&1) || true
+  # `--no-rebase` (стратегия зафиксирована явно, не зависит от ambient
+  # `pull.rebase`) + различение через MERGE_HEAD ниже — см. ADR-015 §2 за
+  # полным обоснованием. Захватываем stdout и stderr вместе (не только
+  # stderr, как у checkout_err выше): диагностика конфликта у git — в
+  # stdout ("Automatic merge failed...").
+  pull_err=$(cd "$root" && git pull --no-rebase 2>&1)
+  pull_rc=$?
+  if [ "$pull_rc" -ne 0 ]; then
+    if git -C "$root" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+      # Настоящий git-конфликт (MERGE_HEAD есть) — не обычный сбой `git
+      # pull` без конфликта (нет origin, сеть), тот остаётся best-effort,
+      # счётчик не растёт (ADR-015 §2). Прерываем merge, чтобы не оставить
+      # дерево в merge-in-progress следующей итерации.
+      (cd "$root" && git merge --abort) >/dev/null 2>&1 || true
+      actualization_conflict_streak=$((actualization_conflict_streak + 1))
+      echo "adk-ralph: git pull --no-rebase на $default_branch завершился" \
+        "конфликтом слияния ($actualization_conflict_streak подряд):" >&2
+      printf '%s\n' "$pull_err" >&2
+      if [ "$actualization_conflict_streak" -ge "$actualization_conflict_threshold" ]; then
+        actualization_breaker_tripped=1
+      fi
+    else
+      actualization_conflict_streak=0
+    fi
+  else
+    actualization_conflict_streak=0
+  fi
+  return 0
+}
+
+# run_main_gates — системный breaker «красные гейты main» (AC-5 уровня
+# системы, ADR-015 §1): scripts/check и scripts/test (docs/contract.md) на
+# default branch перед стартом КАЖДОЙ итерации. Отсутствие исполняемого
+# файла — переходное состояние без контракта, не ошибка: гейт молча
+# пропускается (тем же приёмом, что hooks/scripts/stop-test.sh).
+run_main_gates() {
+  local out rc
+  if [ -x "$root/scripts/check" ]; then
+    out=$(cd "$root" && ./scripts/check 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "adk-ralph: scripts/check на $default_branch провалился (exit $rc):" >&2
+      printf '%s\n' "$out" >&2
+      return 1
+    fi
+  fi
+  if [ -x "$root/scripts/test" ]; then
+    out=$(cd "$root" && ./scripts/test 2>&1)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "adk-ralph: scripts/test на $default_branch провалился (exit $rc):" >&2
+      printf '%s\n' "$out" >&2
+      return 1
+    fi
+  fi
   return 0
 }
 
 # ── Цикл ──────────────────────────────────────────────────────────────────
-# exit_code уже != 0 здесь только если gh issue list выше не удался
+# exit_code уже != 0 здесь, если gh issue list выше не удался или отказала
+# запись event=run_start в журнал (journal_break, issue #135) —
 # (stop_reason уже выставлен тем же путём) — цикл в этом случае не
 # стартует вовсе, run_end/уведомление печатает общий хвост ниже.
 while [ "$exit_code" -eq 0 ]; do
+  # Системный breaker «красные гейты main» — перед стартом КАЖДОЙ итерации,
+  # раньше выбора следующей задачи (issue #135): красные гейты запрещают
+  # итерацию немедленно, безусловно, даже если следующим шагом был бы
+  # просто SKIP/BLOCKED_ON_READY без единого вызова claude.
+  if ! run_main_gates; then
+    stop_reason="системный breaker: красные гейты main"
+    exit_code=1
+    break
+  fi
+
   select_out=$(select_next)
 
   while IFS= read -r line; do
@@ -413,7 +519,10 @@ while [ "$exit_code" -eq 0 ]; do
       SKIP\ *)
         skip_num=$(printf '%s' "$line" | awk '{print $2}')
         skip_type=$(printf '%s' "$line" | awk '{print $3}')
-        "$logger" "$run_unit" event=task issue="$skip_num" type="$skip_type" result=skipped || true
+        if ! "$logger" "$run_unit" event=task issue="$skip_num" type="$skip_type" result=skipped; then
+          journal_break
+          break
+        fi
         handled=$(csv_add "$handled" "$skip_num")
         skipped=$(csv_add "$skipped" "$skip_num")
         skipped_count=$((skipped_count + 1))
@@ -425,7 +534,10 @@ while [ "$exit_code" -eq 0 ]; do
         # на следующей итерации этого же прогона.
         bor_num=$(printf '%s' "$line" | awk '{print $2}')
         bor_type=$(printf '%s' "$line" | awk '{print $3}')
-        "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready || true
+        if ! "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready; then
+          journal_break
+          break
+        fi
         handled=$(csv_add "$handled" "$bor_num")
         blocked_on_ready_nums=$(csv_add "$blocked_on_ready_nums" "$bor_num")
         blocked_on_ready_count=$((blocked_on_ready_count + 1))
@@ -433,6 +545,14 @@ while [ "$exit_code" -eq 0 ]; do
         ;;
     esac
   done <<<"$select_out"
+
+  # Отказ записи журнала внутри каскада SKIP/BLOCKED_ON_READY выше уже
+  # прервал внутренний read-цикл (`break` в case видит только его) — этот
+  # `break` останавливает и внешний цикл, чтобы не дойти до NEXT/claude -p
+  # с уже выставленным exit_code (issue #135).
+  if [ "$exit_code" -ne 0 ]; then
+    break
+  fi
 
   status_line=$(printf '%s' "$select_out" | tail -1)
   case "$status_line" in
@@ -476,12 +596,19 @@ while [ "$exit_code" -eq 0 ]; do
 
   if [ "$pre_pr_state" = "ready" ]; then
     # reused=true отличает «уже был ready» от «стал ready в этом запуске»
-    # (ADR-014) — сам result тот же, что у обычного исхода ниже.
-    "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true || true
+    # (ADR-014) — сам result тот же, что у обычного исхода ниже. Счётчики
+    # обновлены ДО записи в журнал (issue #135, круг 1 ревью PR #191): если
+    # "$logger" ниже откажет, готовый PR всё равно останется в
+    # сводке/уведомлении прогона — единственном оставшемся канале, когда
+    # журнал сломан, вместо того чтобы молча пропасть из "Ready".
     handled=$(csv_add "$handled" "$issue_num")
     ready_nums=$(csv_add "$ready_nums" "$issue_num")
     ready_count=$((ready_count + 1))
     ready_list="$ready_list #$issue_num"
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true; then
+      journal_break
+      break
+    fi
     continue
   fi
 
@@ -531,10 +658,16 @@ while [ "$exit_code" -eq 0 ]; do
   handled=$(csv_add "$handled" "$issue_num")
 
   if [ "$pr_state" = "ready" ]; then
-    "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready || true
+    # Счётчики — до записи в журнал, тот же порядок и та же причина, что
+    # у reused=true выше (issue #135, круг 1 ревью PR #191).
     ready_nums=$(csv_add "$ready_nums" "$issue_num")
     ready_count=$((ready_count + 1))
     ready_list="$ready_list #$issue_num"
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready; then
+      journal_break
+      return_to_default_branch || true
+      break
+    fi
   else
     if [ "$pr_state" = "draft" ]; then
       reason="PR остался черновиком"
@@ -553,10 +686,18 @@ while [ "$exit_code" -eq 0 ]; do
       cat "$work_dir/gh-issue-edit.err" >&2
     fi
     "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
-    "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" || true
+    # Счётчики — до записи в журнал, той же логикой, что у "ready" выше:
+    # needs-human уже поставлена и уведомление уже отправлено, но сводка
+    # прогона — второй канал, которому тоже нельзя молчать об этом issue,
+    # если запись в журнал ниже откажет (issue #135, круг 1 ревью PR #191).
     stuck=$(csv_add "$stuck" "$issue_num")
     stuck_count=$((stuck_count + 1))
     stuck_summary="$stuck_summary #$issue_num ($reason)"
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason"; then
+      journal_break
+      return_to_default_branch || true
+      break
+    fi
   fi
 
   # Возврат дерева на default branch между итерациями — см.
@@ -573,6 +714,15 @@ while [ "$exit_code" -eq 0 ]; do
   # предупреждение в stderr.
   if ! return_to_default_branch; then
     stop_reason="не удалось вернуть дерево на $default_branch после issue #$issue_num — прогон остановлен"
+    exit_code=1
+    break
+  fi
+  if [ "$actualization_breaker_tripped" -eq 1 ]; then
+    # Системный breaker «серия git-конфликтов при актуализации подряд»
+    # (issue #135, SPEC-003 «Система», ADR-015) — return_to_default_branch
+    # выше насчитала actualization_conflict_threshold конфликтов слияния
+    # подряд при `git pull` default branch между итерациями.
+    stop_reason="системный breaker: серия конфликтов актуализации"
     exit_code=1
     break
   fi
