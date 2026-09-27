@@ -88,12 +88,21 @@ consolidate_label=$(adk_config_get "types.consolidate.label" "type:consolidate")
 handled=""  # issue-номера, по которым уже записана строка event=task
 stuck=""    # issue-номера, застрявшие в этом прогоне (needs-human поставлен)
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
+ready_nums=""  # issue-номера, ставшие ready в этом прогоне (issue #147,
+               # ADR-014) — подмножество handled; передаётся в select_next,
+               # чтобы отличить «блокер ещё не решён» от «блокер стал ready
+               # этим же прогоном, но issue блокера ещё не смерджен»
 ready_count=0
 stuck_count=0
 skipped_count=0
+blocked_on_ready_count=0  # issue #147, ADR-014: задачи, чей единственный
+                          # путь к кандидатству блокирован issue, который
+                          # сам стал ready этим прогоном (не «застрял», не
+                          # «пропущен» — ждёт мерджа человеком)
 ready_list=""
 stuck_summary=""
 skipped_summary=""
+blocked_on_ready_summary=""
 stop_reason=""
 exit_code=0
 
@@ -148,12 +157,12 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # строку "NEXT <N> <type>" (следующая задача к исполнению) либо "NONE"
 # (доступных задач не осталось).
 select_next() {
-  python3 - "$issues_file" "$handled" "$stuck" "$skipped" \
+  python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv = sys.argv[1:5]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[5:9]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv = sys.argv[1:6]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[6:10]
 
 
 def csv_ints(s):
@@ -162,6 +171,7 @@ def csv_ints(s):
 
 handled = csv_ints(handled_csv)
 unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
+ready_now = csv_ints(ready_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
@@ -225,6 +235,7 @@ for it in new_skips:
 
 excluded = handled | new_skip_numbers
 candidate = None
+blocked_on_ready = []
 for it in issues:
     n = it["number"]
     if n in excluded:
@@ -236,10 +247,24 @@ for it in issues:
         # но и не «застрял»/«пропущен»: остаётся открытым, дальше по циклу.
         # Дальнейшие исходы (needs-human/result=) на неё не действуют.
         continue
-    if blockers(it.get("body")) & open_numbers:
+    open_blockers = blockers(it.get("body")) & open_numbers
+    if open_blockers:
+        # issue #147, ADR-014: блокер формально ещё открыт (issue блокера не
+        # смерджен/не закрыт), поэтому эта задача по-прежнему не кандидат —
+        # это не баг, а корректное «зависимость не решена». Но если блокер
+        # среди тех, что стали ready именно этим прогоном, задача не должна
+        # молча пропасть из вывода (как раньше): она реально «на подвеске» —
+        # готова стартовать, как только человек смержит блокера. Обычная
+        # задача, блокированная другим ещё не тронутым issue, — не аномалия
+        # и не печатается: это просто очередь, ждущая своей итерации.
+        if open_blockers & ready_now:
+            blocked_on_ready.append(it)
         continue
     candidate = it
     break
+
+for it in blocked_on_ready:
+    print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
 
 if candidate:
     print(f"NEXT {candidate['number']} {type_of(candidate)}")
@@ -380,13 +405,36 @@ while [ "$exit_code" -eq 0 ]; do
         skipped_count=$((skipped_count + 1))
         skipped_summary="$skipped_summary #$skip_num"
         ;;
+      BLOCKED_ON_READY\ *)
+        # issue #147, ADR-014: блокер этой задачи стал ready именно этим
+        # прогоном, но сам ещё не смерджен — задача формально не кандидат
+        # (зависимость не решена), но и не должна пропадать из вывода
+        # молча, как раньше. handled — чтобы select_next не печатал её
+        # заново на следующей итерации (реальное решение зависимости —
+        # только мердж человеком/`/autopilot`, не что-то, что случится
+        # внутри этого прогона).
+        bor_num=$(printf '%s' "$line" | awk '{print $2}')
+        bor_type=$(printf '%s' "$line" | awk '{print $3}')
+        "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready || true
+        handled=$(csv_add "$handled" "$bor_num")
+        blocked_on_ready_count=$((blocked_on_ready_count + 1))
+        blocked_on_ready_summary="$blocked_on_ready_summary #$bor_num"
+        ;;
     esac
   done <<<"$select_out"
 
   status_line=$(printf '%s' "$select_out" | tail -1)
   case "$status_line" in
     NONE)
-      stop_reason="очередь пуста"
+      if [ "$blocked_on_ready_count" -gt 0 ]; then
+        # issue #147, ADR-014: очередь НЕ пуста — есть задача(и), ждущая
+        # мерджа блокера с ready-PR. Отдельная причина остановки, чтобы
+        # «очередь пуста» означало ровно то, что говорит (DoD issue #147:
+        # прогон не рапортует «очередь пуста», пока такая задача в подвеске).
+        stop_reason="доступных задач нет: остались только задачи, заблокированные ready-PR блокера"
+      else
+        stop_reason="очередь пуста"
+      fi
       break
       ;;
     NEXT\ *)
@@ -400,6 +448,38 @@ while [ "$exit_code" -eq 0 ]; do
       break
       ;;
   esac
+
+  # ── Предстартовая проверка PR (issue #147, ADR-014) ──────────────────────
+  # find_pr_state ДО запуска claude -p, не только после (как раньше): issue
+  # с уже открытым ready-PR (готов, не смерджен — обычно результат прошлого
+  # прогона на той же очереди, поскольку `handled` этого процесса не
+  # переживает завершение скрипта) не должен гонять work.md с нуля заново —
+  # это трата ресурсов и риск того, что шаг 2 /work вернёт уже отревьюенный
+  # PR в draft, хотя пушить нечего. "draft"/"none" — не короткое замыкание:
+  # claude -p запускается как обычно, а find_pr_state после него (ниже)
+  # видит уже актуальное состояние.
+  pre_pr_state=$(find_pr_state "$issue_num")
+
+  if [ "$pre_pr_state" = "error" ]; then
+    echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
+    cat "$work_dir/gh-pr-list.err" >&2
+    stop_reason="gh pr list не удался при разборе issue #$issue_num"
+    exit_code=1
+    break
+  fi
+
+  if [ "$pre_pr_state" = "ready" ]; then
+    # reused=true в журнале — то самое «явно логирует/помечает иначе, чем
+    # полное повторное исполнение» из DoD issue #147: result=ready тот же,
+    # что и у обычного исхода ниже, но это отличимо от «стал ready именно
+    # в этом запуске claude -p».
+    "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true || true
+    handled=$(csv_add "$handled" "$issue_num")
+    ready_nums=$(csv_add "$ready_nums" "$issue_num")
+    ready_count=$((ready_count + 1))
+    ready_list="$ready_list #$issue_num"
+    continue
+  fi
 
   prompt="$(cat "$work_md")
 
@@ -448,6 +528,7 @@ while [ "$exit_code" -eq 0 ]; do
 
   if [ "$pr_state" = "ready" ]; then
     "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready || true
+    ready_nums=$(csv_add "$ready_nums" "$issue_num")
     ready_count=$((ready_count + 1))
     ready_list="$ready_list #$issue_num"
   else
@@ -494,12 +575,13 @@ while [ "$exit_code" -eq 0 ]; do
 done
 
 "$logger" "$run_unit" event=run_end done=0 ready="$ready_count" stuck="$stuck_count" \
-  skipped="$skipped_count" reason="$stop_reason" || true
+  skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" reason="$stop_reason" || true
 
 summary="=== Ralph: итог прогона ===
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
+Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
 Причина остановки: $stop_reason"
 
@@ -507,6 +589,6 @@ echo "$summary"
 # Сводка дублируется локальным уведомлением (SPEC-003 «Сводка прогона и
 # HITL»; DoD issue #139: «event=run_end и уведомление») — не только
 # терминал и журнал.
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count. Причина: $stop_reason" || true
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count. Причина: $stop_reason" || true
 
 exit "$exit_code"
