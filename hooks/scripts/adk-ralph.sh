@@ -651,7 +651,12 @@ resolve_ready_pr() {
   fi
 
   if [ "$mergeable" = "CONFLICTING" ]; then
-    printf 'STUCK конфликт с main'
+    # "конфликт с $default_branch" — на большинстве проектов default_branch
+    # это буквально "main" (текст совпадает с каноном autopilot.md), но не
+    # хардкод: репозиторий с другим default branch получает точную причину,
+    # той же дисциплиной, что круг 1 ревью PR #195 (origin/$default_branch
+    # вместо origin/main выше).
+    printf 'STUCK конфликт с %s' "$default_branch"
     return 0
   fi
   if [ "$mergeable" != "MERGEABLE" ]; then
