@@ -147,7 +147,13 @@ if ! "$logger" "$run_unit" event=run_start; then
 fi
 
 issue_fetch_limit=100
-if ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
+# Guard на exit_code — иначе отказ journal_break выше был бы молча
+# переписан причиной gh issue list (issue #135, круг 1 ревью PR #191):
+# оба пути ведут к одному общему хвосту (run_end/summary/notify), но
+# причина должна остаться первой настоящей, а не последней проверенной;
+# заодно этот read-only вызов gh не тратится впустую, когда журнал уже
+# сломан и прогон и так не стартует.
+if [ "$exit_code" -eq 0 ] && ! (cd "$root" && gh issue list --state open --json number,labels,body --limit "$issue_fetch_limit") \
   >"$issues_file" 2>"$work_dir/gh-issue-list.err"; then
   # Единообразно с остальными путями отказа этого скрипта: run_start уже
   # записан, поэтому этот сбой обязан дописать run_end/reason и
@@ -432,25 +438,19 @@ return_to_default_branch() {
       return 1
     fi
   fi
-  # `--no-rebase` — явная merge-стратегия, не зависящая от ambient
-  # `pull.rebase` пользователя/CI (issue #135, ADR-015): различение ниже
-  # («настоящий git-конфликт» / «сбой без конфликта») опирается на
-  # MERGE_HEAD, который создаёт только merge, не rebase — на rebase
-  # тот же конфликт остался бы незамеченным этой проверкой.
-  # Захватываем и stdout, и stderr (не только stderr, как у checkout_err
-  # выше): git печатает диагностику конфликта слияния ("Automatic merge
-  # failed...") в stdout, не в stderr.
+  # `--no-rebase` (стратегия зафиксирована явно, не зависит от ambient
+  # `pull.rebase`) + различение через MERGE_HEAD ниже — см. ADR-015 §2 за
+  # полным обоснованием. Захватываем stdout и stderr вместе (не только
+  # stderr, как у checkout_err выше): диагностика конфликта у git — в
+  # stdout ("Automatic merge failed...").
   pull_err=$(cd "$root" && git pull --no-rebase 2>&1)
   pull_rc=$?
   if [ "$pull_rc" -ne 0 ]; then
     if git -C "$root" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
-      # Настоящий git-конфликт слияния при актуализации default branch
-      # между итерациями (SPEC-003 «Система»: «серия git-конфликтов при
-      # актуализации подряд», issue #135) — не путать с обычным сбоем
-      # `git pull` без конфликта (нет origin, сеть недоступна): те
-      # остаются best-effort, как и раньше (счётчик серии не растёт,
-      # ADR-015). Прерываем merge, чтобы не оставить дерево в
-      # merge-in-progress следующей итерации.
+      # Настоящий git-конфликт (MERGE_HEAD есть) — не обычный сбой `git
+      # pull` без конфликта (нет origin, сеть), тот остаётся best-effort,
+      # счётчик не растёт (ADR-015 §2). Прерываем merge, чтобы не оставить
+      # дерево в merge-in-progress следующей итерации.
       (cd "$root" && git merge --abort) >/dev/null 2>&1 || true
       actualization_conflict_streak=$((actualization_conflict_streak + 1))
       echo "adk-ralph: git pull --no-rebase на $default_branch завершился" \
@@ -468,17 +468,11 @@ return_to_default_branch() {
   return 0
 }
 
-# run_main_gates — системный breaker «красные гейты main» (issue #135,
-# SPEC-003 «Система», половина AC-5 уровня системы, ADR-015): контрактные
-# scripts/check и scripts/test (docs/contract.md) прогоняются на default
-# branch перед стартом КАЖДОЙ итерации внешнего цикла. Отсутствие
-# исполняемого файла — переходное состояние проекта без контракта, не
-# ошибка: гейт молча пропускается, тем же приёмом, что во всех хуках кита
-# (hooks/scripts/stop-test.sh: `[ -x "$proj/scripts/test" ] || exit 0`) —
-# различение «скрипта нет» / «скрипт упал» через `-x` самого файла, не
-# через код возврата попытки его запустить (контрактные скрипты вызываются
-# по относительному пути от корня проекта, не через PATH — `command -v`
-# здесь не годится).
+# run_main_gates — системный breaker «красные гейты main» (AC-5 уровня
+# системы, ADR-015 §1): scripts/check и scripts/test (docs/contract.md) на
+# default branch перед стартом КАЖДОЙ итерации. Отсутствие исполняемого
+# файла — переходное состояние без контракта, не ошибка: гейт молча
+# пропускается (тем же приёмом, что hooks/scripts/stop-test.sh).
 run_main_gates() {
   local out rc
   if [ -x "$root/scripts/check" ]; then
@@ -503,7 +497,8 @@ run_main_gates() {
 }
 
 # ── Цикл ──────────────────────────────────────────────────────────────────
-# exit_code уже != 0 здесь только если gh issue list выше не удался
+# exit_code уже != 0 здесь, если gh issue list выше не удался или отказала
+# запись event=run_start в журнал (journal_break, issue #135) —
 # (stop_reason уже выставлен тем же путём) — цикл в этом случае не
 # стартует вовсе, run_end/уведомление печатает общий хвост ниже.
 while [ "$exit_code" -eq 0 ]; do
@@ -601,15 +596,19 @@ while [ "$exit_code" -eq 0 ]; do
 
   if [ "$pre_pr_state" = "ready" ]; then
     # reused=true отличает «уже был ready» от «стал ready в этом запуске»
-    # (ADR-014) — сам result тот же, что у обычного исхода ниже.
-    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true; then
-      journal_break
-      break
-    fi
+    # (ADR-014) — сам result тот же, что у обычного исхода ниже. Счётчики
+    # обновлены ДО записи в журнал (issue #135, круг 1 ревью PR #191): если
+    # "$logger" ниже откажет, готовый PR всё равно останется в
+    # сводке/уведомлении прогона — единственном оставшемся канале, когда
+    # журнал сломан, вместо того чтобы молча пропасть из "Ready".
     handled=$(csv_add "$handled" "$issue_num")
     ready_nums=$(csv_add "$ready_nums" "$issue_num")
     ready_count=$((ready_count + 1))
     ready_list="$ready_list #$issue_num"
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true; then
+      journal_break
+      break
+    fi
     continue
   fi
 
@@ -659,14 +658,16 @@ while [ "$exit_code" -eq 0 ]; do
   handled=$(csv_add "$handled" "$issue_num")
 
   if [ "$pr_state" = "ready" ]; then
+    # Счётчики — до записи в журнал, тот же порядок и та же причина, что
+    # у reused=true выше (issue #135, круг 1 ревью PR #191).
+    ready_nums=$(csv_add "$ready_nums" "$issue_num")
+    ready_count=$((ready_count + 1))
+    ready_list="$ready_list #$issue_num"
     if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready; then
       journal_break
       return_to_default_branch || true
       break
     fi
-    ready_nums=$(csv_add "$ready_nums" "$issue_num")
-    ready_count=$((ready_count + 1))
-    ready_list="$ready_list #$issue_num"
   else
     if [ "$pr_state" = "draft" ]; then
       reason="PR остался черновиком"
@@ -685,14 +686,18 @@ while [ "$exit_code" -eq 0 ]; do
       cat "$work_dir/gh-issue-edit.err" >&2
     fi
     "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
+    # Счётчики — до записи в журнал, той же логикой, что у "ready" выше:
+    # needs-human уже поставлена и уведомление уже отправлено, но сводка
+    # прогона — второй канал, которому тоже нельзя молчать об этом issue,
+    # если запись в журнал ниже откажет (issue #135, круг 1 ревью PR #191).
+    stuck=$(csv_add "$stuck" "$issue_num")
+    stuck_count=$((stuck_count + 1))
+    stuck_summary="$stuck_summary #$issue_num ($reason)"
     if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason"; then
       journal_break
       return_to_default_branch || true
       break
     fi
-    stuck=$(csv_add "$stuck" "$issue_num")
-    stuck_count=$((stuck_count + 1))
-    stuck_summary="$stuck_summary #$issue_num ($reason)"
   fi
 
   # Возврат дерева на default branch между итерациями — см.
