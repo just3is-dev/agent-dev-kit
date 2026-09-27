@@ -2899,6 +2899,12 @@ mkdir -p "$RALPH" "$RBIN"
 # Фикстура: issue #1 (без блокеров) получит черновик PR → застрянет;
 # issue #2 (Blocked by #1) должен быть пропущен каскадом, не исполняясь
 # вовсе; issue #3 (без блокеров, независимый) получит ready-PR.
+# prs-fixture.json стартует пустым (issue #147: adk-ralph теперь проверяет
+# find_pr_state ДО запуска claude -p — статичная «уже готовая» фикстура
+# PR молча закоротила бы вызов claude ещё на предстартовой проверке, не
+# проверяя как раз то, что проверяет этот блок, — поэтому claude-стаб сам
+# дописывает PR в фикстуру по мере обработки issues, как это делал бы
+# настоящий /work).
 cat > "$RBIN/issues-fixture.json" <<'EOF'
 [
   {"number": 1, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -2907,15 +2913,30 @@ cat > "$RBIN/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN/prs-fixture.json" <<'EOF'
-[
-  {"number": 101, "isDraft": true, "headRefName": "issue-1-foo"},
-  {"number": 103, "isDraft": false, "headRefName": "issue-3-bar"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN" "$RBIN/issues-fixture.json" "$RBIN/prs-fixture.json"
 claude_stub_guard "$RBIN"
 cat >> "$RBIN/claude" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
+# Номер обрабатываемого issue — только из хвостового маркера ("для задачи
+# issue #N."), не голым `case "$*" in *"issue #1"*)`: сам текст-инструкция
+# ралфа безусловно содержит "issue #139" (ссылка на issue, которым заведён
+# adk-ralph.sh) — это ложно совпадает с шаблоном "issue #1" как префикс
+# любого запуска, независимо от реально обрабатываемого номера.
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  1)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 101, "isDraft": true, "headRefName": "issue-1-foo"}]
+PRJSON
+    ;;
+  3)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 101, "isDraft": true, "headRefName": "issue-1-foo"}, {"number": 103, "isDraft": false, "headRefName": "issue-3-bar"}]
+PRJSON
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$RBIN/claude"
@@ -3033,15 +3054,20 @@ cat > "$RBIN_ROOTENV/issues-fixture.json" <<'EOF'
   {"number": 91, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
+# prs-fixture.json стартует пустым — иначе предстартовая проверка
+# find_pr_state (issue #147) закоротила бы issue #91 до единого вызова
+# claude, и этот блок перестал бы проверять то, ради чего заведён (проброс
+# CLAUDE_PLUGIN_ROOT дочернему headless-процессу).
 cat > "$RBIN_ROOTENV/prs-fixture.json" <<'EOF'
-[
-  {"number": 401, "isDraft": false, "headRefName": "issue-91-z"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_ROOTENV" "$RBIN_ROOTENV/issues-fixture.json" "$RBIN_ROOTENV/prs-fixture.json"
 claude_stub_guard "$RBIN_ROOTENV"
 cat >> "$RBIN_ROOTENV/claude" <<'EOF'
 echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 401, "isDraft": false, "headRefName": "issue-91-z"}]
+PRJSON
 exit 0
 EOF
 chmod +x "$RBIN_ROOTENV/claude"
@@ -3152,17 +3178,39 @@ cat > "$RBIN3/issues-fixture.json" <<'EOF'
   {"number": 23, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
+# prs-fixture.json стартует пустым — как в фикстуре issue #139 выше, ready-PR
+# каждого issue появляется в фикстуре только в результате запуска claude-стаба
+# (issue #147: предстартовая проверка find_pr_state иначе закоротила бы все
+# три issue до единого вызова claude, не тестируя обработку «клод реально
+# отработал и создал ready-PR»).
 cat > "$RBIN3/prs-fixture.json" <<'EOF'
-[
-  {"number": 201, "isDraft": false, "headRefName": "issue-21-a"},
-  {"number": 202, "isDraft": false, "headRefName": "issue-22-b"},
-  {"number": 203, "isDraft": false, "headRefName": "issue-23-c"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN3" "$RBIN3/issues-fixture.json" "$RBIN3/prs-fixture.json"
 claude_stub_guard "$RBIN3"
 cat >> "$RBIN3/claude" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
+# Номер issue — из хвостового маркера, не подстрочным case по "$*" целиком
+# (см. комментарий у аналогичного стаба фикстуры issue #139 выше: сам текст
+# инструкции ралфа безусловно содержит "issue #139").
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  21)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 201, "isDraft": false, "headRefName": "issue-21-a"}]
+PRJSON
+    ;;
+  22)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 201, "isDraft": false, "headRefName": "issue-21-a"}, {"number": 202, "isDraft": false, "headRefName": "issue-22-b"}]
+PRJSON
+    ;;
+  23)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 201, "isDraft": false, "headRefName": "issue-21-a"}, {"number": 202, "isDraft": false, "headRefName": "issue-22-b"}, {"number": 203, "isDraft": false, "headRefName": "issue-23-c"}]
+PRJSON
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$RBIN3/claude"
@@ -3215,11 +3263,16 @@ assert_exit "AC-1: adk-ralph: claude не в PATH — журнал не нача
 [ ! -f "$RBIN_NOCLAUDE/gh-calls.log" ]
 assert_exit "AC-1: adk-ralph: claude не в PATH — gh ни разу не вызван" 0 $?
 
-# ── claude -p завершается с ошибкой (exit != 0) — блокер круга 3: до
-# find_pr_state дела не доходит, значит нет факта «PR не создан»; прогон
-# останавливается целиком с честной причиной, не needs-human по всей
-# очереди (воспроизведение сценария из ревью: два доступных issue, claude
-# падает на первом же) ──────────────────────────────────────────────────────
+# ── claude -p завершается с ошибкой (exit != 0) — блокер круга 3: после
+# падения claude нет повторного обращения к find_pr_state, значит нет факта
+# «PR не создан»; прогон останавливается целиком с честной причиной, не
+# needs-human по всей очереди (воспроизведение сценария из ревью: два
+# доступных issue, claude падает на первом же). issue #147 добавил
+# предстартовую проверку find_pr_state ДО запуска claude — она честно
+# случается один раз (застаёт issue #41 без PR, "none", поэтому не
+# закорачивает запуск), но именно поэтому здесь важно отдельно посчитать
+# число вызовов "pr list": ровно 1 (предстартовый), не 2 (без повторного
+# после падения claude) ─────────────────────────────────────────────────────
 RALPH_CFAIL="$TMP/ralph-cfail-proj"
 RBIN_CFAIL="$TMP/ralph-cfail-bin"
 mkdir -p "$RALPH_CFAIL" "$RBIN_CFAIL"
@@ -3230,7 +3283,18 @@ cat > "$RBIN_CFAIL/issues-fixture.json" <<'EOF'
   {"number": 42, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-gh_ralph_stub "$RBIN_CFAIL" "$RBIN_CFAIL/issues-fixture.json" "FAIL:unexpected pr list call"
+cat > "$RBIN_CFAIL/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") echo "call" >> "$d/pr-list-calls.log"; echo "[]"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_CFAIL/gh"
 claude_stub_guard "$RBIN_CFAIL"
 cat >> "$RBIN_CFAIL/claude" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
@@ -3250,8 +3314,10 @@ assert_contains "AC-1: adk-ralph: сообщение об ошибке назы�
   "$ralph_cfail_out" "claude -p завершился с ошибкой (exit 1) при issue #41"
 assert_not_contains "AC-1: adk-ralph: claude -p падает — issue #41 НЕ штампуется needs-human вслепую (не «PR не создан»)" \
   "$ralph_cfail_out" "issue #41 застрял"
-assert_not_contains "AC-1: adk-ralph: claude -p падает — не проваливается тихо в find_pr_state (gh pr list ни разу не вызван)" \
-  "$ralph_cfail_out" "unexpected pr list call"
+pr_list_calls_cfail=0
+[ -f "$RBIN_CFAIL/pr-list-calls.log" ] && pr_list_calls_cfail=$(count_lines "$RBIN_CFAIL/pr-list-calls.log")
+assert_exit "issue #147: adk-ralph: claude -p падает — pr list вызван ровно один раз (предстартовая проверка), не повторно после падения" \
+  1 "$pr_list_calls_cfail"
 [ ! -f "$RBIN_CFAIL/issue-edit.log" ]
 assert_exit "AC-1: adk-ralph: claude -p падает — gh issue edit needs-human ни разу не вызван" 0 $?
 claude_cfail_calls=$(printf '%s' "$(cat "$RBIN_CFAIL/claude-calls.log" 2>/dev/null)" | grep -c "call")
@@ -3372,15 +3438,26 @@ cat > "$RBIN_OH/issues-fixture.json" <<'EOF'
   {"number": 91, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
 ]
 EOF
+# prs-fixture.json стартует пустым — то же самое, что у фикстур issue #139/
+# RALPH3 выше: с предстартовой проверкой find_pr_state (issue #147) заранее
+# заполненный ready-PR закоротил бы вызов claude ещё до проверки резерва
+# owner:human, а именно её (и последующий запуск claude на #91) проверяет
+# этот блок.
 cat > "$RBIN_OH/prs-fixture.json" <<'EOF'
-[
-  {"number": 401, "isDraft": false, "headRefName": "issue-91-z"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_OH" "$RBIN_OH/issues-fixture.json" "$RBIN_OH/prs-fixture.json"
 claude_stub_guard "$RBIN_OH"
 cat >> "$RBIN_OH/claude" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  91)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 401, "isDraft": false, "headRefName": "issue-91-z"}]
+PRJSON
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$RBIN_OH/claude"
@@ -3468,29 +3545,41 @@ assert_contains "issue #146: adk-ralph: очередь берёт #701" "$ralph_
 assert_contains "issue #146: adk-ralph: очередь берёт #702" "$ralph_blk_out" "#702"
 assert_contains "issue #146: adk-ralph: ни одна задача не застряла (все три блокера учтены верно)" \
   "$ralph_blk_out" "Застряло: нет"
-assert_not_contains "issue #146: adk-ralph: #500 (Blocked by #199 and #700, словесный разделитель) не выбрана как NEXT — #700 всё ещё открыт" \
-  "$ralph_blk_out" "#500"
-assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) остаётся заблокированной, как раньше" \
-  "$ralph_blk_out" "#501"
-assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) остаётся заблокированной, как раньше" \
-  "$ralph_blk_out" "#502"
 
-ralph_blk_log=$(cat "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
-blk_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+# По ADR-014 #500-#502 легально уходят в blocked-on-ready (их реальный
+# блокер стал ready), не пропадают молча — проверяем, что каждый привязан
+# именно к своему (второму) номеру, извлечённому регэкспом #146.
+ralph_blk_ready_line=$(printf '%s' "$ralph_blk_out" | grep '^Ready (ждут человека):')
+ralph_blk_bor_line=$(printf '%s' "$ralph_blk_out" | grep '^Заблокировано ready-PR блокера:')
+assert_not_contains "issue #146: adk-ralph: #500 (Blocked by #199 and #700, словесный разделитель) не входит в строку «Ready (ждут человека)»" \
+  "$ralph_blk_ready_line" "#500"
+assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) не входит в строку «Ready (ждут человека)»" \
+  "$ralph_blk_ready_line" "#501"
+assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) не входит в строку «Ready (ждут человека)»" \
+  "$ralph_blk_ready_line" "#502"
+assert_contains "issue #146: adk-ralph: #500 верно привязан к своему настоящему (второму) блокеру #700 — уходит в blocked-on-ready, не теряется" \
+  "$ralph_blk_bor_line" "#500"
+assert_contains "issue #146: adk-ralph: #501 верно привязан к #701 — blocked-on-ready" \
+  "$ralph_blk_bor_line" "#501"
+assert_contains "issue #146: adk-ralph: #502 верно привязан к #702 (раздельные строки Blocked by) — blocked-on-ready" \
+  "$ralph_blk_bor_line" "#502"
+
+claude_blk_calls=$(cat "$RBIN_BLK/claude-calls.log" 2>/dev/null | grep -c .)
+assert_exit "issue #146: adk-ralph: headless-процесс не вызван ни разу (все шесть issues разрешились через reused-ready/blocked-on-ready, ни одна не стала NEXT)" \
+  0 "$claude_blk_calls"
+
+blk_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
-  'event=task|issue=700|type=task|result=ready' \
-  'event=task|issue=701|type=task|result=ready' \
-  'event=task|issue=702|type=task|result=ready' \
-  'event=run_end|done=0|ready=3|stuck=0|skipped=0|reason=очередь пуста')
-blk_valid=$(jsonl_check "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 5 "$blk_spec")
-assert_exit "issue #146: adk-ralph: журнал — run_start, #700/#701/#702 ready, run_end без stuck/skipped, ничего по #500-#502" \
+  'event=task|issue=700|type=task|result=ready|reused=true' \
+  'event=task|issue=500|type=task|result=blocked-on-ready' \
+  'event=task|issue=701|type=task|result=ready|reused=true' \
+  'event=task|issue=501|type=task|result=blocked-on-ready' \
+  'event=task|issue=702|type=task|result=ready|reused=true' \
+  'event=task|issue=502|type=task|result=blocked-on-ready' \
+  'event=run_end|done=0|ready=3|stuck=0|skipped=0|blocked_on_ready=3')
+blk_valid=$(jsonl_check "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 8 "$blk_spec")
+assert_exit "issue #146: adk-ralph: журнал — #700/#701/#702 ready(reused), #500/#501/#502 blocked-on-ready каждый сразу за своим блокером, run_end без stuck/skipped, blocked_on_ready=3" \
   1 "$blk_valid"
-assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #500" \
-  "$ralph_blk_log" '"issue": "500"'
-assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #501" \
-  "$ralph_blk_log" '"issue": "501"'
-assert_not_contains "issue #146: adk-ralph: журнал не содержит ни одной записи по #502" \
-  "$ralph_blk_log" '"issue": "502"'
 
 # ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
 # issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
@@ -3595,11 +3684,14 @@ cat > "$RBIN_GITSTATE/issues-fixture.json" <<'EOF'
   {"number": 202, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
+# prs-fixture.json стартует пустым — иначе предстартовая проверка
+# find_pr_state (issue #147) закоротила бы обе задачи до единого запуска
+# claude, и эта фикстура перестала бы проверять то, ради чего заведена
+# (возврат дерева на main между итерациями). claude-стаб дописывает свою
+# ready-запись после переключения ветки — так же, как «клод реально
+# отработал» в фикстурах issue #139/RALPH3 выше.
 cat > "$RBIN_GITSTATE/prs-fixture.json" <<'EOF'
-[
-  {"number": 301, "isDraft": false, "headRefName": "issue-201-x"},
-  {"number": 302, "isDraft": false, "headRefName": "issue-202-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_GITSTATE" "$RBIN_GITSTATE/issues-fixture.json" "$RBIN_GITSTATE/prs-fixture.json"
 claude_stub_guard "$RBIN_GITSTATE"
@@ -3610,6 +3702,18 @@ cat >> "$RBIN_GITSTATE/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
 git checkout -q -b "issue-${issue_num}-x"
+case "$issue_num" in
+  201)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 301, "isDraft": false, "headRefName": "issue-201-x"}]
+PRJSON
+    ;;
+  202)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 301, "isDraft": false, "headRefName": "issue-201-x"}, {"number": 302, "isDraft": false, "headRefName": "issue-202-x"}]
+PRJSON
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$RBIN_GITSTATE/claude"
@@ -3655,9 +3759,7 @@ cat > "$RBIN_CHECKOUTFAIL/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_CHECKOUTFAIL/prs-fixture.json" <<'EOF'
-[
-  {"number": 901, "isDraft": false, "headRefName": "issue-801-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL/issues-fixture.json" "$RBIN_CHECKOUTFAIL/prs-fixture.json"
 claude_stub_guard "$RBIN_CHECKOUTFAIL"
@@ -3669,6 +3771,9 @@ if [ "$issue_num" = "801" ]; then
   echo committed-change > seed.txt
   git -c user.email=t@t -c user.name=t add seed.txt
   git -c user.email=t@t -c user.name=t commit -q -m "task change"
+  cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 901, "isDraft": false, "headRefName": "issue-801-x"}]
+PRJSON
   echo dirty-uncommitted >> seed.txt
 fi
 exit 0
@@ -3699,10 +3804,15 @@ assert_not_contains "issue #144: git checkout main отказывает — issu
 # прогона — до этой правки возврат дерева на main был только в конце
 # итерации (после успешной обработки), break внутри цикла на сбое
 # claude -p пропускал его целиком. Фикстура: issue #601 отрабатывает
-# штатно (ready-PR, дерево возвращается на main), issue #602 запускает
-# claude -p, который переключается на свою ветку и падает — дерево обязано
-# вернуться на main ПЕРЕД остановкой прогона (мутация «убрать возврат
-# дерева на break-пути claude -p» ловится последней проверкой) ───────────
+# штатно (claude -p реально вызывается и создаёт PR — prs-fixture.json
+# стартует пустым, тот же приём, что уже применён в других ralph-фикстурах
+# после согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186, иначе
+# статичный PR закоротил бы #601 на предстартовой проверке find_pr_state
+# ещё до вызова claude, и «штатно» было бы неправдой), дерево возвращается
+# на main. issue #602 запускает claude -p, который переключается на свою
+# ветку и падает — дерево обязано вернуться на main ПЕРЕД остановкой
+# прогона (мутация «убрать возврат дерева на break-пути claude -p»
+# ловится последней проверкой) ───────────────────────────────────────────
 RALPH_CFAIL_MID="$TMP/ralph-cfail-mid-proj"
 RBIN_CFAIL_MID="$TMP/ralph-cfail-mid-bin"
 mkdir -p "$RALPH_CFAIL_MID" "$RBIN_CFAIL_MID"
@@ -3716,9 +3826,7 @@ cat > "$RBIN_CFAIL_MID/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_CFAIL_MID/prs-fixture.json" <<'EOF'
-[
-  {"number": 701, "isDraft": false, "headRefName": "issue-601-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_CFAIL_MID" "$RBIN_CFAIL_MID/issues-fixture.json" "$RBIN_CFAIL_MID/prs-fixture.json"
 claude_stub_guard "$RBIN_CFAIL_MID"
@@ -3726,6 +3834,11 @@ cat >> "$RBIN_CFAIL_MID/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
+if [ "$issue_num" = "601" ]; then
+  cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 701, "isDraft": false, "headRefName": "issue-601-x"}]
+PRJSON
+fi
 if [ "$issue_num" = "602" ]; then
   echo "claude: rate limit exceeded" >&2
   exit 1
@@ -3749,8 +3862,18 @@ assert_exit "issue #144: claude -p падает на НЕ первом issue —
 
 # ── issue #144 (п.2): break-путь сбоя `gh pr list` НЕ на первом issue
 # прогона — тот же пробел, что и для claude -p выше, но для другого
-# break-пути (find_pr_state). Стаб gh считает свои вызовы "pr list" и
-# отказывает начиная со второго ────────────────────────────────────────
+# break-пути (find_pr_state). prs-fixture.json стартует пустым (тот же
+# приём, что уже применён в checkout-fail/default-branch фикстурах после
+# согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186): статичный
+# PR для issue-611-x с начала прогона закорачивал бы #611 на предстартовой
+# проверке find_pr_state ещё до первого реального сбоя, и `claude` не
+# вызывался бы вовсе. Стаб claude сам дописывает PR для #611 после checkout
+# (реальный сценарий: #611 штатно проходит claude -p, PR становится ready);
+# стаб gh считает свои вызовы "pr list" и отказывает ровно на 4-м (#611 до
+# claude, #611 после, #612 до, #612 после) — то есть на проверке ПОСЛЕ
+# claude -p для #612, когда #612 уже реально запустил claude -p и
+# переключился на свою ветку (предстартовая проверка #612, 3-й вызов,
+# сама по себе успешна) ──────────────────────────────────────────────────
 RALPH_PRFAIL_MID="$TMP/ralph-prfail-mid-proj"
 RBIN_PRFAIL_MID="$TMP/ralph-prfail-mid-bin"
 mkdir -p "$RALPH_PRFAIL_MID" "$RBIN_PRFAIL_MID"
@@ -3764,9 +3887,7 @@ cat > "$RBIN_PRFAIL_MID/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_PRFAIL_MID/prs-fixture.json" <<'EOF'
-[
-  {"number": 711, "isDraft": false, "headRefName": "issue-611-x"}
-]
+[]
 EOF
 cat > "$RBIN_PRFAIL_MID/gh" <<EOF
 #!/usr/bin/env bash
@@ -3778,11 +3899,11 @@ case "\$1 \$2" in
     [ -f "\$d/pr-list-calls" ] && n=\$(cat "\$d/pr-list-calls")
     n=\$((n + 1))
     echo "\$n" > "\$d/pr-list-calls"
-    if [ "\$n" -eq 1 ]; then
-      cat "$RBIN_PRFAIL_MID/prs-fixture.json"; exit 0
-    else
+    if [ "\$n" -eq 4 ]; then
       echo "gh: rate limit exceeded" >&2
       exit 1
+    else
+      cat "\$d/prs-fixture.json"; exit 0
     fi
     ;;
   "label create") exit 0 ;;
@@ -3794,7 +3915,13 @@ chmod +x "$RBIN_PRFAIL_MID/gh"
 claude_stub_guard "$RBIN_PRFAIL_MID"
 cat >> "$RBIN_PRFAIL_MID/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
+if [ "$issue_num" = "611" ]; then
+  cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 711, "isDraft": false, "headRefName": "issue-611-x"}]
+PRJSON
+fi
 exit 0
 EOF
 chmod +x "$RBIN_PRFAIL_MID/claude"
@@ -3806,6 +3933,12 @@ assert_exit "issue #144: adk-ralph: gh pr list падает не на перво
   1 $?
 assert_contains "issue #144: gh pr list падает не на первом issue — стоп-причина называет именно issue #612" \
   "$ralph_prfail_mid_out" "gh pr list не удался при разборе issue #612"
+
+prfail_mid_claude_calls=$(cat "$RBIN_PRFAIL_MID/claude-calls.log" 2>/dev/null)
+assert_contains "issue #144: gh pr list падает не на первом issue — claude -p реально вызван для #611 (не закорочен статичным PR)" \
+  "$prfail_mid_claude_calls" "call 611"
+assert_contains "issue #144: gh pr list падает не на первом issue — claude -p реально вызван для #612 (сбой наступает после, не вместо, обработки #612)" \
+  "$prfail_mid_claude_calls" "call 612"
 
 prfail_mid_final_branch=$(git -C "$RALPH_PRFAIL_MID" rev-parse --abbrev-ref HEAD)
 [ "$prfail_mid_final_branch" = "main" ]
@@ -3833,10 +3966,7 @@ cat > "$RBIN_DEFBRANCH/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_DEFBRANCH/prs-fixture.json" <<'EOF'
-[
-  {"number": 721, "isDraft": false, "headRefName": "issue-621-x"},
-  {"number": 722, "isDraft": false, "headRefName": "issue-622-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_DEFBRANCH" "$RBIN_DEFBRANCH/issues-fixture.json" "$RBIN_DEFBRANCH/prs-fixture.json"
 claude_stub_guard "$RBIN_DEFBRANCH"
@@ -3844,6 +3974,10 @@ cat >> "$RBIN_DEFBRANCH/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
 git checkout -q -b "issue-${issue_num}-x"
+pr_num=$((720 + issue_num - 620))
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": $pr_num, "isDraft": false, "headRefName": "issue-${issue_num}-x"}]
+PRJSON
 exit 0
 EOF
 chmod +x "$RBIN_DEFBRANCH/claude"
@@ -3879,6 +4013,325 @@ check_ac_doc "issue #144" "ADR-007 фиксирует известное огр�
   "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "Известное ограничение самохостинга"
 check_ac_doc "issue #144" "ADR-007: риск самохостинга реализуется только при сдвиге origin/<default branch> во время прогона" \
   "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "сдвинулся за время прогона"
+# ── issue #147 (DoD пункт 1, ADR-014): issue с уже открытым ready-PR не
+# запускает claude -p заново — ни в том же прогоне (невозможно: issue
+# обрабатывается не больше одного раза за прогон, см. handled), ни в
+# следующем отдельном запуске скрипта на той же фикстуре issues/PR. Первый
+# прогон реально обрабатывает issue #61 (без PR) → claude вызывается, PR
+# становится ready; второй, независимый запуск adk-ralph.sh на ТОЙ ЖЕ
+# персистентной фикстуре (issue #61 всё ещё открыт на GitHub, needs-human не
+# ставился, PR всё ещё ready — не смерджен) обязан обнаружить это
+# предстартовой проверкой find_pr_state и не звать claude -p повторно —
+# именно то, что раньше не проверялось (баг issue #147, круг 5/6 ревью
+# PR #141) ────────────────────────────────────────────────────────────────
+RALPH_AR="$TMP/ralph-already-ready-proj"
+RBIN_AR="$TMP/ralph-already-ready-bin"
+mkdir -p "$RALPH_AR" "$RBIN_AR"
+(cd "$RALPH_AR" && git_c init -q -b main)
+cat > "$RBIN_AR/issues-fixture.json" <<'EOF'
+[
+  {"number": 61, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_AR/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_AR" "$RBIN_AR/issues-fixture.json" "$RBIN_AR/prs-fixture.json"
+claude_stub_guard "$RBIN_AR"
+cat >> "$RBIN_AR/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 601, "isDraft": false, "headRefName": "issue-61-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_AR/claude"
+RALPH_AR_LOGS="$TMP/ralph-already-ready-logs"
+
+ralph_ar_run1=$(cd "$RALPH_AR" && PATH="$RBIN_AR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_AR" \
+  ADK_LOGS_DIR="$RALPH_AR_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-already-ready-notify1.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: первый прогон — issue #61 без PR обрабатывается и становится ready" 0 $?
+assert_contains "issue #147: adk-ralph: первый прогон — сводка перечисляет ready #61" \
+  "$ralph_ar_run1" "#61"
+
+# Второй, полностью отдельный запуск скрипта (новый процесс, `handled`
+# первого прогона не переживает завершение скрипта) — та же фикстура issues/
+# PR: issue #61 всё ещё в `gh issue list --state open`, PR всё ещё ready.
+ralph_ar_run2=$(cd "$RALPH_AR" && PATH="$RBIN_AR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_AR" \
+  ADK_LOGS_DIR="$RALPH_AR_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-already-ready-notify2.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: второй, отдельный прогон на той же фикстуре — завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: второй прогон — сводка всё равно перечисляет ready #61 (не потерян)" \
+  "$ralph_ar_run2" "#61"
+
+claude_ar_calls=$(count_lines "$RBIN_AR/claude-calls.log")
+assert_exit "issue #147: adk-ralph: headless-процесс запущен только один раз за оба прогона (второй прогон не повторяет полное исполнение issue #61)" \
+  1 "$claude_ar_calls"
+
+ralph_ar_log=$(cat "$RALPH_AR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ar_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=61|type=task|result=ready' \
+  'event=run_end|ready=1|stuck=0|skipped=0' \
+  'event=run_start' \
+  'event=task|issue=61|type=task|result=ready|reused=true' \
+  'event=run_end|ready=1|stuck=0|skipped=0')
+ar_valid=$(jsonl_check "$RALPH_AR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 6 "$ar_spec")
+assert_exit "issue #147: adk-ralph: журнал различает первый ready (реальное исполнение) и второй прогон, где issue #61 уже был ready (reused=true) — не полное повторное исполнение" \
+  1 "$ar_valid"
+reused_count=$(printf '%s' "$ralph_ar_log" | grep -c '"reused": "true"')
+assert_exit "issue #147: adk-ralph: пометка reused=true встречается ровно один раз (только во втором прогоне)" \
+  1 "$reused_count"
+
+# ── issue #147 (DoD пункт 2, ADR-014): issue #72 «Blocked by #71» —
+# issue #71 становится ready этим же прогоном, но сам issue #71 остаётся
+# открытым на GitHub (не смерджен) — формальная зависимость #72 не решена, и
+# #72 по-прежнему не кандидат. Но раньше такая задача просто пропадала из
+# вывода (не skipped, не stuck, не ready) и прогон рапортовал «очередь
+# пуста», хотя #72 реально висит в подвеске «ждёт мерджа блокера». Теперь —
+# отдельный видимый бакет result=blocked-on-ready и другая причина остановки
+# (не «очередь пуста») ──────────────────────────────────────────────────────
+RALPH_BOR="$TMP/ralph-blocked-on-ready-proj"
+RBIN_BOR="$TMP/ralph-blocked-on-ready-bin"
+mkdir -p "$RALPH_BOR" "$RBIN_BOR"
+(cd "$RALPH_BOR" && git_c init -q -b main)
+cat > "$RBIN_BOR/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"}
+]
+EOF
+cat > "$RBIN_BOR/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR" "$RBIN_BOR/issues-fixture.json" "$RBIN_BOR/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR"
+cat >> "$RBIN_BOR/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_BOR/claude"
+RALPH_BOR_LOGS="$TMP/ralph-blocked-on-ready-logs"
+
+ralph_bor_out=$(cd "$RALPH_BOR" && PATH="$RBIN_BOR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR" \
+  ADK_LOGS_DIR="$RALPH_BOR_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-blocked-on-ready-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: issue #72 заблокирован ready-но-не-смерженным #71 — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: сводка перечисляет ready #71" "$ralph_bor_out" "#71"
+assert_contains "issue #147: adk-ralph: сводка называет отдельной строкой заблокированный ready-PR блокера #72" \
+  "$ralph_bor_out" "Заблокировано ready-PR блокера:  #72"
+assert_not_contains "issue #147: adk-ralph: прогон НЕ рапортует «очередь пуста», пока #72 в подвеске блокера" \
+  "$ralph_bor_out" "очередь пуста"
+assert_contains "issue #147: adk-ralph: причина остановки называет задачи, заблокированные ready-PR блокера" \
+  "$ralph_bor_out" "заблокированные ready-PR блокера"
+
+claude_bor_calls=$(cat "$RBIN_BOR/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #147: adk-ralph: headless-процесс запущен ровно один раз (issue #72 не исполнялся вовсе — не кандидат)" \
+  1 "$claude_bor_calls"
+[ ! -f "$RBIN_BOR/issue-edit.log" ]
+assert_exit "issue #147: adk-ralph: issue #72 не помечается needs-human (не застрял — блокер не решён, а не отказ)" \
+  0 $?
+
+ralph_bor_log=$(cat "$RALPH_BOR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+bor_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=71|type=task|result=ready' \
+  'event=task|issue=72|type=task|result=blocked-on-ready' \
+  'event=run_end|ready=1|stuck=0|skipped=0|blocked_on_ready=1')
+bor_valid=$(jsonl_check "$RALPH_BOR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 4 "$bor_spec")
+assert_exit "issue #147: adk-ralph: журнал — run_start, #71 ready, #72 blocked-on-ready, run_end с blocked_on_ready=1" \
+  1 "$bor_valid"
+
+# ── issue #147 (круг 1 ревью PR #186, блокер): несколько блокеров — только
+# ЧАСТЬ из них ready этим прогоном, другая застряла. #72 «Blocked by #71,
+# #73» — #71 становится ready, #73 застревает (черновик). #72 обязан
+# остаться в обычном каскаде SKIP (как на main до этого PR), а не попасть в
+# blocked-on-ready — иначе задача, реально зависящая от застрявшей, ложно
+# считалась бы «просто ждёт мерджа», занижая maxSkippedShare (issue #134) ──
+RALPH_BOR_MIX="$TMP/ralph-bor-mixed-proj"
+RBIN_BOR_MIX="$TMP/ralph-bor-mixed-bin"
+mkdir -p "$RALPH_BOR_MIX" "$RBIN_BOR_MIX"
+(cd "$RALPH_BOR_MIX" && git_c init -q -b main)
+cat > "$RBIN_BOR_MIX/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71, #73"},
+  {"number": 73, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BOR_MIX/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR_MIX" "$RBIN_BOR_MIX/issues-fixture.json" "$RBIN_BOR_MIX/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR_MIX"
+cat >> "$RBIN_BOR_MIX/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  71)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+    ;;
+  73)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}, {"number": 703, "isDraft": true, "headRefName": "issue-73-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BOR_MIX/claude"
+RALPH_BOR_MIX_LOGS="$TMP/ralph-bor-mixed-logs"
+
+ralph_bor_mix_out=$(cd "$RALPH_BOR_MIX" && PATH="$RBIN_BOR_MIX:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_MIX" \
+  ADK_LOGS_DIR="$RALPH_BOR_MIX_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-mixed-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: смешанные блокеры (один ready, другой застрял) — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: смешанные блокеры — #72 идёт в обычный каскад SKIP, не blocked-on-ready" \
+  "$ralph_bor_mix_out" "Пропущено (зависимость от застрявшей задачи):  #72"
+assert_not_contains "issue #147: adk-ralph: смешанные блокеры — #72 НЕ попадает в бакет blocked-on-ready (не все блокеры ready)" \
+  "$ralph_bor_mix_out" "Заблокировано ready-PR блокера:  #72"
+ralph_bor_mix_log=$(cat "$RALPH_BOR_MIX_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "issue #147: adk-ralph: смешанные блокеры — журнал: #72 result=skipped" \
+  "$ralph_bor_mix_log" '"issue": "72", "type": "task", "result": "skipped"'
+assert_contains "issue #147: adk-ralph: смешанные блокеры — run_end: blocked_on_ready=0" \
+  "$ralph_bor_mix_log" '"blocked_on_ready": "0"'
+
+# ── issue #147 (круг 1 ревью PR #186, «важно»): цепочка blocked-on-ready —
+# #74 «Blocked by #72», #72 «Blocked by #71», #71 становится ready этим
+# прогоном. #72 — blocked-on-ready (единственный блокер стал ready); #74
+# зависит от #72 (который сам не «застрял», а «на подвеске» из-за ready-PR)
+# — #74 обязан попасть в тот же бакет, а не пропасть из вывода/журнала
+# молча, как раньше пропадала #2 из issue #147 ──────────────────────────────
+RALPH_BOR_CHAIN="$TMP/ralph-bor-chain-proj"
+RBIN_BOR_CHAIN="$TMP/ralph-bor-chain-bin"
+mkdir -p "$RALPH_BOR_CHAIN" "$RBIN_BOR_CHAIN"
+(cd "$RALPH_BOR_CHAIN" && git_c init -q -b main)
+cat > "$RBIN_BOR_CHAIN/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"},
+  {"number": 74, "labels": [{"name":"type:bug"}], "body": "Зависит от: Blocked by #72"}
+]
+EOF
+cat > "$RBIN_BOR_CHAIN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR_CHAIN" "$RBIN_BOR_CHAIN/issues-fixture.json" "$RBIN_BOR_CHAIN/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR_CHAIN"
+cat >> "$RBIN_BOR_CHAIN/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_BOR_CHAIN/claude"
+RALPH_BOR_CHAIN_LOGS="$TMP/ralph-bor-chain-logs"
+
+ralph_bor_chain_out=$(cd "$RALPH_BOR_CHAIN" && PATH="$RBIN_BOR_CHAIN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_CHAIN" \
+  ADK_LOGS_DIR="$RALPH_BOR_CHAIN_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-chain-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: цепочка blocked-on-ready (#74 зависит от #72, #72 от ready #71) — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: цепочка — #72 в бакете blocked-on-ready" \
+  "$ralph_bor_chain_out" "Заблокировано ready-PR блокера:  #72 #74"
+assert_not_contains "issue #147: adk-ralph: цепочка — прогон не рапортует «очередь пуста»" \
+  "$ralph_bor_chain_out" "очередь пуста"
+claude_bor_chain_calls=$(cat "$RBIN_BOR_CHAIN/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #147: adk-ralph: цепочка — headless-процесс запущен ровно один раз (#72 и #74 не исполнялись, оба не кандидаты)" \
+  1 "$claude_bor_chain_calls"
+ralph_bor_chain_log=$(cat "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+bor_chain_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=71|type=task|result=ready' \
+  'event=task|issue=72|type=task|result=blocked-on-ready' \
+  'event=task|issue=74|type=bug|result=blocked-on-ready' \
+  'event=run_end|ready=1|stuck=0|skipped=0|blocked_on_ready=2')
+bor_chain_valid=$(jsonl_check "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 5 "$bor_chain_spec")
+assert_exit "issue #147: adk-ralph: журнал цепочки — #71 ready, #72 и #74 blocked-on-ready, run_end blocked_on_ready=2" \
+  1 "$bor_chain_valid"
+
+# ── issue #147 (круг 2 ревью PR #186, блокер): неподвижная точка
+# blocked-on-ready обязана переживать итерации ВНЕШНЕГО цикла ralph, не
+# только один вызов select_next. #74 «Blocked by #72, #73» — #72 сама
+# «Blocked by #71» и попадает в blocked-on-ready на итерации 2 (когда ready
+# только #71), а второй блокер #74 — #73 — становится ready лишь на
+# итерации 2 следующим шагом (#73 не имеет блокеров, поэтому исполняется
+# сразу после того, как #72 ушла в blocked-on-ready). Только на итерации 3
+# оба блокера #74 (#72 и #73) оказываются resolved_ready — но #72 к этому
+# моменту уже в `handled` (напечатана как blocked-on-ready на итерации 2) и
+# исключена из вычисления резолва, если оно не переживает итерации: тогда
+# #74 не проходит проверку «все открытые блокеры resolved_ready» и молча
+# теряется (ни ready, ни stuck, ни skipped, ни blocked-on-ready) — тот же
+# класс бага, который чинит issue #147 ────────────────────────────────────
+RALPH_BOR_XITER="$TMP/ralph-bor-xiter-proj"
+RBIN_BOR_XITER="$TMP/ralph-bor-xiter-bin"
+mkdir -p "$RALPH_BOR_XITER" "$RBIN_BOR_XITER"
+(cd "$RALPH_BOR_XITER" && git_c init -q -b main)
+cat > "$RBIN_BOR_XITER/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"},
+  {"number": 73, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 74, "labels": [{"name":"type:bug"}], "body": "Зависит от: Blocked by #72, #73"}
+]
+EOF
+cat > "$RBIN_BOR_XITER/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR_XITER" "$RBIN_BOR_XITER/issues-fixture.json" "$RBIN_BOR_XITER/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR_XITER"
+cat >> "$RBIN_BOR_XITER/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  71)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+    ;;
+  73)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}, {"number": 703, "isDraft": false, "headRefName": "issue-73-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BOR_XITER/claude"
+RALPH_BOR_XITER_LOGS="$TMP/ralph-bor-xiter-logs"
+
+ralph_bor_xiter_out=$(cd "$RALPH_BOR_XITER" && PATH="$RBIN_BOR_XITER:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_XITER" \
+  ADK_LOGS_DIR="$RALPH_BOR_XITER_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-xiter-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: неподвижная точка через границу итераций — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: через границу итераций — сводка перечисляет ready #71 и #73" \
+  "$ralph_bor_xiter_out" "Ready (ждут человека):  #71 #73"
+assert_contains "issue #147: adk-ralph: через границу итераций — #74 не теряется молча, попадает в blocked-on-ready вместе с #72" \
+  "$ralph_bor_xiter_out" "Заблокировано ready-PR блокера:  #72 #74"
+assert_not_contains "issue #147: adk-ralph: через границу итераций — прогон не рапортует «очередь пуста»" \
+  "$ralph_bor_xiter_out" "очередь пуста"
+
+claude_bor_xiter_calls=$(cat "$RBIN_BOR_XITER/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #147: adk-ralph: через границу итераций — headless-процесс запущен ровно дважды (#71 и #73; #72 и #74 не исполнялись)" \
+  2 "$claude_bor_xiter_calls"
+
+ralph_bor_xiter_log=$(cat "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+bor_xiter_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=71|type=task|result=ready' \
+  'event=task|issue=72|type=task|result=blocked-on-ready' \
+  'event=task|issue=73|type=task|result=ready' \
+  'event=task|issue=74|type=bug|result=blocked-on-ready' \
+  'event=run_end|ready=2|stuck=0|skipped=0|blocked_on_ready=2')
+bor_xiter_valid=$(jsonl_check "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 6 "$bor_xiter_spec")
+assert_exit "issue #147: adk-ralph: журнал через границу итераций — #71/#73 ready, #72/#74 blocked-on-ready, run_end blocked_on_ready=2" \
+  1 "$bor_xiter_valid"
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,

@@ -88,12 +88,20 @@ consolidate_label=$(adk_config_get "types.consolidate.label" "type:consolidate")
 handled=""  # issue-номера, по которым уже записана строка event=task
 stuck=""    # issue-номера, застрявшие в этом прогоне (needs-human поставлен)
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
+ready_nums=""  # issue-номера, ставшие ready в этом прогоне (подмножество
+               # handled) — вход select_next для ADR-014 (issue #147)
+blocked_on_ready_nums=""  # issue-номера, отнесённые к blocked-on-ready в этом
+                          # прогоне (подмножество handled), переживает
+                          # итерации внешнего цикла — см. ADR-014 п.2
 ready_count=0
 stuck_count=0
 skipped_count=0
+blocked_on_ready_count=0  # задачи, заблокированные ready-но-не-смерженным
+                          # блокером этого прогона (ADR-014, issue #147)
 ready_list=""
 stuck_summary=""
 skipped_summary=""
+blocked_on_ready_summary=""
 stop_reason=""
 exit_code=0
 
@@ -148,12 +156,13 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # строку "NEXT <N> <type>" (следующая задача к исполнению) либо "NONE"
 # (доступных задач не осталось).
 select_next() {
-  python3 - "$issues_file" "$handled" "$stuck" "$skipped" \
+  python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
+    "$blocked_on_ready_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv = sys.argv[1:5]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[5:9]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv = sys.argv[1:7]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[7:11]
 
 
 def csv_ints(s):
@@ -162,6 +171,8 @@ def csv_ints(s):
 
 handled = csv_ints(handled_csv)
 unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
+ready_now = csv_ints(ready_csv)
+prev_blocked_on_ready = csv_ints(prev_bor_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
@@ -224,10 +235,34 @@ for it in new_skips:
     print(f"SKIP {it['number']} {type_of(it)}")
 
 excluded = handled | new_skip_numbers
+
+# blocked-on-ready (ADR-014 п.2): задача, ВСЕ открытые блокеры которой уже
+# resolved_ready (ready_now этого прогона + prev_blocked_on_ready прошлых
+# итераций внешнего цикла), — «на подвеске», не молча потеряна. Неподвижная
+# точка ниже — тем же приёмом, что каскад SKIP выше.
+resolved_ready = set(ready_now) | prev_blocked_on_ready
+blocked_on_ready_numbers = set()
+changed = True
+while changed:
+    changed = False
+    for it in issues:
+        n = it["number"]
+        if n in excluded or n in blocked_on_ready_numbers:
+            continue
+        if "needs-human" in labels_of(it):
+            continue
+        if "owner:human" in labels_of(it):
+            continue
+        open_blockers = blockers(it.get("body")) & open_numbers
+        if open_blockers and open_blockers <= resolved_ready:
+            blocked_on_ready_numbers.add(n)
+            resolved_ready.add(n)
+            changed = True
+
 candidate = None
 for it in issues:
     n = it["number"]
-    if n in excluded:
+    if n in excluded or n in blocked_on_ready_numbers:
         continue
     if "needs-human" in labels_of(it):
         continue
@@ -240,6 +275,10 @@ for it in issues:
         continue
     candidate = it
     break
+
+for it in issues:
+    if it["number"] in blocked_on_ready_numbers:
+        print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
 
 if candidate:
     print(f"NEXT {candidate['number']} {type_of(candidate)}")
@@ -380,13 +419,33 @@ while [ "$exit_code" -eq 0 ]; do
         skipped_count=$((skipped_count + 1))
         skipped_summary="$skipped_summary #$skip_num"
         ;;
+      BLOCKED_ON_READY\ *)
+        # ADR-014 (issue #147) — задача ждёт мерджа блокера, а не «застряла»
+        # или «пропущена». handled — чтобы select_next не печатал её заново
+        # на следующей итерации этого же прогона.
+        bor_num=$(printf '%s' "$line" | awk '{print $2}')
+        bor_type=$(printf '%s' "$line" | awk '{print $3}')
+        "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready || true
+        handled=$(csv_add "$handled" "$bor_num")
+        blocked_on_ready_nums=$(csv_add "$blocked_on_ready_nums" "$bor_num")
+        blocked_on_ready_count=$((blocked_on_ready_count + 1))
+        blocked_on_ready_summary="$blocked_on_ready_summary #$bor_num"
+        ;;
     esac
   done <<<"$select_out"
 
   status_line=$(printf '%s' "$select_out" | tail -1)
   case "$status_line" in
     NONE)
-      stop_reason="очередь пуста"
+      if [ "$blocked_on_ready_count" -gt 0 ]; then
+        # issue #147, ADR-014: очередь НЕ пуста — есть задача(и), ждущая
+        # мерджа блокера с ready-PR. Отдельная причина остановки, чтобы
+        # «очередь пуста» означало ровно то, что говорит (DoD issue #147:
+        # прогон не рапортует «очередь пуста», пока такая задача в подвеске).
+        stop_reason="доступных задач нет: остались только задачи, заблокированные ready-PR блокера"
+      else
+        stop_reason="очередь пуста"
+      fi
       break
       ;;
     NEXT\ *)
@@ -400,6 +459,31 @@ while [ "$exit_code" -eq 0 ]; do
       break
       ;;
   esac
+
+  # ── Предстартовая проверка PR (ADR-014, issue #147) ──────────────────────
+  # find_pr_state ДО запуска claude -p, не только после: issue с уже открытым
+  # ready-PR не должен гонять work.md с нуля заново. "draft"/"none" — не
+  # короткое замыкание, claude -p запускается как обычно.
+  pre_pr_state=$(find_pr_state "$issue_num")
+
+  if [ "$pre_pr_state" = "error" ]; then
+    echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
+    cat "$work_dir/gh-pr-list.err" >&2
+    stop_reason="gh pr list не удался при разборе issue #$issue_num"
+    exit_code=1
+    break
+  fi
+
+  if [ "$pre_pr_state" = "ready" ]; then
+    # reused=true отличает «уже был ready» от «стал ready в этом запуске»
+    # (ADR-014) — сам result тот же, что у обычного исхода ниже.
+    "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true || true
+    handled=$(csv_add "$handled" "$issue_num")
+    ready_nums=$(csv_add "$ready_nums" "$issue_num")
+    ready_count=$((ready_count + 1))
+    ready_list="$ready_list #$issue_num"
+    continue
+  fi
 
   prompt="$(cat "$work_md")
 
@@ -448,6 +532,7 @@ while [ "$exit_code" -eq 0 ]; do
 
   if [ "$pr_state" = "ready" ]; then
     "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready || true
+    ready_nums=$(csv_add "$ready_nums" "$issue_num")
     ready_count=$((ready_count + 1))
     ready_list="$ready_list #$issue_num"
   else
@@ -494,12 +579,13 @@ while [ "$exit_code" -eq 0 ]; do
 done
 
 "$logger" "$run_unit" event=run_end done=0 ready="$ready_count" stuck="$stuck_count" \
-  skipped="$skipped_count" reason="$stop_reason" || true
+  skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" reason="$stop_reason" || true
 
 summary="=== Ralph: итог прогона ===
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
+Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
 Причина остановки: $stop_reason"
 
@@ -507,6 +593,6 @@ echo "$summary"
 # Сводка дублируется локальным уведомлением (SPEC-003 «Сводка прогона и
 # HITL»; DoD issue #139: «event=run_end и уведомление») — не только
 # терминал и журнал.
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count. Причина: $stop_reason" || true
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count. Причина: $stop_reason" || true
 
 exit "$exit_code"
