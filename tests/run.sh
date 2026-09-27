@@ -4333,6 +4333,286 @@ bor_xiter_valid=$(jsonl_check "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d)
 assert_exit "issue #147: adk-ralph: журнал через границу итераций — #71/#73 ready, #72/#74 blocked-on-ready, run_end blocked_on_ready=2" \
   1 "$bor_xiter_valid"
 
+# ── issue #135 (SPEC-003 «Система», половина AC-5 уровня системы, ADR-015):
+# breaker уровня системы №1 — красные гейты main запрещают итерацию
+# немедленно, даже самую первую (DoD «фикстура с красным scripts/check на
+# main → ни одного вызова claude, остановка с честной причиной,
+# уведомление») ─────────────────────────────────────────────────────────────
+RALPH_SYSGATE="$TMP/ralph-sysgate-proj"
+RBIN_SYSGATE="$TMP/ralph-sysgate-bin"
+mkdir -p "$RALPH_SYSGATE" "$RBIN_SYSGATE"
+(cd "$RALPH_SYSGATE" && git_c init -q -b main)
+mkdir -p "$RALPH_SYSGATE/scripts"
+cat > "$RALPH_SYSGATE/scripts/check" <<'EOF'
+#!/usr/bin/env bash
+echo "scripts/check: намеренно красный (фикстура issue #135)" >&2
+exit 1
+EOF
+chmod +x "$RALPH_SYSGATE/scripts/check"
+
+cat > "$RBIN_SYSGATE/issues-fixture.json" <<'EOF'
+[
+  {"number": 401, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SYSGATE/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_SYSGATE" "$RBIN_SYSGATE/issues-fixture.json" "$RBIN_SYSGATE/prs-fixture.json"
+claude_stub_guard "$RBIN_SYSGATE"
+cat >> "$RBIN_SYSGATE/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+exit 0
+EOF
+chmod +x "$RBIN_SYSGATE/claude"
+
+RALPH_SYSGATE_LOGS="$TMP/ralph-sysgate-logs"
+RALPH_SYSGATE_NOTIFY="$TMP/ralph-sysgate-notify.log"
+
+ralph_sysgate_out=$(cd "$RALPH_SYSGATE" && PATH="$RBIN_SYSGATE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SYSGATE" \
+  ADK_LOGS_DIR="$RALPH_SYSGATE_LOGS" ADK_NOTIFY_FILE="$RALPH_SYSGATE_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #135: adk-ralph: красный scripts/check на main — прогон завершается с ошибкой (exit != 0)" \
+  1 $?
+assert_contains "issue #135: adk-ralph: сводка называет причину «системный breaker: красные гейты main»" \
+  "$ralph_sysgate_out" "системный breaker: красные гейты main"
+
+sysgate_call_count=$(cat "$RBIN_SYSGATE/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #135: adk-ralph: красный scripts/check на main — headless-процесс НЕ вызван ни разу" \
+  0 "$sysgate_call_count"
+
+sysgate_notify=$(cat "$RALPH_SYSGATE_NOTIFY" 2>/dev/null)
+assert_contains "issue #135: adk-ralph: уведомление о системном breaker (красные гейты main)" \
+  "$sysgate_notify" "системный breaker: красные гейты main"
+
+sysgate_log=$(cat "$RALPH_SYSGATE_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_not_contains "issue #135: adk-ralph: красный scripts/check на main — прогон не начат вовсе, ни одной строки event=task" \
+  "$sysgate_log" '"event": "task"'
+sysgate_spec=$(printf '%s\n%s' \
+  'event=run_start' \
+  'event=run_end|reason=системный breaker: красные гейты main')
+sysgate_valid=$(jsonl_check "$RALPH_SYSGATE_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2 "$sysgate_spec")
+assert_exit "issue #135: adk-ralph: журнал — только run_start + run_end с честной причиной, задач не было" \
+  1 "$sysgate_valid"
+
+# ── issue #135: breaker уровня системы №1 — гейты краснеют ПОСЛЕ первой
+# (штатной) итерации → вторая не начинается (DoD «гейты краснеют после
+# первой итерации → вторая не начинается») ─────────────────────────────────
+RALPH_SYSGATE2="$TMP/ralph-sysgate2-proj"
+RBIN_SYSGATE2="$TMP/ralph-sysgate2-bin"
+mkdir -p "$RALPH_SYSGATE2" "$RBIN_SYSGATE2"
+(cd "$RALPH_SYSGATE2" && git_c init -q -b main)
+mkdir -p "$RALPH_SYSGATE2/scripts"
+# Стейтфул-стаб: первый вызов (гейт итерации 1) зелёный, начиная со второго
+# (гейт итерации 2, уже после обработки issue #402) — красный.
+cat > "$RALPH_SYSGATE2/scripts/check" <<EOF
+#!/usr/bin/env bash
+count_file="$RALPH_SYSGATE2/.check-calls"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+if [ "\$n" -le 1 ]; then
+  exit 0
+fi
+echo "scripts/check: намеренно красный после первой итерации (фикстура issue #135)" >&2
+exit 1
+EOF
+chmod +x "$RALPH_SYSGATE2/scripts/check"
+
+cat > "$RBIN_SYSGATE2/issues-fixture.json" <<'EOF'
+[
+  {"number": 402, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 403, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SYSGATE2/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_SYSGATE2" "$RBIN_SYSGATE2/issues-fixture.json" "$RBIN_SYSGATE2/prs-fixture.json"
+claude_stub_guard "$RBIN_SYSGATE2"
+cat >> "$RBIN_SYSGATE2/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 501, "isDraft": false, "headRefName": "issue-402-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_SYSGATE2/claude"
+
+ralph_sysgate2_out=$(cd "$RALPH_SYSGATE2" && PATH="$RBIN_SYSGATE2:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SYSGATE2" \
+  ADK_LOGS_DIR="$TMP/ralph-sysgate2-logs" ADK_NOTIFY_FILE="$TMP/ralph-sysgate2-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #135: adk-ralph: гейты краснеют после первой итерации — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "issue #135: adk-ralph: гейты краснеют после первой итерации — сводка называет системный breaker" \
+  "$ralph_sysgate2_out" "системный breaker: красные гейты main"
+
+sysgate2_call_count=$(cat "$RBIN_SYSGATE2/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #135: adk-ralph: гейты краснеют после первой итерации — headless-процесс вызван ровно один раз (issue #403 не тронут)" \
+  1 "$sysgate2_call_count"
+assert_not_contains "issue #135: adk-ralph: гейты краснеют после первой итерации — issue #403 не залогирован" \
+  "$(cat "$TMP/ralph-sysgate2-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)" '"issue": "403"'
+
+# ── issue #135: проект вовсе без scripts/check и scripts/test — переходное
+# состояние (docs/contract.md), не ошибка: гейт молча пропускается, прогон
+# штатный (DoD «проект без контрактных скриптов проходит штатно») ──────────
+RALPH_NOSCRIPTS="$TMP/ralph-noscripts-proj"
+RBIN_NOSCRIPTS="$TMP/ralph-noscripts-bin"
+mkdir -p "$RALPH_NOSCRIPTS" "$RBIN_NOSCRIPTS"
+(cd "$RALPH_NOSCRIPTS" && git_c init -q -b main)
+
+cat > "$RBIN_NOSCRIPTS/issues-fixture.json" <<'EOF'
+[
+  {"number": 411, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_NOSCRIPTS/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_NOSCRIPTS" "$RBIN_NOSCRIPTS/issues-fixture.json" "$RBIN_NOSCRIPTS/prs-fixture.json"
+claude_stub_guard "$RBIN_NOSCRIPTS"
+cat >> "$RBIN_NOSCRIPTS/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 511, "isDraft": false, "headRefName": "issue-411-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_NOSCRIPTS/claude"
+
+ralph_noscripts_out=$(cd "$RALPH_NOSCRIPTS" && PATH="$RBIN_NOSCRIPTS:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NOSCRIPTS" \
+  ADK_LOGS_DIR="$TMP/ralph-noscripts-logs" ADK_NOTIFY_FILE="$TMP/ralph-noscripts-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #135: adk-ralph: проект без scripts/check и scripts/test — гейт молча пропускается, прогон штатный (exit 0)" \
+  0 $?
+assert_contains "issue #135: adk-ralph: без контрактных скриптов — сводка называет «очередь пуста», не breaker" \
+  "$ralph_noscripts_out" "очередь пуста"
+assert_not_contains "issue #135: adk-ralph: без контрактных скриптов — системный breaker не срабатывает" \
+  "$ralph_noscripts_out" "системный breaker"
+
+# ── issue #135: breaker уровня системы №2 — принудительно сломанная запись
+# журнала (adk-log.sh ненулевой код) останавливает прогон немедленно, ни
+# один headless-процесс не вызывается (отказ на самом первом event=run_start;
+# DoD «принудительно сломанная запись журнала останавливает прогон») ───────
+RALPH_LOGFAIL="$TMP/ralph-logfail-proj"
+RBIN_LOGFAIL="$TMP/ralph-logfail-bin"
+mkdir -p "$RALPH_LOGFAIL" "$RBIN_LOGFAIL"
+(cd "$RALPH_LOGFAIL" && git_c init -q -b main)
+
+cat > "$RBIN_LOGFAIL/issues-fixture.json" <<'EOF'
+[
+  {"number": 421, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_LOGFAIL/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_LOGFAIL" "$RBIN_LOGFAIL/issues-fixture.json" "$RBIN_LOGFAIL/prs-fixture.json"
+claude_stub_guard "$RBIN_LOGFAIL"
+cat >> "$RBIN_LOGFAIL/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+exit 0
+EOF
+chmod +x "$RBIN_LOGFAIL/claude"
+
+# ADK_LOGS_DIR указывает на обычный файл, не каталог: `mkdir -p` внутри
+# adk-log.sh не проверяет свой код возврата, но последующая запись строки
+# в "$logs_dir/$unit.jsonl" отказывает ("Not a directory") — adk-log.sh
+# завершается ненулевым кодом на каждом вызове, включая самый первый
+# (event=run_start), без единой правки самого adk-log.sh.
+RALPH_LOGFAIL_BROKEN_DIR="$TMP/ralph-logfail-notadir"
+: > "$RALPH_LOGFAIL_BROKEN_DIR"
+RALPH_LOGFAIL_NOTIFY="$TMP/ralph-logfail-notify.log"
+
+ralph_logfail_out=$(cd "$RALPH_LOGFAIL" && PATH="$RBIN_LOGFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_LOGFAIL" \
+  ADK_LOGS_DIR="$RALPH_LOGFAIL_BROKEN_DIR" ADK_NOTIFY_FILE="$RALPH_LOGFAIL_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #135: adk-ralph: сломанная запись журнала — прогон завершается с ошибкой (exit != 0)" \
+  1 $?
+assert_contains "issue #135: adk-ralph: сводка называет причину «системный breaker: отказ записи журнала»" \
+  "$ralph_logfail_out" "системный breaker: отказ записи журнала"
+
+logfail_call_count=$(cat "$RBIN_LOGFAIL/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #135: adk-ralph: сломанная запись журнала — headless-процесс не вызван ни разу (отказ уже на event=run_start)" \
+  0 "$logfail_call_count"
+
+logfail_notify=$(cat "$RALPH_LOGFAIL_NOTIFY" 2>/dev/null)
+assert_contains "issue #135: adk-ralph: уведомление об отказе записи журнала" \
+  "$logfail_notify" "системный breaker: отказ записи журнала"
+
+# ── issue #135: breaker уровня системы №3 — серия подряд идущих
+# git-конфликтов при актуализации default branch между итерациями
+# (ADR-015: порог 2, различение через MERGE_HEAD). Настоящий клон с
+# реально расходящейся историей — обычные ralph-фикстуры (`git init` без
+# remote) для этого не годятся: `git pull` в них и так проваливается
+# каждый раз (нет origin), но без единого конфликта слияния ───────────────
+RALPH_CONFLICT_ORIGIN="$TMP/ralph-conflict-origin"
+mkdir -p "$RALPH_CONFLICT_ORIGIN"
+(cd "$RALPH_CONFLICT_ORIGIN" && git_c init -q -b main && \
+  echo line1 > f.txt && git add f.txt && git_c commit -q -m base)
+
+RALPH_CONFLICT="$TMP/ralph-conflict-proj"
+git_c clone -q "$RALPH_CONFLICT_ORIGIN" "$RALPH_CONFLICT"
+# Расходимся: свой коммит в клоне и другой коммит прямо в "origin" — оба
+# правят одну и ту же строку f.txt, так что `git pull --no-rebase` в
+# клоне обязан упереться в конфликт слияния. `git merge --abort` внутри
+# return_to_default_branch откатывает только сам слитый merge, не коммит
+# клона — второй `git pull` следующей итерации воспроизводит тот же
+# конфликт детерминированно.
+(cd "$RALPH_CONFLICT" && echo local-change > f.txt && git_c commit -qam "local diverge")
+(cd "$RALPH_CONFLICT_ORIGIN" && echo origin-change > f.txt && git_c commit -qam "origin diverge")
+
+RBIN_CONFLICT="$TMP/ralph-conflict-bin"
+mkdir -p "$RBIN_CONFLICT"
+cat > "$RBIN_CONFLICT/issues-fixture.json" <<'EOF'
+[
+  {"number": 431, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 432, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_CONFLICT/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_CONFLICT" "$RBIN_CONFLICT/issues-fixture.json" "$RBIN_CONFLICT/prs-fixture.json"
+claude_stub_guard "$RBIN_CONFLICT"
+cat >> "$RBIN_CONFLICT/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
+case "$issue_num" in
+  431)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 601, "isDraft": false, "headRefName": "issue-431-x"}]
+PRJSON
+    ;;
+  432)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 601, "isDraft": false, "headRefName": "issue-431-x"}, {"number": 602, "isDraft": false, "headRefName": "issue-432-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_CONFLICT/claude"
+
+ralph_conflict_out=$(cd "$RALPH_CONFLICT" && PATH="$RBIN_CONFLICT:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CONFLICT" \
+  ADK_LOGS_DIR="$TMP/ralph-conflict-logs" ADK_NOTIFY_FILE="$TMP/ralph-conflict-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #135: adk-ralph: серия из 2 конфликтов актуализации подряд — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "issue #135: adk-ralph: серия конфликтов актуализации — сводка называет системный breaker" \
+  "$ralph_conflict_out" "системный breaker: серия конфликтов актуализации"
+
+conflict_call_count=$(cat "$RBIN_CONFLICT/claude-calls.log" 2>/dev/null | grep -c "^call")
+assert_exit "issue #135: adk-ralph: серия конфликтов актуализации — оба независимых issue успели исполниться до срабатывания breaker" \
+  2 "$conflict_call_count"
+
+conflict_final_branch=$(git -C "$RALPH_CONFLICT" rev-parse --abbrev-ref HEAD)
+[ "$conflict_final_branch" = "main" ]
+assert_exit "issue #135: adk-ralph: серия конфликтов актуализации — дерево не осталось в merge-in-progress (финальная ветка main)" \
+  0 $?
+[ ! -e "$RALPH_CONFLICT/.git/MERGE_HEAD" ]
+assert_exit "issue #135: adk-ralph: серия конфликтов актуализации — каждый конфликтный merge прерван (.git/MERGE_HEAD не остался)" \
+  0 $?
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
