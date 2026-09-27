@@ -2982,10 +2982,14 @@ check_ac_doc AC-7 "README: allowlist git покрывает сверку вет�
   "$KIT/README.md" "ls-remote --heads"
 check_ac_doc AC-7 "README: allowlist git покрывает проверку отставания от main (rev-list)" \
   "$KIT/README.md" "rev-list --count"
+check_ac_doc AC-7 "README: allowlist git покрывает обновление main перед новой веткой (pull)" \
+  "$KIT/README.md" "\`fetch\`, \`pull\`,"
 check_ac_doc AC-7 "README называет категорию gh в allowlist headless-процесса" \
   "$KIT/README.md" "**gh**:"
 check_ac_doc AC-7 "README: allowlist gh покрывает поиск существующего PR по ветке (pr list)" \
   "$KIT/README.md" "\`pr list\`"
+check_ac_doc AC-7 "README: allowlist gh покрывает чтение диффа PR ревьюером (pr diff)" \
+  "$KIT/README.md" "\`pr diff\` (использует reviewer-агент шага 6"
 check_ac_doc AC-7 "README называет плагинные скрипты (adk-config.sh, adk-log.sh) в allowlist headless-процесса" \
   "$KIT/README.md" "**скрипты плагина**"
 check_ac_doc AC-7 "README: allowlist плагинных скриптов называет adk-config.sh" \
