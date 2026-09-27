@@ -40,6 +40,18 @@
 # конфиг — $ADK_CONFIG_FILE (lib/config.sh) — все три уже поддержаны
 # переиспользуемыми хелперами, ralph не добавляет своего механизма.
 set -u
+# Job control (issue #131, ADR-017 §1, круг 1 ревью PR #193) — включается
+# безусловно для всего скрипта, не только вокруг фонового claude -p: с `-m`
+# каждый background job получает свою собственную группу процессов
+# (PGID == PID лидера), поэтому `kill -- "-$pid"` бьёт лидера И всех его
+# потомков (дочерние Bash-команды/тест-раннеры/dev-серверы, которые claude -p
+# мог успеть запустить) одним сигналом — без этого сигнал доходил бы только
+# до самого claude, а потомки переподвешивались к PID 1 и продолжали писать в
+# дерево параллельно со следующей итерацией. `-m` безвреден без tty (не
+# требует интерактивного управления заданиями) и не меняет поведение ни одной
+# другой команды скрипта — единственный background job во всём файле именно
+# этот.
+set -m
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/config.sh" # sourcing lib/config.sh тянет lib/paths.sh следом
@@ -107,6 +119,33 @@ fi
 run_unit="autopilot-$(date +%Y-%m-%d)"
 logger="$SCRIPT_DIR/adk-log.sh"
 notifier="$SCRIPT_DIR/notify-send.sh"
+
+# ── Прерывание сигналом (issue #131, ADR-017 §1, круг 1 ревью PR #193) ──────
+# До этой задачи claude -p выполнялся синхронно на переднем плане — Ctrl-C по
+# ralph доходил и до него как до члена того же foreground process group.
+# Бюджет задачи требует бэкграундить claude -p (чтобы параллельно опрашивать
+# бюджет), и background job с `-m` выше живёт в собственной группе процессов
+# — INT/TERM с терминала до него больше не доходит сам по себе. `claude_pid`
+# — глобальная переменная, непустая ровно на время жизни фонового claude -p
+# (выставляется/очищается вокруг каждого запуска ниже); обработчик signal
+# добивает именно её (и группу процессов, если она ещё жива), а не
+# полагается на то, что сигнал и так дойдёт.
+claude_pid=""
+ralph_signal_cleanup() {
+  local sig="$1"
+  echo "adk-ralph: получен сигнал $sig — прогон прерывается." >&2
+  if [ -n "$claude_pid" ]; then
+    kill -TERM -- "-$claude_pid" 2>/dev/null || true
+    sleep 0.2
+    kill -0 "$claude_pid" 2>/dev/null && kill -KILL -- "-$claude_pid" 2>/dev/null
+  fi
+  "$logger" "$run_unit" event=run_end done=0 ready="${ready_count:-0}" \
+    stuck="${stuck_count:-0}" skipped="${skipped_count:-0}" \
+    blocked_on_ready="${blocked_on_ready_count:-0}" reason="прерван сигналом $sig" || true
+  exit 130
+}
+trap 'ralph_signal_cleanup INT' INT
+trap 'ralph_signal_cleanup TERM' TERM
 
 task_label=$(adk_config_get "types.task.label" "type:task")
 bug_label=$(adk_config_get "types.bug.label" "type:bug")
@@ -974,20 +1013,27 @@ run_main_gates() {
 # adk_budget_seconds <путь> <дефолт-минуты> — печатает валидированный бюджет
 # в целых секундах ($SECONDS — bash-таймер целых секунд, секунды здесь
 # внутреннее удобство измерения, конфиг остаётся в минутах, докс —
-# docs/config.md). Ноль, отрицательное и нечисловое значение — та же
-# дисциплина, что у run_breaker_check_stuck/run_breaker_check_skipped_share
-# выше: предупреждение в stderr, использован дефолт. Ноль/отрицательное — не
-# «без лимита» (ADR-017 §3): бюджеты спеки жёсткие, спека не описывает
-# способа их отключить.
+# docs/config.md). Ноль, отрицательное, нечисловое, "nan" и "inf" — одна и та
+# же дисциплина (предупреждение в stderr, использован дефолт): "nan"/"inf" не
+# ловятся сравнением `<= 0` (сравнение с nan всегда false, inf > 0), а без
+# явной проверки на конечность падали бы необработанным исключением на
+# `int(round(...))` ниже — python завершался бы с трейсом, stdout был бы
+# пуст, и `[ … -ge "" ]` в цикле молча всегда возвращал бы false: бюджет
+# фактически отключался бы, прямо против ADR-017 §3 (круг 1 ревью PR #193).
+# Ноль/отрицательное — не «без лимита»: бюджеты спеки жёсткие, спека не
+# описывает способа их отключить. Верхняя граница `10**9` секунд (~31 год) —
+# защита от абсурдно большого, но конечного значения, которое не влезло бы в
+# 64-битную арифметику `$(( ))` ниже по коду.
 adk_budget_seconds() {
   local path="$1" default_minutes="$2" raw
   raw=$(adk_config_get "$path" "$default_minutes")
   python3 -c '
+import math
 import sys
 path, raw, default_minutes = sys.argv[1:4]
 try:
     minutes = float(raw)
-    if minutes <= 0:
+    if not math.isfinite(minutes) or minutes <= 0:
         raise ValueError
 except (TypeError, ValueError):
     sys.stderr.write(
@@ -995,7 +1041,8 @@ except (TypeError, ValueError):
         % (path, raw, default_minutes)
     )
     minutes = float(default_minutes)
-print(max(1, int(round(minutes * 60))))
+seconds = max(1, int(round(minutes * 60)))
+print(min(seconds, 10**9))
 ' "$path" "$raw" "$default_minutes"
 }
 
@@ -1180,8 +1227,14 @@ while [ "$exit_code" -eq 0 ]; do
   # (exec в подпроцессе — $claude_pid остаётся PID'ом самого claude,
   # независимо от версии bash, а не прослойки subshell), опрос $SECONDS
   # каждые 0.2s решает, жив ли ещё процесс и не истёк ли бюджет. Превышение
-  # — SIGTERM, до пяти опросов на грациозное завершение, затем безусловный
-  # SIGKILL: headless-процесс не обязан реагировать на SIGTERM мгновенно.
+  # — SIGTERM группе процессов (`-m` в шапке файла даёт фоновому job'у
+  # собственный PGID == PID лидера, `kill -- "-$pid"` бьёт лидера и всех
+  # потомков одним сигналом — круг 1 ревью PR #193: одиночный `kill "$pid"`
+  # оставлял детей claude -p сиротами, дописывающими дерево параллельно со
+  # следующей итерацией), до пяти опросов на грациозное завершение, затем
+  # SIGKILL группе, только если лидер всё ещё жив (безусловный kill -9 после
+  # цикла способен попасть в чужой PID, переиспользованный ОС, если процесс
+  # уже был прибран раньше).
   task_iter_start=$SECONDS
   (cd "$root" || exit 1; exec claude -p "$prompt") &
   claude_pid=$!
@@ -1196,7 +1249,7 @@ while [ "$exit_code" -eq 0 ]; do
     while kill -0 "$claude_pid" 2>/dev/null; do
       if [ $((SECONDS - task_iter_start)) -ge "$task_budget_seconds" ]; then
         task_budget_hit=1
-        kill "$claude_pid" 2>/dev/null || true
+        kill -TERM -- "-$claude_pid" 2>/dev/null || true
         break
       fi
       sleep 0.2
@@ -1206,11 +1259,14 @@ while [ "$exit_code" -eq 0 ]; do
         kill -0 "$claude_pid" 2>/dev/null || break
         sleep 0.2
       done
-      kill -9 "$claude_pid" 2>/dev/null || true
+      kill -0 "$claude_pid" 2>/dev/null && kill -KILL -- "-$claude_pid" 2>/dev/null
     fi
     wait "$claude_pid"
     claude_rc=$?
   } 2>/dev/null
+  # claude_pid пуст вне окна жизни фонового claude -p — обработчик сигнала
+  # (ralph_signal_cleanup выше) не должен пытаться добить уже собранный job.
+  claude_pid=""
 
   if [ "$task_budget_hit" -eq 0 ] && [ "$claude_rc" -ne 0 ]; then
     # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
@@ -1240,6 +1296,24 @@ while [ "$exit_code" -eq 0 ]; do
     # создан».
     echo "adk-ralph: claude -p превысил бюджет задачи по времени" \
       "(${task_budget_seconds}s) при issue #$issue_num — процесс прерван." >&2
+    # Прерванный ПОСРЕДИ работы claude -p (в отличие от штатного result=stuck
+    # ниже, где процесс успел завершиться сам и work.md уже закоммитил свои
+    # шаги) мог оставить незакоммиченные правки — неотслеживаемые файлы,
+    # изменённые отслеживаемые (круг 1 ревью PR #193, воспроизведено
+    # фикстурой с полудописанным файлом). return_to_default_branch ниже
+    # переключает дерево на default branch безусловно, и такие правки молча
+    # переезжают на него, если не расходятся с main, — следующая итерация
+    # стартовала бы уже на заражённом дереве. Честная остановка ВСЕГО
+    # прогона вместо продолжения: дерево остаётся как есть, не трогаем его
+    # ни коммитом, ни force-чекаутом (тот же принцип, что в
+    # return_to_default_branch — данные потенциально ещё нужны человеку).
+    if [ -n "$(cd "$root" && git status --porcelain 2>/dev/null)" ]; then
+      echo "adk-ralph: рабочее дерево не чисто после прерывания claude -p по" \
+        "бюджету задачи (issue #$issue_num) — прогон остановлен, дерево не тронуто." >&2
+      stop_reason="бюджет задачи по времени: рабочее дерево не чисто после прерывания issue #$issue_num"
+      exit_code=1
+      break
+    fi
     pr_state="budget-exceeded"
   else
     pr_state=$(find_pr_state "$issue_num")

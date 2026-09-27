@@ -6414,10 +6414,13 @@ assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит з�
   "$ralph_mb_log" '"issue": "2081"'
 
 # ── issue #131, ADR-017: бюджет времени на задачу — превышение прерывает
-# claude -p (SIGTERM/SIGKILL, стаб #911 сам заменяет себя на `sleep 5`),
-# застревание уровня задачи (needs-human, уведомление, result=stuck с
-# причиной), цикл ПРОДОЛЖАЕТСЯ — независимый #912 всё равно исполняется и
-# получает ready ────────────────────────────────────────────────────────────
+# claude -p (SIGTERM/SIGKILL группе процессов, стаб #911 сам заменяет себя
+# на `sleep 30`), застревание уровня задачи (needs-human, уведомление,
+# result=stuck с причиной), цикл ПРОДОЛЖАЕТСЯ — независимый #912 всё равно
+# исполняется и получает ready. Бюджет — 4s (не 1s): #912 тоже исполняется
+# под тем же бюджетом задачи, запас нужен, чтобы его быстрое, но не
+# мгновенное, завершение не задело порог под нагрузкой CI (круг 1 ревью
+# PR #193) ───────────────────────────────────────────────────────────────
 RALPH_BUDGET_TASK="$TMP/ralph-budget-task-proj"
 RBIN_BUDGET_TASK="$TMP/ralph-budget-task-bin"
 mkdir -p "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK"
@@ -6440,9 +6443,9 @@ issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | ta
 case "$issue_num" in
   911)
     # #911 — «завис»: заменяет себя на sleep, дольше бюджета задачи ниже
-    # (1s). exec — не форк, PID стаба остаётся PID'ом sleep, adk-ralph.sh
-    # прерывает его напрямую SIGTERM/SIGKILL.
-    exec sleep 5
+    # (4s). exec — не форк, PID стаба остаётся PID'ом sleep, adk-ralph.sh
+    # прерывает его напрямую SIGTERM/SIGKILL группе процессов.
+    exec sleep 30
     ;;
   912)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -6457,7 +6460,7 @@ chmod +x "$RBIN_BUDGET_TASK/claude"
 
 RALPH_BUDGET_TASK_CFG="$TMP/ralph-budget-task-config.json"
 cat > "$RALPH_BUDGET_TASK_CFG" <<'EOF'
-{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.02}}}}}
+{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.06}}}}}
 EOF
 
 RALPH_BUDGET_TASK_LOGS="$TMP/ralph-budget-task-logs"
@@ -6617,6 +6620,93 @@ assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача д�
   "$ralph_budget_zero_out" "#931"
 assert_not_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача НЕ помечена stuck по бюджету" \
   "$ralph_budget_zero_out" "бюджет задачи по времени"
+
+# ── issue #131, ADR-017 §4 (круг 1 ревью PR #193): claude -p, убитый
+# ПОСРЕДИ работы по бюджету задачи, оставляет рабочее дерево грязным
+# (незакоммиченный трекаемый файл + неотслеживаемый файл) — прогон
+# останавливается ЦЕЛИКОМ честной причиной вместо продолжения на
+# заражённом дереве; #962 не берётся вовсе, дерево остаётся нетронутым
+# ровно таким, каким его оставил прерванный процесс ──────────────────────
+RALPH_BUDGET_DIRTY="$TMP/ralph-budget-dirty-proj"
+RBIN_BUDGET_DIRTY="$TMP/ralph-budget-dirty-bin"
+mkdir -p "$RALPH_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY"
+(cd "$RALPH_BUDGET_DIRTY" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_BUDGET_DIRTY/issues-fixture.json" <<'EOF'
+[
+  {"number": 961, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 962, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_DIRTY/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY/issues-fixture.json" "$RBIN_BUDGET_DIRTY/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_DIRTY"
+cat >> "$RBIN_BUDGET_DIRTY/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  961)
+    # Реалистичная «середина работы»: своя ветка, незакоммиченная правка
+    # трекаемого файла, свежий неотслеживаемый файл — затем зависает дольше
+    # бюджета задачи ниже.
+    git checkout -q -b issue-961-x
+    echo half-done >> seed.txt
+    echo scratch > half-done.txt
+    exec sleep 30
+    ;;
+  962)
+    echo "962 NOT SUPPOSED TO RUN" >> "$d/claude-calls.log"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_DIRTY/claude"
+
+RALPH_BUDGET_DIRTY_CFG="$TMP/ralph-budget-dirty-config.json"
+cat > "$RALPH_BUDGET_DIRTY_CFG" <<'EOF'
+{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.06}}}}}
+EOF
+
+ralph_budget_dirty_out=$(cd "$RALPH_BUDGET_DIRTY" && PATH="$RBIN_BUDGET_DIRTY:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_DIRTY" \
+  ADK_LOGS_DIR="$TMP/ralph-budget-dirty-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_DIRTY_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-budget-dirty-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи + грязное дерево — прогон останавливается целиком (exit 1)" \
+  1 $?
+assert_contains "AC-3: adk-ralph: (issue #131) причина называет грязное дерево после прерывания по бюджету" \
+  "$ralph_budget_dirty_out" "рабочее дерево не чисто после прерывания issue #961"
+
+dirty_call_count=$(cat "$RBIN_BUDGET_DIRTY/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — headless-процесс вызван один раз (#962 не начат)" \
+  1 "$dirty_call_count"
+assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #962 не запущен (маркер стаба отсутствует)" \
+  "$(cat "$RBIN_BUDGET_DIRTY/claude-calls.log" 2>/dev/null)" "962 NOT SUPPOSED TO RUN"
+
+dirty_edit_log=$(cat "$RBIN_BUDGET_DIRTY/issue-edit.log" 2>/dev/null)
+assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #961 НЕ помечен needs-human (весь прогон остановлен раньше)" \
+  "$dirty_edit_log" "issue edit 961"
+
+dirty_final_status=$(cd "$RALPH_BUDGET_DIRTY" && git status --porcelain)
+[ -n "$dirty_final_status" ]
+assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — правки прерванного процесса остались нетронутыми (не force-чекнуты)" \
+  0 $?
+
+dirty_log=$(cat "$TMP/ralph-budget-dirty-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #961 не залогирован через обычный event=task (прогон остановлен раньше логирования исхода)" \
+  "$dirty_log" '"issue": "961"'
+
+# ── issue #131: docs/config.md фиксирует дефолты 45/240 — прямая проверка
+# самих значений (не только «дефолт не мешает быстрому тесту»), которую
+# реальным ожиданием бюджета в минутах в тесте не поставить ─────────────
+budget_config_doc_text=$(cat "$KIT/docs/config.md")
+assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.task.maxMinutes = 45" \
+  "$budget_config_doc_text" '| `policies.autopilot.budget.task.maxMinutes` | число (положительное, минуты) | `45` |'
+assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.run.maxMinutes = 240" \
+  "$budget_config_doc_text" '| `policies.autopilot.budget.run.maxMinutes` | число (положительное, минуты) | `240` |'
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
