@@ -5332,6 +5332,51 @@ assert_exit "AC-2: adk-ralph: единственный доступный issue 
 assert_exit "AC-2: adk-ralph: стоп-файл, лежавший до старта, больше не существует после удаления на старте" \
   0 $?
 
+# ── issue #130, ADR-018: стоп-файл появляется во время обработки
+# ЕДИНСТВЕННОГО (последнего) доступного issue — следующий (несостоявшийся)
+# проход цикла нашёл бы «очередь пуста» (реально нет больше открытых
+# issues), но select_next для него вообще не вызывается: проверка
+# стоп-файла стоит раньше любого действия итерации, поэтому сводка обязана
+# называть «стоп-файл», не «очередь пуста», хотя очередь и правда опустела ─
+RALPH_STOP_LAST="$TMP/ralph-stop-last-proj"
+RBIN_STOP_LAST="$TMP/ralph-stop-last-bin"
+mkdir -p "$RALPH_STOP_LAST" "$RBIN_STOP_LAST"
+(cd "$RALPH_STOP_LAST" && git_c init -q -b main)
+
+cat > "$RBIN_STOP_LAST/issues-fixture.json" <<'EOF'
+[
+  {"number": 1340, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_STOP_LAST/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_STOP_LAST" "$RBIN_STOP_LAST/issues-fixture.json" "$RBIN_STOP_LAST/prs-fixture.json"
+claude_stub_guard "$RBIN_STOP_LAST"
+cat >> "$RBIN_STOP_LAST/claude" <<EOF
+echo "\$*" >> "\$d/claude-calls.log"
+mkdir -p "$RALPH_STOP_LAST/.adk"
+touch "$RALPH_STOP_LAST/.adk/stop"
+cat > "\$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9940, "isDraft": false, "headRefName": "issue-1340-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_STOP_LAST/claude"
+
+ralph_stop_last_out=$(cd "$RALPH_STOP_LAST" && PATH="$RBIN_STOP_LAST:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_LAST" \
+  ADK_LOGS_DIR="$TMP/ralph-stop-last-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-last-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-2: adk-ralph: стоп-файл на последнем доступном issue — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-2: adk-ralph: стоп-файл на последнем issue — сводка называет причиной «стоп-файл»" \
+  "$ralph_stop_last_out" "Причина остановки: стоп-файл"
+assert_not_contains "AC-2: adk-ralph: стоп-файл на последнем issue — сводка НЕ называет «очередь пуста», хотя очередь и правда опустела" \
+  "$ralph_stop_last_out" "Причина остановки: очередь пуста"
+stop_last_call_count=$(cat "$RBIN_STOP_LAST/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-2: adk-ralph: стоп-файл на последнем issue — headless-процесс вызван ровно один раз" \
+  1 "$stop_last_call_count"
+
 # ── issue #130: коллизия причин остановки — стоп-файл появляется во время
 # итерации, которая САМА в этой же итерации уже довела прогон до
 # breaker'а уровня прогона (maxStuckPerRun=2, дефолт). Приоритет — у
