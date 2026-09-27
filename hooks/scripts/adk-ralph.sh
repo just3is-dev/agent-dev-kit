@@ -5,16 +5,20 @@
 # вручную из корня проекта: hooks/scripts/adk-ralph.sh
 #
 # issue #139 — только базовый цикл (AC-1) и запрет
-# --dangerously-skip-permissions (AC-7). Бюджеты и merge ready-PR —
-# следующие задачи плана (issues #129, #131, #138, SPEC-003): эта версия
-# после ready-PR всегда собирает задачу в список «ждут человека»
-# (result=ready, ADR-003), никогда не мержит. Breaker уровня системы —
-# issue #135, ADR-015: красные гейты main перед каждой итерацией, отказ
-# записи журнала, серия git-конфликтов актуализации подряд. Breaker уровня
-# прогона — issue #134, ADR-016: накопленные застревания и доля
+# --dangerously-skip-permissions (AC-7). Бюджеты задачи/прогона — issues
+# #131/#138, SPEC-003 (ещё не реализованы). Breaker уровня
+# системы — issue #135, ADR-015: красные гейты main перед каждой итерацией,
+# отказ записи журнала, серия git-конфликтов актуализации подряд. Breaker
+# уровня прогона — issue #134, ADR-016: накопленные застревания и доля
 # пропущенных из-за зависимостей за прогон. Оба уровня breaker'а
 # реализованы в этой версии. Стоп-файл `.adk/stop` — issue #130, SPEC-003
-# AC-2, приоритет при коллизии причин остановки — ADR-018.
+# AC-2, приоритет при коллизии причин остановки — ADR-018. Merge ready-PR
+# по policies.merge/canMerge — issue #129, ADR-019: fail-closed на
+# неизвестное значение конфига (никогда не мержит), human-only/
+# human-review-required-без-approve — «ждут человека» (result=ready, как
+# раньше), иначе актуализация + локальные гейты + `gh pr merge` с флагом
+# из `adk-config.sh --merge-method`; конфликт/красные гейты после
+# актуализации — застревание задачи (result=stuck), не остановка прогона.
 #
 # Правило выбора следующей задачи — то же, что шаг 1 commands/autopilot.md:
 # открытый issue, без метки needs-human, все «Зависит от: Blocked by #N»
@@ -115,15 +119,24 @@ stuck=""    # issue-номера, застрявшие в этом прогон�
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
 ready_nums=""  # issue-номера, ставшие ready в этом прогоне (подмножество
                # handled) — вход select_next для ADR-014 (issue #147)
+merged_nums=""  # issue-номера, смерженные этим прогоном (issue #129,
+                # ADR-019) — подмножество handled, отдельно от ready_nums:
+                # мердж уже не ждёт человека, select_next не должен считать
+                # его блокером ready (ADR-014 §2 говорит именно про ready-но-
+                # не-смерженный блокер).
 blocked_on_ready_nums=""  # issue-номера, отнесённые к blocked-on-ready в этом
                           # прогоне (подмножество handled), переживает
                           # итерации внешнего цикла — см. ADR-014 п.2
 ready_count=0
+merged_count=0  # issue #129, ADR-019 — идёт в event=run_end.done (поле уже
+                # предусмотрено ADR-001 схемой, adk-ralph.sh раньше всегда
+                # писал в него 0 — merge не был реализован)
 stuck_count=0
 skipped_count=0
 blocked_on_ready_count=0  # задачи, заблокированные ready-но-не-смерженным
                           # блокером этого прогона (ADR-014, issue #147)
 ready_list=""
+merged_list=""
 stuck_summary=""
 skipped_summary=""
 blocked_on_ready_summary=""
@@ -194,19 +207,22 @@ sys.exit(0 if stuck >= threshold else 1)
 # run_breaker_check_skipped_share — true (exit 0), когда доля пропущенных
 # из-за зависимостей выше maxSkippedShare (дефолт 0.5; сравнение строгое —
 # «выше», значение ровно на пороге не останавливает цикл). Знаменатель —
-# ready_count + stuck_count + skipped_count: задачи, реально доигранные до
-# исхода этим прогоном. Не включает blocked-on-ready (ADR-014: «семантически
-# не неудача») и не включает owner:human/уже-needs-human issues — они и так
-# не входят ни в один из трёх счётчиков (ADR-007, ADR-014). Ниже
-# run_breaker_min_denominator доля не оценивается вовсе, функция
+# ready_count + merged_count + stuck_count + skipped_count: задачи, реально
+# доигранные до исхода этим прогоном (merged_count добавлен issue #129,
+# ADR-019 — смерженная задача доиграна до исхода не менее, чем ready-PR,
+# ждущий человека; на прогонах без merge merged_count всегда 0, формула не
+# меняет прежний результат). Не включает blocked-on-ready (ADR-014:
+# «семантически не неудача») и не включает owner:human/уже-needs-human
+# issues — они и так не входят ни в один из счётчиков (ADR-007, ADR-014).
+# Ниже run_breaker_min_denominator доля не оценивается вовсе, функция
 # безусловно возвращает false — вызывается на входе каждой итерации, не
 # только сразу после каскада SKIP: доля способна впервые достичь минимума
-# знаменателя и на исходе ready/stuck обычной задачи, не только на пропуске
-# (ADR-016 §2-3).
+# знаменателя и на исходе ready/merged/stuck обычной задачи, не только на
+# пропуске (ADR-016 §2-3).
 run_breaker_check_skipped_share() {
   local raw total
   raw=$(adk_config_get "policies.autopilot.breaker.maxSkippedShare" "0.5")
-  total=$((ready_count + stuck_count + skipped_count))
+  total=$((ready_count + merged_count + stuck_count + skipped_count))
   python3 -c '
 import sys
 raw, skipped, total, min_denominator = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
@@ -300,12 +316,12 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # (доступных задач не осталось).
 select_next() {
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
-    "$blocked_on_ready_nums" \
+    "$blocked_on_ready_nums" "$merged_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv = sys.argv[1:7]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[7:11]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv = sys.argv[1:8]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[8:12]
 
 
 def csv_ints(s):
@@ -316,12 +332,23 @@ handled = csv_ints(handled_csv)
 unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
 ready_now = csv_ints(ready_csv)
 prev_blocked_on_ready = csv_ints(prev_bor_csv)
+merged_now = csv_ints(merged_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
 issues.sort(key=lambda it: it["number"])
 
-open_numbers = {it["number"] for it in issues}
+# issues_file — снимок "gh issue list --state open" на старте прогона
+# (не перезапрашивается между итерациями), поэтому смерженный этим прогоном
+# issue остаётся в снимке как «открытый». merged_now вычитается из
+# open_numbers (issue #129, ADR-019 §10): "Blocked by #<смерженный>" не
+# должен вечно висеть неразрешённым блокером — merge закрывает issue на
+# GitHub (Closes #N в теле PR, конвенция шага 5 commands/work.md) так же
+# определённо, как issue, отсутствующий в снимке вовсе. Без вычитания
+# зависимая задача не становится ни NEXT, ни blocked-on-ready (у неё нет
+# собственного ready-PR, чтобы попасть в эту ветку) и молча выпадает из
+# сводки прогона — регрессия ADR-014/issue #147 для новой ветки исходов.
+open_numbers = {it["number"] for it in issues} - merged_now
 
 
 def blockers(body):
@@ -484,6 +511,348 @@ except Exception:
     print("error")
 ' "$issue_num")
   printf '%s' "${parsed:-error}"
+}
+
+# find_pr_number <issue_num> — тот же поиск по префиксу ветки issue-<N>-
+# (ADR-007 §2: наибольший номер при нескольких совпадениях), что и
+# find_pr_state, но печатает номер PR ("error" при сбое/отсутствии), а не
+# состояние draft/ready. Отдельная функция, не расширение find_pr_state:
+# контракт find_pr_state (ready/draft/none/error) уже используют вызовы до
+# этой задачи (issue #147, ADR-014) — менять его формат вывода ради одного
+# нового потребителя (issue #129, merge) рискованно. Стоит ralph лишний
+# `gh pr list` на каждую задачу, доходящую до merge-развилки — тот же
+# компромисс, что уже принят ADR-014 (предстартовая проверка ready-PR).
+find_pr_number() {
+  local issue_num="$1" pr_json rc
+  pr_json=$(cd "$root" && gh pr list --state open \
+    --json number,headRefName --limit 200 2>"$work_dir/gh-pr-list-merge.err")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'error'
+    return
+  fi
+  printf '%s' "$pr_json" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    prefix = "issue-" + sys.argv[1] + "-"
+    matches = [d for d in data if d.get("headRefName", "").startswith(prefix)]
+    if not matches:
+        print("error")
+    else:
+        matches.sort(key=lambda d: d["number"])
+        print(matches[-1]["number"])
+except Exception:
+    print("error")
+' "$issue_num"
+}
+
+# resolve_ready_pr <issue_num> — исход «PR ready» (issue #129,
+# SPEC-003 AC-1, ADR-019): решает, мержить ли ready-PR по политике проекта,
+# и при необходимости актуализирует ветку и мержит. Печатает ровно одну из
+# трёх строк (тот же приём, что SKIP/BLOCKED_ON_READY у select_next — вызывающий
+# код разбирает первое слово через `case`):
+#   MERGED           — PR смержен, ветка удалена;
+#   READY            — merge не выполнен (fail-closed на неизвестном
+#                       значении конфига, human-only, human-review-required
+#                       без approve) — задача остаётся в бакете «ждут
+#                       человека», как и раньше этой задачи;
+#   STUCK <причина>  — конфликт/красные гейты/не удалось узнать статус —
+#                       задача застревает (needs-human), прогон продолжается.
+#
+# Канонический рецепт актуализации/merge — шаг 6 commands/work.md; отличия
+# автопилота (bash, не интерактивная сессия) — шаг 3 commands/autopilot.md.
+# Здесь — ТОЛЬКО отличия ralph от обоих (см. ADR-019 за полным обоснованием
+# каждого пункта):
+# - ralph не знает mergeStateStatus заранее и не сидит на ветке PR между
+#   итерациями — конфликтность/ветка берутся явным `gh pr view`, отставание —
+#   явным `git fetch` + `git rev-list origin/<ветка>..origin/<default_branch>`
+#   (тот же приём, что шаг 3 /autopilot, не от HEAD; `default_branch` — та
+#   же переменная, что ADR-007 §6, не хардкод "main");
+# - `gh pr view --json mergeable` иногда отвечает "UNKNOWN", пока GitHub
+#   считает mergeability — до 3 попыток с паузой 1с (ADR-019 §2), после чего
+#   неопределённость — тоже причина застревания, не бесконечный ретрай;
+# - policies.merge=human-review-required требует человеческого approve —
+#   ralph берёт факт из `gh pr view --json reviewDecision` (тот же признак,
+#   что канон /autopilot и bash-guard.sh);
+# - CI-watch (`gh pr checks --watch` из канона шага 3 /autopilot) сознательно
+#   не реализован в этой версии — задокументированное ограничение ADR-019 §4,
+#   не пропуск по невнимательности.
+resolve_ready_pr() {
+  local issue_num="$1"
+  local can_merge can_merge_rc merge_policy merge_policy_rc
+
+  # Fail-closed на неизвестное значение — та же дисциплина, что bash-guard.sh
+  # (policies.merge) и остальной разбор конфига этим скриптом (enabled выше):
+  # ненулевой exit adk_config_get — не отсутствие атрибута (за это отвечает
+  # exit 0 + дефолт lib/config.sh), а опечатка в значении, которую нельзя
+  # молча трактовать как разрешение на merge.
+  can_merge=$(adk_config_get "policies.autopilot.canMerge" "true" "true,false")
+  can_merge_rc=$?
+  merge_policy=$(adk_config_get "policies.merge" "agent-after-approve" \
+    "agent-after-approve,human-review-required,human-only")
+  merge_policy_rc=$?
+
+  if [ "$can_merge_rc" -ne 0 ] || [ "$merge_policy_rc" -ne 0 ]; then
+    printf 'READY'
+    return 0
+  fi
+  if [ "$can_merge" != "true" ] || [ "$merge_policy" = "human-only" ]; then
+    printf 'READY'
+    return 0
+  fi
+
+  local pr_number
+  pr_number=$(find_pr_number "$issue_num")
+  if [ "$pr_number" = "error" ]; then
+    printf 'STUCK не удалось определить номер PR для merge'
+    return 0
+  fi
+
+  # Один вызов на mergeable+reviewDecision+headRefName (тот же приём, что
+  # bash-guard.sh: adk_gh_pr_fields, lib/paths.sh) — reviewDecision нужен
+  # только при human-review-required, но лишнее поле в одном запросе дешевле
+  # второго отдельного вызова gh. UNKNOWN на mergeable — до 3 попыток с
+  # паузой 1с (ADR-019 §2); reviewDecision в этом ретрае не участвует —
+  # опрашивается той же строкой на последней попытке.
+  local pr_fields mergeable review_decision pr_branch attempt=0 max_attempts=3
+  while :; do
+    attempt=$((attempt + 1))
+    pr_fields=$(adk_gh_pr_fields "$pr_number" "" "$root" \
+      "mergeable,reviewDecision,headRefName" \
+      '"\(.mergeable) \(.reviewDecision) \(.headRefName)"')
+    case "$pr_fields" in
+      *' '*' '*)
+        mergeable="${pr_fields%% *}"
+        review_decision="${pr_fields#* }"
+        review_decision="${review_decision%% *}"
+        pr_branch="${pr_fields##* }"
+        ;;
+      *)
+        mergeable=""
+        review_decision=""
+        pr_branch=""
+        ;;
+    esac
+    if [ "$mergeable" != "UNKNOWN" ] || [ "$attempt" -ge "$max_attempts" ]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [ -z "$mergeable" ] || [ -z "$pr_branch" ]; then
+    printf 'STUCK не удалось получить статус PR (gh pr view)'
+    return 0
+  fi
+
+  if [ "$merge_policy" = "human-review-required" ] && [ "$review_decision" != "APPROVED" ]; then
+    printf 'READY'
+    return 0
+  fi
+
+  if [ "$mergeable" = "CONFLICTING" ]; then
+    # "конфликт с $default_branch" — на большинстве проектов default_branch
+    # это буквально "main" (текст совпадает с каноном autopilot.md), но не
+    # хардкод: репозиторий с другим default branch получает точную причину,
+    # той же дисциплиной, что круг 1 ревью PR #195 (origin/$default_branch
+    # вместо origin/main выше).
+    printf 'STUCK конфликт с %s' "$default_branch"
+    return 0
+  fi
+  if [ "$mergeable" != "MERGEABLE" ]; then
+    printf 'STUCK не удалось определить конфликтность PR (mergeable=%s)' "$mergeable"
+    return 0
+  fi
+
+  if ! (cd "$root" && git fetch origin) >"$work_dir/git-fetch-merge.err" 2>&1; then
+    printf 'STUCK не удалось обновить origin (git fetch)'
+    return 0
+  fi
+  # default_branch — та же переменная, что вычисляет цикл ниже фактически
+  # (ADR-007 §6, `git symbolic-ref --short refs/remotes/origin/HEAD`, не
+  # хардкод "main"): она уже присвоена глобально к моменту вызова этой
+  # функции (вызывается только изнутри цикла, после присваивания). Отказ
+  # или пустой/нечисловой вывод rev-list — неопределённое состояние
+  # отставания, не «ветка актуальна»: fail-open здесь означал бы merge без
+  # актуализации и без повторного прогона гейтов (круг 1 ревью PR #195).
+  local behind behind_rc
+  behind=$(cd "$root" && git rev-list --count "origin/$pr_branch..origin/$default_branch" 2>/dev/null)
+  behind_rc=$?
+  case "$behind" in
+    ''|*[!0-9]*) behind_rc=1 ;;
+  esac
+  if [ "$behind_rc" -ne 0 ]; then
+    printf 'STUCK не удалось определить отставание ветки (git rev-list)'
+    return 0
+  fi
+
+  if [ "$behind" -gt 0 ]; then
+    # Способ актуализации — conventions.branchUpdate, тот же атрибут, что шаг
+    # 6 /work; ненулевой exit = опечатка в конфиге, застревание задачи (не
+    # остановка прогона — отличие от enabled выше, который останавливает
+    # прогон до его старта, здесь же прогон уже идёт по очереди issues).
+    local branch_update bu_rc
+    branch_update=$(adk_config_get "conventions.branchUpdate" "rebase" "rebase,merge")
+    bu_rc=$?
+    if [ "$bu_rc" -ne 0 ]; then
+      printf 'STUCK неизвестное значение conventions.branchUpdate в конфиге'
+      return 0
+    fi
+
+    if ! (cd "$root" && gh pr checkout "$pr_number") >"$work_dir/gh-pr-checkout.err" 2>&1; then
+      printf 'STUCK не удалось выполнить gh pr checkout'
+      return 0
+    fi
+
+    local update_rc
+    if [ "$branch_update" = "merge" ]; then
+      (cd "$root" && git merge "origin/$default_branch") >"$work_dir/git-update-merge.err" 2>&1
+      update_rc=$?
+    else
+      (cd "$root" && git rebase "origin/$default_branch") >"$work_dir/git-update-merge.err" 2>&1
+      update_rc=$?
+    fi
+    if [ "$update_rc" -ne 0 ]; then
+      if [ "$branch_update" = "merge" ]; then
+        (cd "$root" && git merge --abort) >/dev/null 2>&1 || true
+      else
+        (cd "$root" && git rebase --abort) >/dev/null 2>&1 || true
+      fi
+      printf 'STUCK конфликт при актуализации'
+      return 0
+    fi
+
+    # Гейты — порядок «гейты → push», как в каноне шага 6 /work: публиковать
+    # неактуализированную/непроверенную голову раньше собственных гейтов
+    # значило бы затем второй force-push поверх неё.
+    if [ -x "$root/scripts/check" ]; then
+      if ! (cd "$root" && ./scripts/check) >"$work_dir/merge-gates.log" 2>&1; then
+        cat "$work_dir/merge-gates.log" >&2
+        printf 'STUCK гейты красные после актуализации'
+        return 0
+      fi
+    fi
+    if [ -x "$root/scripts/test" ]; then
+      if ! (cd "$root" && ./scripts/test) >"$work_dir/merge-gates.log" 2>&1; then
+        cat "$work_dir/merge-gates.log" >&2
+        printf 'STUCK гейты красные после актуализации'
+        return 0
+      fi
+    fi
+
+    if [ "$branch_update" = "merge" ]; then
+      (cd "$root" && git push origin "$pr_branch") >"$work_dir/git-push-merge.err" 2>&1
+    else
+      (cd "$root" && git push --force-with-lease origin "$pr_branch") >"$work_dir/git-push-merge.err" 2>&1
+    fi
+    if [ $? -ne 0 ]; then
+      cat "$work_dir/git-push-merge.err" >&2
+      printf 'STUCK не удалось запушить актуализированную ветку'
+      return 0
+    fi
+  fi
+
+  # Флаг слияния — производная conventions.squash × conventions.branchUpdate
+  # (adk_config_merge_method, lib/config.sh), не хардкод squash (issue #129
+  # DoD: «не зашивать squash»).
+  # adk_merge_method (lib/config.sh) — чистая функция, печатает ровно одно
+  # из трёх значений ниже (нет четвёртого случая для defensive-ветки: круг
+  # 1 ревью PR #195 — defensive `*) --squash` сама была бы хардкодом,
+  # которого просит избежать issue #129 DoD).
+  local merge_method merge_flag
+  merge_method=$(adk_config_merge_method)
+  case "$merge_method" in
+    squash-merge) merge_flag="--squash" ;;
+    rebase-merge) merge_flag="--rebase" ;;
+    merge-commit) merge_flag="--merge" ;;
+  esac
+
+  if ! (cd "$root" && gh pr merge "$pr_number" "$merge_flag" --delete-branch) \
+    >"$work_dir/gh-pr-merge.err" 2>&1; then
+    cat "$work_dir/gh-pr-merge.err" >&2
+    printf 'STUCK gh pr merge не удался'
+    return 0
+  fi
+
+  printf 'MERGED'
+}
+
+# finish_ready_outcome <issue_num> <issue_type> <reused: true|false> — общая
+# точка исходов «PR ready» (issue #129, ADR-019) для обеих веток вызова,
+# использующих find_pr_state в этом скрипте: предстартовой (issue уже был
+# ready до запуска claude -p, ADR-014 §1, reused=true) и обычной (claude -p
+# только что вывел PR в ready). Раскладывает результат resolve_ready_pr по
+# счётчикам/журналу тем же порядком «счётчики до записи в журнал», что и
+# остальной код этого скрипта (issue #135, круг 1 ревью PR #191): если
+# "$logger" ниже откажет, задача всё равно останется в сводке/уведомлении —
+# единственном оставшемся канале. Не трогает `handled` — вызывающий код
+# делает это сам той же строкой, что и ветка draft/none (общий код перед
+# if/else). Возвращает 0 — цикл продолжается штатно; 1 — отказала запись
+# журнала или пришёл нераспознанный ответ resolve_ready_pr (journal_break/
+# stop_reason уже выставлены), вызывающий код обязан прервать внешний while
+# сам — bash не даёт функции `break` чужой цикл.
+finish_ready_outcome() {
+  local issue_num="$1" issue_type="$2" reused="$3" resolved reason
+
+  resolved=$(resolve_ready_pr "$issue_num")
+
+  case "$resolved" in
+    MERGED)
+      merged_nums=$(csv_add "$merged_nums" "$issue_num")
+      merged_count=$((merged_count + 1))
+      merged_list="$merged_list #$issue_num"
+      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=merged; then
+        journal_break
+        return 1
+      fi
+      ;;
+    READY)
+      ready_nums=$(csv_add "$ready_nums" "$issue_num")
+      ready_count=$((ready_count + 1))
+      ready_list="$ready_list #$issue_num"
+      if [ "$reused" = "true" ]; then
+        if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true; then
+          journal_break
+          return 1
+        fi
+      elif ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready; then
+        journal_break
+        return 1
+      fi
+      ;;
+    STUCK\ *)
+      reason="${resolved#STUCK }"
+      (cd "$root" && gh label create needs-human >/dev/null 2>&1) || true
+      if ! (cd "$root" && gh issue edit "$issue_num" --add-label needs-human) \
+        >/dev/null 2>"$work_dir/gh-issue-edit.err"; then
+        # Тот же принцип, что draft/none ниже: needs-human — единственный
+        # механизм HITL, молчать об отказе нельзя, но и не блокер прогона.
+        echo "adk-ralph: не удалось пометить issue #$issue_num меткой needs-human:" >&2
+        cat "$work_dir/gh-issue-edit.err" >&2
+      fi
+      "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
+      stuck=$(csv_add "$stuck" "$issue_num")
+      stuck_count=$((stuck_count + 1))
+      stuck_summary="$stuck_summary #$issue_num ($reason)"
+      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason"; then
+        journal_break
+        return 1
+      fi
+      # Breaker уровня прогона — накопленные застревания (issue #134,
+      # ADR-016 §1), сразу после инкремента stuck_count — тот же порядок,
+      # что и draft/none ниже.
+      if run_breaker_check_stuck; then
+        run_breaker_reason="breaker: застревания за прогон"
+      fi
+      ;;
+    *)
+      echo "adk-ralph: неожиданный вывод resolve_ready_pr: $resolved" >&2
+      stop_reason="внутренняя ошибка обработки ready-PR issue #$issue_num"
+      exit_code=1
+      return 1
+      ;;
+  esac
+  return 0
 }
 
 # ── Default branch — определяется фактически, не хардкодится (issue #144,
@@ -730,77 +1099,73 @@ while [ "$exit_code" -eq 0 ]; do
     break
   fi
 
+  # reused_flag — "true" отличает «issue уже был ready до этой итерации»
+  # (ADR-014 §1) от «claude -p только что вывел PR в ready» — сам разбор
+  # исхода (merge/ready-для-человека/stuck, issue #129) одинаков для обоих,
+  # finish_ready_outcome ниже пишет reused=true в журнал только для первого
+  # случая. Предстартовый "ready" пропускает claude -p целиком (pr_state
+  # известен заранее), но НЕ пропускает возврат дерева/breaker-хвост цикла
+  # ниже — merge (resolve_ready_pr) способен подвинуть рабочее дерево
+  # (`gh pr checkout`) точно так же, как claude -p, поэтому обе ветки сходятся
+  # в один и тот же общий хвост, а не расходятся на `continue` и полный
+  # проход цикла, как до issue #129.
+  reused_flag="false"
   if [ "$pre_pr_state" = "ready" ]; then
-    # reused=true отличает «уже был ready» от «стал ready в этом запуске»
-    # (ADR-014) — сам result тот же, что у обычного исхода ниже. Счётчики
-    # обновлены ДО записи в журнал (issue #135, круг 1 ревью PR #191): если
-    # "$logger" ниже откажет, готовый PR всё равно останется в
-    # сводке/уведомлении прогона — единственном оставшемся канале, когда
-    # журнал сломан, вместо того чтобы молча пропасть из "Ready".
-    handled=$(csv_add "$handled" "$issue_num")
-    ready_nums=$(csv_add "$ready_nums" "$issue_num")
-    ready_count=$((ready_count + 1))
-    ready_list="$ready_list #$issue_num"
-    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready reused=true; then
-      journal_break
-      break
-    fi
-    continue
-  fi
-
-  prompt="$(cat "$work_md")
+    reused_flag="true"
+    pr_state="ready"
+  else
+    prompt="$(cat "$work_md")
 
 ---
 Инструкция ралфа (adk-ralph.sh, issue #139, SPEC-003): выполни шаги выше
 целиком для задачи issue #$issue_num. Путь к проекту: $root."
 
-  (cd "$root" && claude -p "$prompt")
-  claude_rc=$?
-  if [ "$claude_rc" -ne 0 ]; then
-    # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
-    # разово споткнулся) — до find_pr_state дела не дошло, значит нет и
-    # факта «PR не создан» (ADR-007 §4, тот же принцип, что ниже для gh
-    # pr list). Останавливаем прогон целиком: причина обычно не
-    # специфична для этого issue и повторится на следующей итерации тем
-    # же образом — не штампуем needs-human вслепую по всей очереди.
-    echo "adk-ralph: claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num — прогон остановлен." >&2
-    stop_reason="claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num"
-    exit_code=1
-    # Возврат дерева на default branch — тот же путь, что и в конце штатной
-    # итерации (issue #144, п.2): без него дерево осталось бы на ветке
-    # задачи, на которую переключился claude -p до сбоя. Отказ здесь не
-    # переопределяет stop_reason выше (сбой claude -p — первичная причина
-    # остановки), но всё равно печатает своё громкое предупреждение.
-    return_to_default_branch || true
-    break
-  fi
+    (cd "$root" && claude -p "$prompt")
+    claude_rc=$?
+    if [ "$claude_rc" -ne 0 ]; then
+      # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
+      # разово споткнулся) — до find_pr_state дела не дошло, значит нет и
+      # факта «PR не создан» (ADR-007 §4, тот же принцип, что ниже для gh
+      # pr list). Останавливаем прогон целиком: причина обычно не
+      # специфична для этого issue и повторится на следующей итерации тем
+      # же образом — не штампуем needs-human вслепую по всей очереди.
+      echo "adk-ralph: claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num — прогон остановлен." >&2
+      stop_reason="claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num"
+      exit_code=1
+      # Возврат дерева на default branch — тот же путь, что и в конце штатной
+      # итерации (issue #144, п.2): без него дерево осталось бы на ветке
+      # задачи, на которую переключился claude -p до сбоя. Отказ здесь не
+      # переопределяет stop_reason выше (сбой claude -p — первичная причина
+      # остановки), но всё равно печатает своё громкое предупреждение.
+      return_to_default_branch || true
+      break
+    fi
 
-  pr_state=$(find_pr_state "$issue_num")
+    pr_state=$(find_pr_state "$issue_num")
 
-  if [ "$pr_state" = "error" ]; then
-    # Сбой gh pr list — не факт «PR не создан» (ADR-007 §2/§3): прогон
-    # останавливается целиком, issue не логируется как обработанный.
-    echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
-    cat "$work_dir/gh-pr-list.err" >&2
-    stop_reason="gh pr list не удался при разборе issue #$issue_num"
-    exit_code=1
-    # Тот же общий путь возврата дерева, что и на break-пути claude -p выше
-    # (issue #144, п.2) — claude -p к этому моменту уже отработал и мог
-    # переключить дерево на ветку задачи.
-    return_to_default_branch || true
-    break
+    if [ "$pr_state" = "error" ]; then
+      # Сбой gh pr list — не факт «PR не создан» (ADR-007 §2/§3): прогон
+      # останавливается целиком, issue не логируется как обработанный.
+      echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
+      cat "$work_dir/gh-pr-list.err" >&2
+      stop_reason="gh pr list не удался при разборе issue #$issue_num"
+      exit_code=1
+      # Тот же общий путь возврата дерева, что и на break-пути claude -p выше
+      # (issue #144, п.2) — claude -p к этому моменту уже отработал и мог
+      # переключить дерево на ветку задачи.
+      return_to_default_branch || true
+      break
+    fi
   fi
 
   handled=$(csv_add "$handled" "$issue_num")
 
   if [ "$pr_state" = "ready" ]; then
-    # Счётчики — до записи в журнал, тот же порядок и та же причина, что
-    # у reused=true выше (issue #135, круг 1 ревью PR #191).
-    ready_nums=$(csv_add "$ready_nums" "$issue_num")
-    ready_count=$((ready_count + 1))
-    ready_list="$ready_list #$issue_num"
-    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready; then
-      journal_break
+    # Решение «мержить/оставить человеку/застряло» — issue #129, ADR-019.
+    # finish_ready_outcome сама пишет журнал и обновляет счётчики (merged/
+    # ready/stuck) — возврат 1 означает отказ записи журнала или
+    # нераспознанный ответ resolve_ready_pr, оба уже выставили stop_reason.
+    if ! finish_ready_outcome "$issue_num" "$issue_type" "$reused_flag"; then
       return_to_default_branch || true
       break
     fi
@@ -891,10 +1256,15 @@ while [ "$exit_code" -eq 0 ]; do
   fi
 done
 
-"$logger" "$run_unit" event=run_end done=0 ready="$ready_count" stuck="$stuck_count" \
+# done=<смержено> — поле уже предусмотрено базовой схемой ADR-001
+# ("event=run_end done=<k> stuck=<k> skipped=<k>"); adk-ralph.sh раньше
+# писал в него литеральный 0, потому что merge не был реализован (issue
+# #129, ADR-019 — merged_count теперь отражает факт).
+"$logger" "$run_unit" event=run_end done="$merged_count" ready="$ready_count" stuck="$stuck_count" \
   skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" reason="$stop_reason" || true
 
 summary="=== Ralph: итог прогона ===
+Смержено: ${merged_list:-нет}
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
@@ -905,7 +1275,10 @@ Ready (ждут человека): ${ready_list:-нет}
 echo "$summary"
 # Сводка дублируется локальным уведомлением (SPEC-003 «Сводка прогона и
 # HITL»; DoD issue #139: «event=run_end и уведомление») — не только
-# терминал и журнал.
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count. Причина: $stop_reason" || true
+# терминал и журнал. merged=$merged_count дописан В КОНЕЦ строки (issue
+# #129), а не сразу после "завершён:", чтобы не сдвинуть существующие
+# assert_contains на буквальный префикс "ready=... stuck=... skipped=..."
+# у фикстур, предшествующих merge (issue #139/#134/#135/#147/#130).
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count. Причина: $stop_reason" || true
 
 exit "$exit_code"
