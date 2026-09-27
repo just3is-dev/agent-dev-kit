@@ -90,6 +90,13 @@ stuck=""    # issue-номера, застрявшие в этом прогон�
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
 ready_nums=""  # issue-номера, ставшие ready в этом прогоне (подмножество
                # handled) — вход select_next для ADR-014 (issue #147)
+blocked_on_ready_nums=""  # issue-номера, уже отнесённые к blocked-on-ready в
+                          # этом прогоне (подмножество handled) — тот же
+                          # приём, что ready_nums: переживает итерации
+                          # внешнего цикла и передаётся в select_next, чтобы
+                          # неподвижная точка resolved_ready не забывала уже
+                          # найденные blocked-on-ready задачи (круг 2 ревью
+                          # PR #186, issue #147)
 ready_count=0
 stuck_count=0
 skipped_count=0
@@ -154,11 +161,12 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # (доступных задач не осталось).
 select_next() {
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
+    "$blocked_on_ready_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv = sys.argv[1:6]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[6:10]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv = sys.argv[1:7]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[7:11]
 
 
 def csv_ints(s):
@@ -168,6 +176,7 @@ def csv_ints(s):
 handled = csv_ints(handled_csv)
 unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
 ready_now = csv_ints(ready_csv)
+prev_blocked_on_ready = csv_ints(prev_bor_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
@@ -231,21 +240,18 @@ for it in new_skips:
 
 excluded = handled | new_skip_numbers
 
-# issue #147, ADR-014 (круг 1 ревью PR #186 — блокер и «важно»): задача, чей
-# блокер формально ещё открыт (issue блокера не смерджен/не закрыт), по
-# прежнему не кандидат — зависимость не решена, это не аномалия. Но если
-# блокер стал ready именно этим прогоном, задача не должна молча пропасть из
-# вывода — она реально «на подвеске», готова стартовать, как только человек
-# смержит блокера. Оба условия ниже обязательны: (а) ВСЕ открытые блокеры
-# задачи должны быть resolved_ready (не «хотя бы один» — иначе задача с одним
-# ready-блокером и одним обычным ещё не тронутым блокером ложно попала бы
-# сюда вместо того, чтобы просто ждать своей очереди как всегда); (б)
-# resolved_ready — это не только issue, ставшие ready в этом прогоне
-# (ready_now), но и уже найденные blocked-on-ready задачи — фиксированная
-# точка до неподвижности, тем же приёмом, что каскад SKIP выше (иначе цепочка
-# «C заблокирован B, B заблокирован A, A стал ready» теряла бы C: B попадал
-# бы в blocked-on-ready, а C — никуда).
-resolved_ready = set(ready_now)
+# issue #147, ADR-014 (круг 1 ревью PR #186): задача с открытым, но
+# resolved_ready блокером — «на подвеске», не молча потеряна (см. ADR-014
+# п.2). resolved_ready = issue, ставшие ready ЭТИМ прогоном (ready_now), плюс
+# уже найденные blocked-on-ready (в этом вызове — цикл до неподвижности ниже,
+# тем же приёмом, что каскад SKIP выше; И между вызовами — prev_blocked_on_ready,
+# накопленный в bash аналогично ready_nums: без этого задача, отнесённая к
+# blocked-on-ready на прошлой итерации внешнего цикла, уже в `handled` →
+# исключена из резолва следующего вызова → её зависимые молча теряются, круг
+# 2 ревью PR #186). ВСЕ открытые блокеры задачи должны быть resolved_ready
+# (не «хотя бы один» — иначе задача с одним ready- и одним нетронутым
+# блокером ложно считалась бы «на подвеске»).
+resolved_ready = set(ready_now) | prev_blocked_on_ready
 blocked_on_ready_numbers = set()
 changed = True
 while changed:
@@ -432,6 +438,7 @@ while [ "$exit_code" -eq 0 ]; do
         bor_type=$(printf '%s' "$line" | awk '{print $3}')
         "$logger" "$run_unit" event=task issue="$bor_num" type="$bor_type" result=blocked-on-ready || true
         handled=$(csv_add "$handled" "$bor_num")
+        blocked_on_ready_nums=$(csv_add "$blocked_on_ready_nums" "$bor_num")
         blocked_on_ready_count=$((blocked_on_ready_count + 1))
         blocked_on_ready_summary="$blocked_on_ready_summary #$bor_num"
         ;;

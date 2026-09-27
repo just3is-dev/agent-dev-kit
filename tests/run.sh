@@ -4214,6 +4214,83 @@ bor_chain_valid=$(jsonl_check "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d)
 assert_exit "issue #147: adk-ralph: журнал цепочки — #71 ready, #72 и #74 blocked-on-ready, run_end blocked_on_ready=2" \
   1 "$bor_chain_valid"
 
+# ── issue #147 (круг 2 ревью PR #186, блокер): неподвижная точка
+# blocked-on-ready обязана переживать итерации ВНЕШНЕГО цикла ralph, не
+# только один вызов select_next. #74 «Blocked by #72, #73» — #72 сама
+# «Blocked by #71» и попадает в blocked-on-ready на итерации 2 (когда ready
+# только #71), а второй блокер #74 — #73 — становится ready лишь на
+# итерации 2 следующим шагом (#73 не имеет блокеров, поэтому исполняется
+# сразу после того, как #72 ушла в blocked-on-ready). Только на итерации 3
+# оба блокера #74 (#72 и #73) оказываются resolved_ready — но #72 к этому
+# моменту уже в `handled` (напечатана как blocked-on-ready на итерации 2) и
+# исключена из вычисления резолва, если оно не переживает итерации: тогда
+# #74 не проходит проверку «все открытые блокеры resolved_ready» и молча
+# теряется (ни ready, ни stuck, ни skipped, ни blocked-on-ready) — тот же
+# класс бага, который чинит issue #147 ────────────────────────────────────
+RALPH_BOR_XITER="$TMP/ralph-bor-xiter-proj"
+RBIN_BOR_XITER="$TMP/ralph-bor-xiter-bin"
+mkdir -p "$RALPH_BOR_XITER" "$RBIN_BOR_XITER"
+(cd "$RALPH_BOR_XITER" && git_c init -q -b main)
+cat > "$RBIN_BOR_XITER/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"},
+  {"number": 73, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 74, "labels": [{"name":"type:bug"}], "body": "Зависит от: Blocked by #72, #73"}
+]
+EOF
+cat > "$RBIN_BOR_XITER/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BOR_XITER" "$RBIN_BOR_XITER/issues-fixture.json" "$RBIN_BOR_XITER/prs-fixture.json"
+claude_stub_guard "$RBIN_BOR_XITER"
+cat >> "$RBIN_BOR_XITER/claude" <<'EOF'
+echo "call" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  71)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
+PRJSON
+    ;;
+  73)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}, {"number": 703, "isDraft": false, "headRefName": "issue-73-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BOR_XITER/claude"
+RALPH_BOR_XITER_LOGS="$TMP/ralph-bor-xiter-logs"
+
+ralph_bor_xiter_out=$(cd "$RALPH_BOR_XITER" && PATH="$RBIN_BOR_XITER:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_XITER" \
+  ADK_LOGS_DIR="$RALPH_BOR_XITER_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-xiter-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #147: adk-ralph: неподвижная точка через границу итераций — прогон завершается штатно" 0 $?
+assert_contains "issue #147: adk-ralph: через границу итераций — сводка перечисляет ready #71 и #73" \
+  "$ralph_bor_xiter_out" "Ready (ждут человека):  #71 #73"
+assert_contains "issue #147: adk-ralph: через границу итераций — #74 не теряется молча, попадает в blocked-on-ready вместе с #72" \
+  "$ralph_bor_xiter_out" "Заблокировано ready-PR блокера:  #72 #74"
+assert_not_contains "issue #147: adk-ralph: через границу итераций — прогон не рапортует «очередь пуста»" \
+  "$ralph_bor_xiter_out" "очередь пуста"
+
+claude_bor_xiter_calls=$(cat "$RBIN_BOR_XITER/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "issue #147: adk-ralph: через границу итераций — headless-процесс запущен ровно дважды (#71 и #73; #72 и #74 не исполнялись)" \
+  2 "$claude_bor_xiter_calls"
+
+ralph_bor_xiter_log=$(cat "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+bor_xiter_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=71|type=task|result=ready' \
+  'event=task|issue=72|type=task|result=blocked-on-ready' \
+  'event=task|issue=73|type=task|result=ready' \
+  'event=task|issue=74|type=bug|result=blocked-on-ready' \
+  'event=run_end|ready=2|stuck=0|skipped=0|blocked_on_ready=2')
+bor_xiter_valid=$(jsonl_check "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 6 "$bor_xiter_spec")
+assert_exit "issue #147: adk-ralph: журнал через границу итераций — #71/#73 ready, #72/#74 blocked-on-ready, run_end blocked_on_ready=2" \
+  1 "$bor_xiter_valid"
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
