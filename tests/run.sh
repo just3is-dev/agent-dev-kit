@@ -5563,7 +5563,7 @@ PRJSON
 exit 0
 EOF
 chmod +x "$RBIN_MERGE/claude"
-# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — бespoke-стаб,
+# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — самописный стаб,
 # тот же приём, что уже используют RALPH_CFAIL/RALPH_CONFLICT выше для
 # сценариев за пределами общего каркаса.
 cat > "$RBIN_MERGE/gh" <<'EOF'
@@ -5605,6 +5605,71 @@ assert_contains "AC-1: adk-ralph: (issue #129) сводка относит за�
 merge_final_branch=$(git -C "$RALPH_MERGE" rev-parse --abbrev-ref HEAD)
 [ "$merge_final_branch" = "main" ]
 assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на default branch после merge" 0 $?
+
+# (a2) круг 1 ревью PR #195, «важно»: тест флага merge должен отличать флаг
+# из --merge-method от зашитого --squash — фикстура (a) выше проверяла
+# только дефолт conventions.squash=true, который совпадает со squash;
+# здесь conventions.squash=false → --rebase (adk_merge_method:
+# squash=false + branchUpdate=rebase → rebase-merge → --rebase). Тот же
+# issue/PR-стенд, что (a) выше, отдельный экземпляр $TMP-каталогов.
+RALPH_MERGE2_ORIGIN="$TMP/ralph-merge2-origin"
+mkdir -p "$RALPH_MERGE2_ORIGIN"
+(cd "$RALPH_MERGE2_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_MERGE2_ORIGIN" && git_c branch issue-2002-x)
+
+RALPH_MERGE2="$TMP/ralph-merge2-proj"
+git_c clone -q "$RALPH_MERGE2_ORIGIN" "$RALPH_MERGE2"
+(cd "$RALPH_MERGE2" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_MERGE2="$TMP/ralph-merge2-bin"
+mkdir -p "$RBIN_MERGE2"
+cat > "$RBIN_MERGE2/issues-fixture.json" <<'EOF'
+[
+  {"number": 2002, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_MERGE2/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_MERGE2"
+cat >> "$RBIN_MERGE2/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5002, "isDraft": false, "headRefName": "issue-2002-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_MERGE2/claude"
+cat > "$RBIN_MERGE2/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-2002-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_MERGE2/gh"
+
+RALPH_MERGE2_CFG="$TMP/ralph-merge2-config.json"
+cat > "$RALPH_MERGE2_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}, "conventions": {"squash": false, "branchUpdate": "rebase"}}
+EOF
+
+ralph_merge2_out=$(cd "$RALPH_MERGE2" && PATH="$RBIN_MERGE2:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MERGE2" \
+  ADK_LOGS_DIR="$TMP/ralph-merge2-logs" ADK_CONFIG_FILE="$RALPH_MERGE2_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-merge2-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) conventions.squash=false — прогон завершается штатно" 0 $?
+merge2_log=$(cat "$RBIN_MERGE2/pr-merge-calls.log" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) conventions.squash=false + branchUpdate=rebase — флаг merge --rebase, взят из --merge-method, не зашитый --squash" \
+  "$merge2_log" "pr merge 5002 --rebase --delete-branch"
+assert_not_contains "AC-1: adk-ralph: (issue #129) conventions.squash=false — --squash не подмешан по хардкоду" \
+  "$merge2_log" "--squash"
 
 # (b) DoD-фикстура 2: policies.merge=human-only → merge не вызывается
 # (стаб без "pr view"/"pr merge" — любой такой вызов провалил бы фикстуру
@@ -5692,7 +5757,7 @@ assert_exit "AC-1: adk-ralph: (issue #129) policies.merge неизвестное
 assert_not_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — ни одного непредвиденного вызова gh (merge не вызывается)" \
   "$ralph_mtypo_out" "unexpected gh call"
 ralph_mtypo_log=$(cat "$TMP/ralph-mtypo-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
-assert_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — result=ready (не molчаливый merge по дефолту)" \
+assert_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — result=ready (не молчаливый merge по дефолту)" \
   "$ralph_mtypo_log" '"result": "ready"'
 
 # (d) неизвестное значение policies.autopilot.canMerge (опечатка) — тот же
@@ -5985,7 +6050,7 @@ assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN — после ре
 
 # (h) mergeable=UNKNOWN на ВСЕХ попытках — не бесконечный ретрай: ровно 3
 # попытки (ADR-019 §2), затем застревание с честной причиной. Без реального
-# origin — resolve_ready_pr возвращает STUCK до git fetch, up до него дело
+# origin — resolve_ready_pr возвращает STUCK до git fetch, до него дело
 # не доходит.
 RALPH_UNK2="$TMP/ralph-unk-exhausted-proj"
 RBIN_UNK2="$TMP/ralph-unk-exhausted-bin"
@@ -6042,6 +6107,286 @@ assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на всех по�
   3 "$pr_view_calls_unk2"
 assert_contains "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN исчерпан — причина застревания называет неопределённость" \
   "$ralph_unk2_out" "не удалось определить конфликтность PR (mergeable=UNKNOWN)"
+
+# (i) круг 1 ревью PR #195, блокер 1: default branch — trunk (не main),
+# ветка отстаёт от НЕГО (не от main, которого в этом origin вовсе нет) —
+# regression-тест на `origin/$default_branch`, не хардкод `origin/main`
+# (ADR-007 §6, та же переменная, что и остальной цикл). До фикса
+# `git rev-list ... origin/issue-2060-x..origin/main` падал бы (нет такой
+# ссылки) и READ-ветка fail-open читала бы это как «отставания нет» —
+# merge без актуализации. Заодно закрывает отдельный пробел («важно» круга
+# 1): единственный до этого раунда позитивный путь актуализации (отставшая
+# ветка → rebase на актуальный default branch → зелёные гейты → push →
+# merge), а не только красный путь (e) выше.
+RALPH_TRUNK_ORIGIN="$TMP/ralph-trunk-origin"
+mkdir -p "$RALPH_TRUNK_ORIGIN"
+(cd "$RALPH_TRUNK_ORIGIN" && git_c init -q -b trunk && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_TRUNK_ORIGIN" && git_c branch issue-2060-x)
+(cd "$RALPH_TRUNK_ORIGIN" && echo more > g.txt && git add g.txt && git_c commit -qm "advance trunk")
+
+RALPH_TRUNK="$TMP/ralph-trunk-proj"
+git_c clone -q "$RALPH_TRUNK_ORIGIN" "$RALPH_TRUNK"
+(cd "$RALPH_TRUNK" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_TRUNK="$TMP/ralph-trunk-bin"
+mkdir -p "$RBIN_TRUNK"
+cat > "$RBIN_TRUNK/issues-fixture.json" <<'EOF'
+[
+  {"number": 2060, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_TRUNK/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_TRUNK"
+cat >> "$RBIN_TRUNK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5060, "isDraft": false, "headRefName": "issue-2060-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_TRUNK/claude"
+cat > "$RBIN_TRUNK/gh" <<EOF
+#!/usr/bin/env bash
+d="\$(cd "\$(dirname "\$0")" && pwd)"
+case "\$1 \$2" in
+  "issue list") cat "\$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "\$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-2060-x"; exit 0 ;;
+  "pr checkout") (cd "$RALPH_TRUNK" && git checkout -B issue-2060-x origin/issue-2060-x) >/dev/null 2>&1; exit \$? ;;
+  "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_TRUNK/gh"
+
+RALPH_TRUNK_CFG="$TMP/ralph-trunk-config.json"
+cat > "$RALPH_TRUNK_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_trunk_out=$(cd "$RALPH_TRUNK" && PATH="$RBIN_TRUNK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TRUNK" \
+  ADK_LOGS_DIR="$TMP/ralph-trunk-logs" ADK_CONFIG_FILE="$RALPH_TRUNK_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-trunk-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) default branch trunk, отставшая ветка — актуализация на origin/trunk, не origin/main, потом merge" \
+  0 $?
+trunk_merge_log=$(cat "$RBIN_TRUNK/pr-merge-calls.log" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) default branch trunk — merge всё же выполнен после актуализации" \
+  "$trunk_merge_log" "5060"
+[ "$(git -C "$RALPH_TRUNK" rev-parse issue-2060-x)" = "$(git -C "$RALPH_TRUNK" rev-parse trunk)" ]
+assert_exit "AC-1: adk-ralph: (issue #129) ветка issue-2060-x реально перебазирована на актуальный trunk (не осталась позади — доказывает, что использован origin/\$default_branch, а не хардкод origin/main)" \
+  0 $?
+trunk_final_branch=$(git -C "$RALPH_TRUNK" rev-parse --abbrev-ref HEAD)
+[ "$trunk_final_branch" = "trunk" ]
+assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на default branch (trunk) после merge" 0 $?
+
+# (j) mergeable=CONFLICTING (GitHub уже знает про конфликт с main) — STUCK
+# «конфликт с main», gh pr merge не вызывается.
+RALPH_CONFPR="$TMP/ralph-confpr-proj"
+RBIN_CONFPR="$TMP/ralph-confpr-bin"
+mkdir -p "$RALPH_CONFPR" "$RBIN_CONFPR"
+(cd "$RALPH_CONFPR" && git_c init -q -b main)
+cat > "$RBIN_CONFPR/issues-fixture.json" <<'EOF'
+[
+  {"number": 2090, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_CONFPR/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_CONFPR"
+cat >> "$RBIN_CONFPR/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5090, "isDraft": false, "headRefName": "issue-2090-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_CONFPR/claude"
+cat > "$RBIN_CONFPR/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "CONFLICTING null issue-2090-x"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_CONFPR/gh"
+
+RALPH_CONFPR_CFG="$TMP/ralph-confpr-config.json"
+cat > "$RALPH_CONFPR_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_confpr_out=$(cd "$RALPH_CONFPR" && PATH="$RBIN_CONFPR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CONFPR" \
+  ADK_LOGS_DIR="$TMP/ralph-confpr-logs" ADK_CONFIG_FILE="$RALPH_CONFPR_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-confpr-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — прогон завершается штатно (задача застревает)" 0 $?
+assert_contains "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — застревание с причиной «конфликт с main»" \
+  "$ralph_confpr_out" "#2090 (конфликт с main)"
+
+# (k) конфликт при самой актуализации (rebase на default branch упирается в
+# конфликт, хотя GitHub ещё отвечает MERGEABLE — реальный git расходится с
+# кэшированным mergeStateStatus GitHub) — STUCK «конфликт при
+# актуализации», rebase прерван (`.git/rebase-apply`/`rebase-merge` не
+# остаётся), gh pr merge не вызывается.
+RALPH_ACTCONFLICT_ORIGIN="$TMP/ralph-actconflict-origin"
+mkdir -p "$RALPH_ACTCONFLICT_ORIGIN"
+(cd "$RALPH_ACTCONFLICT_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_ACTCONFLICT_ORIGIN" && git_c checkout -q -b issue-2070-x && \
+  echo branch-change > f.txt && git add f.txt && git_c commit -qm "branch changes f")
+(cd "$RALPH_ACTCONFLICT_ORIGIN" && git_c checkout -q main && \
+  echo main-change > f.txt && git add f.txt && git_c commit -qm "main changes f")
+
+RALPH_ACTCONFLICT="$TMP/ralph-actconflict-proj"
+git_c clone -q "$RALPH_ACTCONFLICT_ORIGIN" "$RALPH_ACTCONFLICT"
+(cd "$RALPH_ACTCONFLICT" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_ACTCONFLICT="$TMP/ralph-actconflict-bin"
+mkdir -p "$RBIN_ACTCONFLICT"
+cat > "$RBIN_ACTCONFLICT/issues-fixture.json" <<'EOF'
+[
+  {"number": 2070, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_ACTCONFLICT/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_ACTCONFLICT"
+cat >> "$RBIN_ACTCONFLICT/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5070, "isDraft": false, "headRefName": "issue-2070-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_ACTCONFLICT/claude"
+cat > "$RBIN_ACTCONFLICT/gh" <<EOF
+#!/usr/bin/env bash
+d="\$(cd "\$(dirname "\$0")" && pwd)"
+case "\$1 \$2" in
+  "issue list") cat "\$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "\$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-2070-x"; exit 0 ;;
+  "pr checkout") (cd "$RALPH_ACTCONFLICT" && git checkout -B issue-2070-x origin/issue-2070-x) >/dev/null 2>&1; exit \$? ;;
+  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_ACTCONFLICT/gh"
+
+RALPH_ACTCONFLICT_CFG="$TMP/ralph-actconflict-config.json"
+cat > "$RALPH_ACTCONFLICT_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_actconflict_out=$(cd "$RALPH_ACTCONFLICT" && PATH="$RBIN_ACTCONFLICT:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ACTCONFLICT" \
+  ADK_LOGS_DIR="$TMP/ralph-actconflict-logs" ADK_CONFIG_FILE="$RALPH_ACTCONFLICT_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-actconflict-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) конфликт при rebase-актуализации — прогон завершается штатно" 0 $?
+assert_contains "AC-1: adk-ralph: (issue #129) конфликт при актуализации — застревание с этой причиной" \
+  "$ralph_actconflict_out" "#2070 (конфликт при актуализации)"
+[ ! -e "$RALPH_ACTCONFLICT/.git/rebase-apply" ] && [ ! -e "$RALPH_ACTCONFLICT/.git/rebase-merge" ]
+assert_exit "AC-1: adk-ralph: (issue #129) конфликтный rebase прерван (--abort) — не оставлен в rebase-in-progress" \
+  0 $?
+actconflict_final_branch=$(git -C "$RALPH_ACTCONFLICT" rev-parse --abbrev-ref HEAD)
+[ "$actconflict_final_branch" = "main" ]
+assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на default branch после конфликта актуализации" 0 $?
+
+# (l) круг 1 ревью PR #195, блокер 2: смерженный этим прогоном блокер
+# обязан сниматься с зависимой задачи — до фикса #2081 (Blocked by #2080)
+# ни разу не появлялась ни как candidate/NEXT, ни как SKIP, ни как
+# BLOCKED_ON_READY (тот бакет требует ready-PR блокера, не смерженный) —
+# просто тихо пропадала из прогона, а сводка рапортовала «очередь пуста»
+# (select_next.open_numbers — статичный снимок issues на старте прогона,
+# смерженный issue в нём остаётся «открытым»). #2080 сам получает ready-PR
+# и мержится; #2081 обязан стать кандидатом сразу после этого — headless-
+# процесс вызывается по ней тоже (оставляем её PR черновиком — не самоцель
+# этого теста, чтобы не тащить второй origin/branch).
+RALPH_MB_ORIGIN="$TMP/ralph-mb-origin"
+mkdir -p "$RALPH_MB_ORIGIN"
+(cd "$RALPH_MB_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_MB_ORIGIN" && git_c branch issue-2080-x)
+
+RALPH_MB="$TMP/ralph-mb-proj"
+git_c clone -q "$RALPH_MB_ORIGIN" "$RALPH_MB"
+(cd "$RALPH_MB" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_MB="$TMP/ralph-mb-bin"
+mkdir -p "$RBIN_MB"
+cat > "$RBIN_MB/issues-fixture.json" <<'EOF'
+[
+  {"number": 2080, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 2081, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #2080"}
+]
+EOF
+cat > "$RBIN_MB/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_MB"
+cat >> "$RBIN_MB/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
+case "$issue_num" in
+  2080)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5080, "isDraft": false, "headRefName": "issue-2080-x"}]
+PRJSON
+    ;;
+  2081)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5080, "isDraft": false, "headRefName": "issue-2080-x"}, {"number": 5081, "isDraft": true, "headRefName": "issue-2081-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_MB/claude"
+cat > "$RBIN_MB/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-2080-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_MB/gh"
+
+RALPH_MB_CFG="$TMP/ralph-mb-config.json"
+cat > "$RALPH_MB_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_mb_out=$(cd "$RALPH_MB" && PATH="$RBIN_MB:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MB" \
+  ADK_LOGS_DIR="$TMP/ralph-mb-logs" ADK_CONFIG_FILE="$RALPH_MB_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-mb-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) смерженный блокер снимается с зависимой задачи — прогон завершается штатно" \
+  0 $?
+mb_call_count=$(cat "$RBIN_MB/claude-calls.log" 2>/dev/null | grep -c "^call")
+assert_exit "AC-1: adk-ralph: (issue #129) #2081 стала кандидатом сразу после мерджа своего блокера #2080 — headless-процесс вызван дважды, не один раз" \
+  2 "$mb_call_count"
+assert_not_contains "AC-1: adk-ralph: (issue #129) #2081 не осталась в «Заблокировано ready-PR блокера» (блокер смержен, не просто ready)" \
+  "$ralph_mb_out" "Заблокировано ready-PR блокера:  #2081"
+ralph_mb_log=$(cat "$TMP/ralph-mb-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит запись по #2081 (не пропала молча)" \
+  "$ralph_mb_log" '"issue": "2081"'
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
