@@ -304,6 +304,64 @@ except Exception:
   printf '%s' "${parsed:-error}"
 }
 
+# ── Default branch — определяется фактически, не хардкодится (issue #144,
+# ADR-007 §6). `git symbolic-ref --short refs/remotes/origin/HEAD` даёт то
+# же имя, что видит обычный клон после `git remote set-head origin -a`;
+# фолбэк на "main", если определить не удалось (нет origin, HEAD не
+# выставлен, репозиторий свежий/нестандартный). Вычисляется один раз до
+# цикла — смена default branch в origin посреди прогона вне области этой
+# задачи (известное ограничение самохостинга, ADR-007 §6).
+default_branch=$(cd "$root" && git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+default_branch="${default_branch#origin/}"
+default_branch="${default_branch:-main}"
+
+# return_to_default_branch — возврат рабочего дерева на default branch между
+# итерациями (ADR-007 §6; блокер круга 6 ревью PR #141 + issue #144).
+# commands/work.md разворачивает каждую задачу на собственной ветке
+# (issue-<N>-<слаг>) и не возвращает дерево обратно — без явного возврата
+# здесь вторая и последующие задачи прогона стартовали бы `claude -p` на
+# ветке предыдущей задачи, а не на default branch. Единая точка вызова на
+# любом выходе из цикла — в конце штатной итерации и на break-путях сбоя
+# `claude -p` / `gh pr list` (issue #144: до этой правки возврат был только
+# в конце итерации, break-пути пропускали его целиком).
+#
+# Отказ checkout — не best-effort, в отличие от `git pull` ниже: дочерний
+# headless-процесс мог оставить незакоммиченный трекаемый файл на ветке
+# задачи (`claude -p` слетел посреди работы, не успел закоммитить/убрать за
+# собой) — тогда checkout отказывает, и молчаливое "|| true" оставляло бы
+# дерево на чужой ветке, а следующая итерация стартовала бы на ней же
+# молча (issue #144, было тихим до этой правки). Громкое предупреждение в
+# stderr — тот же класс, что уже есть для `gh issue edit --add-label` ниже;
+# вызывающий код останавливает прогон честной причиной вместо того, чтобы
+# самому гадать, какую ветку/состояние восстанавливать (данные потенциально
+# ещё нужны человеку — не наше дело отбрасывать их force-чекаутом).
+return_to_default_branch() {
+  local current checkout_err rc
+  # `git symbolic-ref --short HEAD` (не `git rev-parse --abbrev-ref HEAD`)
+  # — единственный способ узнать текущую ветку, который не падает на
+  # unborn-ветке (репозиторий без единого коммита, HEAD ещё ни на что не
+  # указывает): rev-parse в этом случае возвращает ошибку и буквальную
+  # строку "HEAD" в stdout. Пропуск checkout, когда мы и так уже на
+  # default_branch, — не оптимизация, а необходимость: `git checkout main`
+  # на unborn-ветке "main" сам по себе отказывает
+  # ("pathspec 'main' did not match any file(s)"), хотя по факту дерево уже
+  # там, где нужно.
+  current=$(cd "$root" && git symbolic-ref --short HEAD 2>/dev/null)
+  if [ "$current" != "$default_branch" ]; then
+    checkout_err=$(cd "$root" && git checkout "$default_branch" 2>&1 >/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "adk-ralph: git checkout $default_branch не удался — рабочее дерево" \
+        "осталось на чужой ветке (возможно, дочерний процесс оставил" \
+        "незакоммиченные изменения):" >&2
+      printf '%s\n' "$checkout_err" >&2
+      return 1
+    fi
+  fi
+  (cd "$root" && git pull >/dev/null 2>&1) || true
+  return 0
+}
+
 # ── Цикл ──────────────────────────────────────────────────────────────────
 # exit_code уже != 0 здесь только если gh issue list выше не удался
 # (stop_reason уже выставлен тем же путём) — цикл в этом случае не
@@ -361,6 +419,12 @@ while [ "$exit_code" -eq 0 ]; do
     echo "adk-ralph: claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num — прогон остановлен." >&2
     stop_reason="claude -p завершился с ошибкой (exit $claude_rc) при issue #$issue_num"
     exit_code=1
+    # Возврат дерева на default branch — тот же путь, что и в конце штатной
+    # итерации (issue #144, п.2): без него дерево осталось бы на ветке
+    # задачи, на которую переключился claude -p до сбоя. Отказ здесь не
+    # переопределяет stop_reason выше (сбой claude -p — первичная причина
+    # остановки), но всё равно печатает своё громкое предупреждение.
+    return_to_default_branch || true
     break
   fi
 
@@ -373,6 +437,10 @@ while [ "$exit_code" -eq 0 ]; do
     cat "$work_dir/gh-pr-list.err" >&2
     stop_reason="gh pr list не удался при разборе issue #$issue_num"
     exit_code=1
+    # Тот же общий путь возврата дерева, что и на break-пути claude -p выше
+    # (issue #144, п.2) — claude -p к этому моменту уже отработал и мог
+    # переключить дерево на ветку задачи.
+    return_to_default_branch || true
     break
   fi
 
@@ -406,22 +474,23 @@ while [ "$exit_code" -eq 0 ]; do
     stuck_summary="$stuck_summary #$issue_num ($reason)"
   fi
 
-  # ── Возврат дерева на main между итерациями (блокер круга 6 ревью PR #141) —
-  # commands/work.md разворачивает каждую задачу на собственной ветке
-  # (issue-<N>-<слаг>) и не возвращает дерево обратно; без явного возврата
-  # здесь вторая и последующие задачи прогона стартовали бы claude -p на
-  # ветке предыдущей задачи, а не на main. Канонический рецепт — тот же, что
-  # у /autopilot (commands/autopilot.md, пункт «возврат дерева»): в любом
-  # исходе задачи вернуться на main; git pull обновляет её для следующей
-  # ветки (для ветки «кандидатов нет» шаг 2 /work на настоящем ручном
-  # запуске делает то же самое — checkout main && git pull; при найденной
-  # существующей ветке issue-<N> шаг 2 делает больше — проверяет
-  # кандидатов, актуализирует найденную ветку и возвращает ready в draft
-  # перед новыми коммитами, см. #169).
-  # Best-effort: сбой здесь — периметр отказов внешнего вызова git, вне
-  # границы happy path круга 6 (issue #142), не блокирует прогон.
-  (cd "$root" && git checkout main >/dev/null 2>&1) || true
-  (cd "$root" && git pull >/dev/null 2>&1) || true
+  # Возврат дерева на default branch между итерациями — см.
+  # return_to_default_branch выше (ADR-007 §6). Канонический рецепт — тот
+  # же, что у /autopilot (commands/autopilot.md, пункт «возврат дерева»): в
+  # любом исходе задачи вернуться на default branch; git pull обновляет её
+  # для следующей ветки (для ветки «кандидатов нет» шаг 2 /work на
+  # настоящем ручном запуске делает то же самое; при найденной существующей
+  # ветке issue-<N> шаг 2 делает больше — проверяет кандидатов, актуализирует
+  # найденную ветку и возвращает ready в draft перед новыми коммитами, см.
+  # #169). Отказ checkout здесь не best-effort (issue #144): останавливаем
+  # прогон честной причиной вместо того, чтобы продолжать очередь на чужой
+  # ветке молча — return_to_default_branch уже напечатала своё
+  # предупреждение в stderr.
+  if ! return_to_default_branch; then
+    stop_reason="не удалось вернуть дерево на $default_branch после issue #$issue_num — прогон остановлен"
+    exit_code=1
+    break
+  fi
 done
 
 "$logger" "$run_unit" event=run_end done=0 ready="$ready_count" stuck="$stuck_count" \

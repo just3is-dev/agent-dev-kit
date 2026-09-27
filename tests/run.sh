@@ -3593,6 +3593,255 @@ final_branch=$(git -C "$RALPH_GITSTATE" rev-parse --abbrev-ref HEAD)
 assert_exit "AC-1 (блокер круга 6 ревью PR #141): adk-ralph.sh — финальная ветка репозитория после прогона — main (фактически: $final_branch)" \
   0 $?
 
+# ── issue #144 (п.1): `git checkout main` в конце итерации отказывает —
+# дочерний headless-процесс (стаб claude) оставляет незакоммиченный
+# трекаемый файл на ветке задачи (реалистичный сценарий: `claude -p` слетел
+# посреди работы, не успел закоммитить/убрать за собой). До этой правки
+# отказ был полностью заглушён (`|| true`), молча оставляя дерево на чужой
+# ветке — вторая задача прогона стартовала бы на ней же. Фикстура: два
+# доступных issue (#801, #802); #801 получает ready-PR, но claude-стаб
+# коммитит изменение seed.txt на своей ветке и поверх оставляет ещё и
+# незакоммиченную правку — `git checkout main` отказывает (main держит
+# другое содержимое seed.txt, а рабочее дерево несёт незакоммиченную
+# правку сверху) ────────────────────────────────────────────────────────
+RALPH_CHECKOUTFAIL="$TMP/ralph-checkoutfail-proj"
+RBIN_CHECKOUTFAIL="$TMP/ralph-checkoutfail-bin"
+mkdir -p "$RALPH_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL"
+(cd "$RALPH_CHECKOUTFAIL" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_CHECKOUTFAIL/issues-fixture.json" <<'EOF'
+[
+  {"number": 801, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 802, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_CHECKOUTFAIL/prs-fixture.json" <<'EOF'
+[
+  {"number": 901, "isDraft": false, "headRefName": "issue-801-x"}
+]
+EOF
+gh_ralph_stub "$RBIN_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL/issues-fixture.json" "$RBIN_CHECKOUTFAIL/prs-fixture.json"
+claude_stub_guard "$RBIN_CHECKOUTFAIL"
+cat >> "$RBIN_CHECKOUTFAIL/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
+git checkout -q -b "issue-${issue_num}-x"
+if [ "$issue_num" = "801" ]; then
+  echo committed-change > seed.txt
+  git -c user.email=t@t -c user.name=t add seed.txt
+  git -c user.email=t@t -c user.name=t commit -q -m "task change"
+  echo dirty-uncommitted >> seed.txt
+fi
+exit 0
+EOF
+chmod +x "$RBIN_CHECKOUTFAIL/claude"
+
+ralph_checkoutfail_out=$(cd "$RALPH_CHECKOUTFAIL" && PATH="$RBIN_CHECKOUTFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CHECKOUTFAIL" \
+  ADK_LOGS_DIR="$TMP/ralph-checkoutfail-logs" ADK_NOTIFY_FILE="$TMP/ralph-checkoutfail-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #144: adk-ralph: git checkout main отказывает (дерево грязное) — прогон останавливается с честной причиной (exit != 0), не тихо" \
+  1 $?
+assert_contains "issue #144: git checkout main отказывает — громкое предупреждение в stderr называет причину" \
+  "$ralph_checkoutfail_out" "git checkout main не удался"
+assert_contains "issue #144: git checkout main отказывает — предупреждение содержит диагностику git (не проглочено)" \
+  "$ralph_checkoutfail_out" "overwritten"
+assert_contains "issue #144: git checkout main отказывает — стоп-причина называет issue, после которого дерево не вернулось" \
+  "$ralph_checkoutfail_out" "issue #801"
+
+checkoutfail_claude_calls=$(printf '%s' "$(cat "$RBIN_CHECKOUTFAIL/claude-calls.log" 2>/dev/null)" | grep -c "^call")
+assert_exit "issue #144: git checkout main отказывает — вторая задача (#802) НЕ исполняется молча на чужой ветке (headless-процесс запущен ровно один раз)" \
+  1 "$checkoutfail_claude_calls"
+
+checkoutfail_log=$(cat "$TMP/ralph-checkoutfail-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_not_contains "issue #144: git checkout main отказывает — issue #802 не залогирован (не был взят в работу)" \
+  "$checkoutfail_log" '"issue": "802"'
+
+# ── issue #144 (п.2): break-путь сбоя `claude -p` НЕ на первом issue
+# прогона — до этой правки возврат дерева на main был только в конце
+# итерации (после успешной обработки), break внутри цикла на сбое
+# claude -p пропускал его целиком. Фикстура: issue #601 отрабатывает
+# штатно (ready-PR, дерево возвращается на main), issue #602 запускает
+# claude -p, который переключается на свою ветку и падает — дерево обязано
+# вернуться на main ПЕРЕД остановкой прогона (мутация «убрать возврат
+# дерева на break-пути claude -p» ловится последней проверкой) ───────────
+RALPH_CFAIL_MID="$TMP/ralph-cfail-mid-proj"
+RBIN_CFAIL_MID="$TMP/ralph-cfail-mid-bin"
+mkdir -p "$RALPH_CFAIL_MID" "$RBIN_CFAIL_MID"
+(cd "$RALPH_CFAIL_MID" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_CFAIL_MID/issues-fixture.json" <<'EOF'
+[
+  {"number": 601, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 602, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_CFAIL_MID/prs-fixture.json" <<'EOF'
+[
+  {"number": 701, "isDraft": false, "headRefName": "issue-601-x"}
+]
+EOF
+gh_ralph_stub "$RBIN_CFAIL_MID" "$RBIN_CFAIL_MID/issues-fixture.json" "$RBIN_CFAIL_MID/prs-fixture.json"
+claude_stub_guard "$RBIN_CFAIL_MID"
+cat >> "$RBIN_CFAIL_MID/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
+git checkout -q -b "issue-${issue_num}-x"
+if [ "$issue_num" = "602" ]; then
+  echo "claude: rate limit exceeded" >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$RBIN_CFAIL_MID/claude"
+
+ralph_cfail_mid_out=$(cd "$RALPH_CFAIL_MID" && PATH="$RBIN_CFAIL_MID:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CFAIL_MID" \
+  ADK_LOGS_DIR="$TMP/ralph-cfail-mid-logs" ADK_NOTIFY_FILE="$TMP/ralph-cfail-mid-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #144: adk-ralph: claude -p падает не на первом issue прогона — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "issue #144: claude -p падает не на первом issue — стоп-причина называет именно issue #602" \
+  "$ralph_cfail_mid_out" "claude -p завершился с ошибкой (exit 1) при issue #602"
+
+cfail_mid_final_branch=$(git -C "$RALPH_CFAIL_MID" rev-parse --abbrev-ref HEAD)
+[ "$cfail_mid_final_branch" = "main" ]
+assert_exit "issue #144: claude -p падает на НЕ первом issue — дерево возвращено на main перед остановкой прогона (не осталось на issue-602-x)" \
+  0 $?
+
+# ── issue #144 (п.2): break-путь сбоя `gh pr list` НЕ на первом issue
+# прогона — тот же пробел, что и для claude -p выше, но для другого
+# break-пути (find_pr_state). Стаб gh считает свои вызовы "pr list" и
+# отказывает начиная со второго ────────────────────────────────────────
+RALPH_PRFAIL_MID="$TMP/ralph-prfail-mid-proj"
+RBIN_PRFAIL_MID="$TMP/ralph-prfail-mid-bin"
+mkdir -p "$RALPH_PRFAIL_MID" "$RBIN_PRFAIL_MID"
+(cd "$RALPH_PRFAIL_MID" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_PRFAIL_MID/issues-fixture.json" <<'EOF'
+[
+  {"number": 611, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 612, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_PRFAIL_MID/prs-fixture.json" <<'EOF'
+[
+  {"number": 711, "isDraft": false, "headRefName": "issue-611-x"}
+]
+EOF
+cat > "$RBIN_PRFAIL_MID/gh" <<EOF
+#!/usr/bin/env bash
+d="\$(cd "\$(dirname "\$0")" && pwd)"
+case "\$1 \$2" in
+  "issue list") cat "$RBIN_PRFAIL_MID/issues-fixture.json"; exit 0 ;;
+  "pr list")
+    n=0
+    [ -f "\$d/pr-list-calls" ] && n=\$(cat "\$d/pr-list-calls")
+    n=\$((n + 1))
+    echo "\$n" > "\$d/pr-list-calls"
+    if [ "\$n" -eq 1 ]; then
+      cat "$RBIN_PRFAIL_MID/prs-fixture.json"; exit 0
+    else
+      echo "gh: rate limit exceeded" >&2
+      exit 1
+    fi
+    ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_PRFAIL_MID/gh"
+claude_stub_guard "$RBIN_PRFAIL_MID"
+cat >> "$RBIN_PRFAIL_MID/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+git checkout -q -b "issue-${issue_num}-x"
+exit 0
+EOF
+chmod +x "$RBIN_PRFAIL_MID/claude"
+
+ralph_prfail_mid_out=$(cd "$RALPH_PRFAIL_MID" && PATH="$RBIN_PRFAIL_MID:$PATH" CLAUDE_PROJECT_DIR="$RALPH_PRFAIL_MID" \
+  ADK_LOGS_DIR="$TMP/ralph-prfail-mid-logs" ADK_NOTIFY_FILE="$TMP/ralph-prfail-mid-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #144: adk-ralph: gh pr list падает не на первом issue прогона — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "issue #144: gh pr list падает не на первом issue — стоп-причина называет именно issue #612" \
+  "$ralph_prfail_mid_out" "gh pr list не удался при разборе issue #612"
+
+prfail_mid_final_branch=$(git -C "$RALPH_PRFAIL_MID" rev-parse --abbrev-ref HEAD)
+[ "$prfail_mid_final_branch" = "main" ]
+assert_exit "issue #144: gh pr list падает на НЕ первом issue — дерево возвращено на main перед остановкой прогона (не осталось на issue-612-x)" \
+  0 $?
+
+# ── issue #144 (п.3): default branch репозитория — не "main" (симулируется
+# через git symbolic-ref refs/remotes/origin/HEAD, как в реальном клоне
+# после `git remote set-head origin -a`) — adk-ralph.sh обязан вернуть
+# дерево на фактический default branch ("trunk"), не на жёстко зашитое
+# "main" ──────────────────────────────────────────────────────────────────
+RALPH_DEFBRANCH="$TMP/ralph-defbranch-proj"
+RBIN_DEFBRANCH="$TMP/ralph-defbranch-bin"
+mkdir -p "$RALPH_DEFBRANCH" "$RBIN_DEFBRANCH"
+(cd "$RALPH_DEFBRANCH" && git_c init -q -b trunk && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed && \
+  mkdir -p .git/refs/remotes/origin && \
+  git update-ref refs/remotes/origin/trunk refs/heads/trunk && \
+  git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk)
+
+cat > "$RBIN_DEFBRANCH/issues-fixture.json" <<'EOF'
+[
+  {"number": 621, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 622, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_DEFBRANCH/prs-fixture.json" <<'EOF'
+[
+  {"number": 721, "isDraft": false, "headRefName": "issue-621-x"},
+  {"number": 722, "isDraft": false, "headRefName": "issue-622-x"}
+]
+EOF
+gh_ralph_stub "$RBIN_DEFBRANCH" "$RBIN_DEFBRANCH/issues-fixture.json" "$RBIN_DEFBRANCH/prs-fixture.json"
+claude_stub_guard "$RBIN_DEFBRANCH"
+cat >> "$RBIN_DEFBRANCH/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
+git checkout -q -b "issue-${issue_num}-x"
+exit 0
+EOF
+chmod +x "$RBIN_DEFBRANCH/claude"
+
+ralph_defbranch_out=$(cd "$RALPH_DEFBRANCH" && PATH="$RBIN_DEFBRANCH:$PATH" CLAUDE_PROJECT_DIR="$RALPH_DEFBRANCH" \
+  ADK_LOGS_DIR="$TMP/ralph-defbranch-logs" ADK_NOTIFY_FILE="$TMP/ralph-defbranch-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #144: adk-ralph: default branch — trunk (не main) — прогон завершается штатно" 0 $?
+
+defbranch_second_start=$(sed -n '2p' "$RBIN_DEFBRANCH/claude-start-branch.log")
+[ "$defbranch_second_start" = "trunk" ]
+assert_exit "issue #144: default branch trunk — вторая задача стартует на trunk (не на main, не на ветке первой задачи)" \
+  0 $?
+
+defbranch_final=$(git -C "$RALPH_DEFBRANCH" rev-parse --abbrev-ref HEAD)
+[ "$defbranch_final" = "trunk" ]
+assert_exit "issue #144: default branch trunk — финальная ветка репозитория после прогона — trunk, не жёстко зашитое main" \
+  0 $?
+
+# ── issue #144: ADR-007 документирует решение о возврате дерева между
+# итерациями (единая функция на любом выходе из цикла, определение default
+# branch, отказ checkout не best-effort) и известное ограничение
+# самохостинга — раньше обоснование жило только в комментарии кода ────────
+check_ac_doc "issue #144" "ADR-007 фиксирует единую функцию возврата дерева, вызываемую на любом выходе из цикла" \
+  "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "return_to_default_branch"
+check_ac_doc "issue #144" "ADR-007 называет оба break-пути, которые раньше пропускали возврат дерева" \
+  "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "оба break-пути"
+check_ac_doc "issue #144" "ADR-007 фиксирует определение default branch через git symbolic-ref, а не хардкод main" \
+  "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "git symbolic-ref --short"
+check_ac_doc "issue #144" "ADR-007 фиксирует, что отказ checkout не best-effort — громкое предупреждение и остановка прогона" \
+  "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "не \`|| true\`"
+check_ac_doc "issue #144" "ADR-007 фиксирует известное ограничение самохостинга" \
+  "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "Известное ограничение самохостинга"
+check_ac_doc "issue #144" "ADR-007: риск самохостинга реализуется только при сдвиге origin/<default branch> во время прогона" \
+  "$KIT/docs/adr/007-adk-ralph-selection-and-parsing.md" "сдвинулся за время прогона"
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
