@@ -2891,6 +2891,30 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
 # ── adk-ralph.sh: ralph-цикл SPEC-003, цикл по очереди issues свежим
 # headless-процессом, без --dangerously-skip-permissions (issue #139,
 # AC-1, AC-7) ──────────────────────────────────────────────────────────────
+#
+# issue #129 (merge ready-PR, ADR-019) сделал дефолт adk-ralph.sh
+# (policies.autopilot.canMerge=true, policies.merge=agent-after-approve)
+# реально мержащим ready-PR — до этой задачи ralph всегда собирал их в
+# «ждут человека», сколько бы фикстур ниже это ни проверяли. Все фикстуры
+# этого раздела ДО блока issue #129 написаны для проверки самого цикла
+# (SKIP/BLOCKED_ON_READY/breaker/стоп-файл), не merge, и не заготавливают
+# ни gh-стаб для `pr view`/`pr merge`, ни git remote "origin" — реальный
+# merge на них упал бы на первом же незаготовленном вызове gh/git. Экспорт
+# ниже отключает merge (`canMerge=false`) на весь этот раздел одной
+# точкой, не трогая ~40 существующих вызовов `adk-ralph.sh`; `unset` перед
+# разделом issue #129 возвращает поведение по умолчанию для новых фикстур,
+# которые как раз и проверяют merge. Фикстуры, уже задающие свой
+# ADK_CONFIG_FILE явно в вызове (RALPH_OFF/RALPH_TYPO/RALPH_RB_STUCKCFG/
+# RALPH_RB_ZERO), переопределяют этот экспорт для себя и не реализуют
+# ready-исход вовсе (см. их фикстуры) — merge их не касается; RALPH_RB_SHARECFG
+# — единственное исключение, реализующее ready-исход при собственном
+# ADK_CONFIG_FILE, поэтому её конфиг ниже отдельно включает canMerge=false.
+RALPH_NOMERGE_CFG="$TMP/ralph-nomerge-config.json"
+cat > "$RALPH_NOMERGE_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false}}}
+EOF
+export ADK_CONFIG_FILE="$RALPH_NOMERGE_CFG"
+
 RALPH="$TMP/ralph-proj"
 RBIN="$TMP/ralph-bin"
 mkdir -p "$RALPH" "$RBIN"
@@ -5134,8 +5158,14 @@ EOF
 chmod +x "$RBIN_RB_SHARECFG/claude"
 
 RALPH_RB_SHARECFG_CFG="$TMP/ralph-rb-sharecfg-config.json"
+# canMerge:false — эта фикстура (в отличие от RALPH_RB_STUCKCFG/RALPH_RB_ZERO
+# рядом) реализует ready-исход (#762) и задаёт свой ADK_CONFIG_FILE, поэтому
+# не подхватывает общий RALPH_NOMERGE_CFG выше (issue #129): без этого
+# ключа #762 попал бы в merge-ветку без стаба gh на pr view/pr merge и
+# сломал бы расчёт доли (denominator ready+merged+stuck+skipped, ADR-019 §9),
+# который проверяет именно этот тест.
 cat > "$RALPH_RB_SHARECFG_CFG" <<'EOF'
-{"policies": {"autopilot": {"breaker": {"maxSkippedShare": 0.3}}}}
+{"policies": {"autopilot": {"breaker": {"maxSkippedShare": 0.3}, "canMerge": false}}}
 EOF
 
 ralph_rb_sharecfg_out=$(cd "$RALPH_RB_SHARECFG" && PATH="$RBIN_RB_SHARECFG:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARECFG" \
@@ -5494,6 +5524,524 @@ assert_not_contains "AC-2: adk-ralph: коллизия — сводка не н�
 svg_call_count=$(cat "$RBIN_STOP_VS_GATES/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
 assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вызван один раз (issue #1331 не тронут)" \
   1 "$svg_call_count"
+
+# ── issue #129 (SPEC-003 AC-1, ADR-019): merge ready-PR по policies.merge/
+# canMerge в adk-ralph.sh. Отсюда прогон больше не отключает merge —
+# unset возвращает поведение по умолчанию (canMerge=true,
+# policies.merge=agent-after-approve), каждая фикстура ниже задаёт
+# ADK_CONFIG_FILE явно, там, где нужны другие значения ──────────────────────
+unset ADK_CONFIG_FILE
+
+# (a) DoD-фикстура 1: canMerge=true, актуальная ветка, ready-PR → стаб
+# получает команду merge с флагом из --merge-method (дефолт squash-merge →
+# --squash), в журнале result=merged, задача в разделе сводки «смержено».
+RALPH_MERGE_ORIGIN="$TMP/ralph-merge-origin"
+mkdir -p "$RALPH_MERGE_ORIGIN"
+(cd "$RALPH_MERGE_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_MERGE_ORIGIN" && git_c branch issue-2001-x)
+
+RALPH_MERGE="$TMP/ralph-merge-proj"
+git_c clone -q "$RALPH_MERGE_ORIGIN" "$RALPH_MERGE"
+(cd "$RALPH_MERGE" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_MERGE="$TMP/ralph-merge-bin"
+mkdir -p "$RBIN_MERGE"
+cat > "$RBIN_MERGE/issues-fixture.json" <<'EOF'
+[
+  {"number": 2001, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_MERGE/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_MERGE"
+cat >> "$RBIN_MERGE/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5001, "isDraft": false, "headRefName": "issue-2001-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_MERGE/claude"
+# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — бespoke-стаб,
+# тот же приём, что уже используют RALPH_CFAIL/RALPH_CONFLICT выше для
+# сценариев за пределами общего каркаса.
+cat > "$RBIN_MERGE/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-2001-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_MERGE/gh"
+
+RALPH_MERGE_CFG="$TMP/ralph-merge-config.json"
+cat > "$RALPH_MERGE_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_merge_out=$(cd "$RALPH_MERGE" && PATH="$RBIN_MERGE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MERGE" \
+  ADK_LOGS_DIR="$TMP/ralph-merge-logs" ADK_CONFIG_FILE="$RALPH_MERGE_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-merge-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) canMerge=true, актуальная ветка, ready-PR — прогон завершается штатно" \
+  0 $?
+pr_merge_calls_log=$(cat "$RBIN_MERGE/pr-merge-calls.log" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) gh pr merge вызван с флагом из --merge-method (дефолт squash-merge → --squash), не жёстким хардкодом" \
+  "$pr_merge_calls_log" "pr merge 5001 --squash --delete-branch"
+ralph_merge_log=$(cat "$TMP/ralph-merge-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) журнал — issue #2001 result=merged" \
+  "$ralph_merge_log" '"result": "merged"'
+assert_contains "AC-1: adk-ralph: (issue #129) журнал — run_end.done отражает число смерженных (было всегда 0 до этой задачи)" \
+  "$ralph_merge_log" '"done": "1"'
+assert_contains "AC-1: adk-ralph: (issue #129) сводка относит задачу в раздел «Смержено»" \
+  "$ralph_merge_out" "Смержено:  #2001"
+merge_final_branch=$(git -C "$RALPH_MERGE" rev-parse --abbrev-ref HEAD)
+[ "$merge_final_branch" = "main" ]
+assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на default branch после merge" 0 $?
+
+# (b) DoD-фикстура 2: policies.merge=human-only → merge не вызывается
+# (стаб без "pr view"/"pr merge" — любой такой вызов провалил бы фикстуру
+# громким "unexpected gh call"), PR в «ждут человека», result=ready.
+RALPH_HO="$TMP/ralph-ho-proj"
+RBIN_HO="$TMP/ralph-ho-bin"
+mkdir -p "$RALPH_HO" "$RBIN_HO"
+(cd "$RALPH_HO" && git_c init -q -b main)
+cat > "$RBIN_HO/issues-fixture.json" <<'EOF'
+[
+  {"number": 2010, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_HO/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_HO" "$RBIN_HO/issues-fixture.json" "$RBIN_HO/prs-fixture.json"
+claude_stub_guard "$RBIN_HO"
+cat >> "$RBIN_HO/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5010, "isDraft": false, "headRefName": "issue-2010-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_HO/claude"
+
+RALPH_HO_CFG="$TMP/ralph-ho-config.json"
+cat > "$RALPH_HO_CFG" <<'EOF'
+{"policies": {"merge": "human-only"}}
+EOF
+
+ralph_ho_out=$(cd "$RALPH_HO" && PATH="$RBIN_HO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_HO" \
+  ADK_LOGS_DIR="$TMP/ralph-ho-logs" ADK_CONFIG_FILE="$RALPH_HO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-ho-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) policies.merge=human-only — прогон завершается штатно" 0 $?
+assert_not_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — ни одного непредвиденного вызова gh (значит, ни pr view, ни pr merge не вызывались)" \
+  "$ralph_ho_out" "unexpected gh call"
+ralph_ho_log=$(cat "$TMP/ralph-ho-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — result=ready, не merged" \
+  "$ralph_ho_log" '"result": "ready"'
+assert_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — сводка «Смержено: нет»" \
+  "$ralph_ho_out" "Смержено: нет"
+assert_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — PR остаётся в «ждут человека»" \
+  "$ralph_ho_out" "Ready (ждут человека):  #2010"
+
+# (c) DoD-фикстура 3: неизвестное значение policies.merge (опечатка) — merge
+# не вызывается, fail-closed той же дисциплиной, что bash-guard.sh, а не
+# молчаливый откат к разрешающему дефолту agent-after-approve.
+RALPH_MTYPO="$TMP/ralph-mtypo-proj"
+RBIN_MTYPO="$TMP/ralph-mtypo-bin"
+mkdir -p "$RALPH_MTYPO" "$RBIN_MTYPO"
+(cd "$RALPH_MTYPO" && git_c init -q -b main)
+cat > "$RBIN_MTYPO/issues-fixture.json" <<'EOF'
+[
+  {"number": 2011, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_MTYPO/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_MTYPO" "$RBIN_MTYPO/issues-fixture.json" "$RBIN_MTYPO/prs-fixture.json"
+claude_stub_guard "$RBIN_MTYPO"
+cat >> "$RBIN_MTYPO/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5011, "isDraft": false, "headRefName": "issue-2011-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_MTYPO/claude"
+
+RALPH_MTYPO_CFG="$TMP/ralph-mtypo-config.json"
+cat > "$RALPH_MTYPO_CFG" <<'EOF'
+{"policies": {"merge": "bogus"}}
+EOF
+
+ralph_mtypo_out=$(cd "$RALPH_MTYPO" && PATH="$RBIN_MTYPO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MTYPO" \
+  ADK_LOGS_DIR="$TMP/ralph-mtypo-logs" ADK_CONFIG_FILE="$RALPH_MTYPO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-mtypo-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — прогон завершается штатно (fail-closed — не крэш)" \
+  0 $?
+assert_not_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — ни одного непредвиденного вызова gh (merge не вызывается)" \
+  "$ralph_mtypo_out" "unexpected gh call"
+ralph_mtypo_log=$(cat "$TMP/ralph-mtypo-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — result=ready (не molчаливый merge по дефолту)" \
+  "$ralph_mtypo_log" '"result": "ready"'
+
+# (d) неизвестное значение policies.autopilot.canMerge (опечатка) — тот же
+# fail-closed, симметрично (c): буквальное покрытие обоих атрибутов из DoD
+# ("ненулевой exit читателя = неизвестное значение → merge не делать"), не
+# только policies.merge.
+RALPH_CMTYPO="$TMP/ralph-cmtypo-proj"
+RBIN_CMTYPO="$TMP/ralph-cmtypo-bin"
+mkdir -p "$RALPH_CMTYPO" "$RBIN_CMTYPO"
+(cd "$RALPH_CMTYPO" && git_c init -q -b main)
+cat > "$RBIN_CMTYPO/issues-fixture.json" <<'EOF'
+[
+  {"number": 2012, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_CMTYPO/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_CMTYPO" "$RBIN_CMTYPO/issues-fixture.json" "$RBIN_CMTYPO/prs-fixture.json"
+claude_stub_guard "$RBIN_CMTYPO"
+cat >> "$RBIN_CMTYPO/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5012, "isDraft": false, "headRefName": "issue-2012-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_CMTYPO/claude"
+
+RALPH_CMTYPO_CFG="$TMP/ralph-cmtypo-config.json"
+cat > "$RALPH_CMTYPO_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": "yes"}}}
+EOF
+
+ralph_cmtypo_out=$(cd "$RALPH_CMTYPO" && PATH="$RBIN_CMTYPO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CMTYPO" \
+  ADK_LOGS_DIR="$TMP/ralph-cmtypo-logs" ADK_CONFIG_FILE="$RALPH_CMTYPO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-cmtypo-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) policies.autopilot.canMerge неизвестное значение — прогон завершается штатно" \
+  0 $?
+assert_not_contains "AC-1: adk-ralph: (issue #129) canMerge неизвестное значение — ни одного непредвиденного вызова gh (merge не вызывается)" \
+  "$ralph_cmtypo_out" "unexpected gh call"
+ralph_cmtypo_log=$(cat "$TMP/ralph-cmtypo-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) canMerge неизвестное значение — result=ready" \
+  "$ralph_cmtypo_log" '"result": "ready"'
+
+# (e) DoD-фикстура 4: отставшая ветка — до merge актуализация и перегон
+# гейтов; при красных гейтах merge не вызывается, задача застревает, цикл
+# продолжается (не системный breaker, не полный стоп — AC-1: сводка
+# перечисляет сделанное и смерженное). scripts/check намеренно НЕ добавлен
+# в git (untracked) — переживает checkout/rebase внутри $root одинаково на
+# любой ветке; счётчик вызовов различает первый вызов (системный breaker
+# красных гейтов main перед итерацией — обязан быть зелёным) от второго
+# (перегон гейтов после актуализации ветки issue #2020 — намеренно красный).
+RALPH_BEHIND_ORIGIN="$TMP/ralph-behind-origin"
+mkdir -p "$RALPH_BEHIND_ORIGIN"
+(cd "$RALPH_BEHIND_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_BEHIND_ORIGIN" && git_c branch issue-2020-x)
+(cd "$RALPH_BEHIND_ORIGIN" && echo more > g.txt && git add g.txt && git_c commit -qm "advance main")
+
+RALPH_BEHIND="$TMP/ralph-behind-proj"
+git_c clone -q "$RALPH_BEHIND_ORIGIN" "$RALPH_BEHIND"
+(cd "$RALPH_BEHIND" && git_c config user.email t@t && git_c config user.name t)
+mkdir -p "$RALPH_BEHIND/scripts"
+cat > "$RALPH_BEHIND/scripts/check" <<EOF
+#!/usr/bin/env bash
+count_file="$RALPH_BEHIND/.check-calls"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+if [ "\$n" -eq 2 ]; then
+  echo "scripts/check: намеренно красный на втором вызове — после актуализации (фикстура issue #129)" >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$RALPH_BEHIND/scripts/check"
+
+RBIN_BEHIND="$TMP/ralph-behind-bin"
+mkdir -p "$RBIN_BEHIND"
+cat > "$RBIN_BEHIND/issues-fixture.json" <<'EOF'
+[
+  {"number": 2020, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BEHIND/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_BEHIND"
+cat >> "$RBIN_BEHIND/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5020, "isDraft": false, "headRefName": "issue-2020-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_BEHIND/claude"
+cat > "$RBIN_BEHIND/gh" <<EOF
+#!/usr/bin/env bash
+d="\$(cd "\$(dirname "\$0")" && pwd)"
+case "\$1 \$2" in
+  "issue list") cat "\$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "\$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-2020-x"; exit 0 ;;
+  "pr checkout") (cd "$RALPH_BEHIND" && git checkout -B issue-2020-x origin/issue-2020-x) >/dev/null 2>&1; exit \$? ;;
+  "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_BEHIND/gh"
+
+RALPH_BEHIND_CFG="$TMP/ralph-behind-config.json"
+cat > "$RALPH_BEHIND_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_behind_out=$(cd "$RALPH_BEHIND" && PATH="$RBIN_BEHIND:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BEHIND" \
+  ADK_LOGS_DIR="$TMP/ralph-behind-logs" ADK_CONFIG_FILE="$RALPH_BEHIND_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-behind-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) отставшая ветка + красные гейты после актуализации — прогон завершается штатно (задача застревает, не прогон)" \
+  0 $?
+assert_contains "AC-1: adk-ralph: (issue #129) отставшая ветка — причина остановки «очередь пуста» (не системный breaker, не полный стоп)" \
+  "$ralph_behind_out" "Причина остановки: очередь пуста"
+assert_contains "AC-1: adk-ralph: (issue #129) красные гейты после актуализации — issue застревает с этой причиной" \
+  "$ralph_behind_out" "#2020 (гейты красные после актуализации)"
+[ ! -f "$RBIN_BEHIND/pr-merge-calls.log" ]
+assert_exit "AC-1: adk-ralph: (issue #129) красные гейты после актуализации — gh pr merge ни разу не вызван" 0 $?
+ralph_behind_log=$(cat "$TMP/ralph-behind-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) журнал — issue #2020 result=stuck с причиной актуализации" \
+  "$ralph_behind_log" '"reason": "гейты красные после актуализации"'
+behind_final_branch=$(git -C "$RALPH_BEHIND" rev-parse --abbrev-ref HEAD)
+[ "$behind_final_branch" = "main" ]
+assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на default branch после застревания в merge-развилке" 0 $?
+
+# (f) policies.merge=human-review-required: approve (reviewDecision=APPROVED)
+# мержит, без approve — остаётся в «ждут человека» (result=ready). Тот же
+# признак approve, что канон /autopilot и bash-guard.sh.
+RALPH_HRR_ORIGIN="$TMP/ralph-hrr-origin"
+mkdir -p "$RALPH_HRR_ORIGIN"
+(cd "$RALPH_HRR_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_HRR_ORIGIN" && git_c branch issue-2030-x && git_c branch issue-2031-x)
+
+RALPH_HRR="$TMP/ralph-hrr-proj"
+git_c clone -q "$RALPH_HRR_ORIGIN" "$RALPH_HRR"
+(cd "$RALPH_HRR" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_HRR="$TMP/ralph-hrr-bin"
+mkdir -p "$RBIN_HRR"
+cat > "$RBIN_HRR/issues-fixture.json" <<'EOF'
+[
+  {"number": 2030, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 2031, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_HRR/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_HRR"
+cat >> "$RBIN_HRR/claude" <<'EOF'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
+case "$issue_num" in
+  2030)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5030, "isDraft": false, "headRefName": "issue-2030-x"}]
+PRJSON
+    ;;
+  2031)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5030, "isDraft": false, "headRefName": "issue-2030-x"}, {"number": 5031, "isDraft": false, "headRefName": "issue-2031-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_HRR/claude"
+cat > "$RBIN_HRR/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view")
+    case "$3" in
+      5030) echo "MERGEABLE APPROVED issue-2030-x" ;;
+      5031) echo "MERGEABLE REVIEW_REQUIRED issue-2031-x" ;;
+      *) echo "MERGEABLE null unknown" ;;
+    esac
+    exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_HRR/gh"
+
+RALPH_HRR_CFG="$TMP/ralph-hrr-config.json"
+cat > "$RALPH_HRR_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}, "merge": "human-review-required"}}
+EOF
+
+ralph_hrr_out=$(cd "$RALPH_HRR" && PATH="$RBIN_HRR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_HRR" \
+  ADK_LOGS_DIR="$TMP/ralph-hrr-logs" ADK_CONFIG_FILE="$RALPH_HRR_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-hrr-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) human-review-required — прогон завершается штатно" 0 $?
+hrr_merge_log=$(cat "$RBIN_HRR/pr-merge-calls.log" 2>/dev/null)
+assert_contains "AC-1: adk-ralph: (issue #129) human-review-required — approved PR смержен" \
+  "$hrr_merge_log" "5030"
+assert_not_contains "AC-1: adk-ralph: (issue #129) human-review-required — PR без approve НЕ смержен" \
+  "$hrr_merge_log" "5031"
+assert_contains "AC-1: adk-ralph: (issue #129) human-review-required — сводка относит approved к «Смержено»" \
+  "$ralph_hrr_out" "Смержено:  #2030"
+assert_contains "AC-1: adk-ralph: (issue #129) human-review-required — сводка относит неapproved к «ждут человека»" \
+  "$ralph_hrr_out" "Ready (ждут человека):  #2031"
+
+# (g) mergeable=UNKNOWN на первой попытке — GitHub ещё считает mergeability
+# (шаг 6 /work: «UNKNOWN — GitHub ещё считает mergeability, повтори
+# запрос»); ADR-019 §2 — до 3 попыток с паузой 1с. Здесь вторая попытка уже
+# отвечает MERGEABLE — merge проходит.
+RALPH_UNK_ORIGIN="$TMP/ralph-unk-origin"
+mkdir -p "$RALPH_UNK_ORIGIN"
+(cd "$RALPH_UNK_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_UNK_ORIGIN" && git_c branch issue-2040-x)
+
+RALPH_UNK="$TMP/ralph-unk-proj"
+git_c clone -q "$RALPH_UNK_ORIGIN" "$RALPH_UNK"
+(cd "$RALPH_UNK" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_UNK="$TMP/ralph-unk-bin"
+mkdir -p "$RBIN_UNK"
+cat > "$RBIN_UNK/issues-fixture.json" <<'EOF'
+[
+  {"number": 2040, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_UNK/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_UNK"
+cat >> "$RBIN_UNK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5040, "isDraft": false, "headRefName": "issue-2040-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_UNK/claude"
+cat > "$RBIN_UNK/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view")
+    n=$(( $(cat "$d/pr-view-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$d/pr-view-calls"
+    if [ "$n" -eq 1 ]; then
+      echo "UNKNOWN null issue-2040-x"
+    else
+      echo "MERGEABLE null issue-2040-x"
+    fi
+    exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_UNK/gh"
+
+RALPH_UNK_CFG="$TMP/ralph-unk-config.json"
+cat > "$RALPH_UNK_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_unk_out=$(cd "$RALPH_UNK" && PATH="$RBIN_UNK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_UNK" \
+  ADK_LOGS_DIR="$TMP/ralph-unk-logs" ADK_CONFIG_FILE="$RALPH_UNK_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-unk-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на первой попытке — прогон завершается штатно" 0 $?
+pr_view_calls_unk=$(cat "$RBIN_UNK/pr-view-calls" 2>/dev/null || echo 0)
+assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN — gh pr view вызван дважды (ретрай), не один раз" \
+  2 "$pr_view_calls_unk"
+[ -f "$RBIN_UNK/pr-merge-calls.log" ]
+assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN — после ретрая merge всё же выполнен" 0 $?
+
+# (h) mergeable=UNKNOWN на ВСЕХ попытках — не бесконечный ретрай: ровно 3
+# попытки (ADR-019 §2), затем застревание с честной причиной. Без реального
+# origin — resolve_ready_pr возвращает STUCK до git fetch, up до него дело
+# не доходит.
+RALPH_UNK2="$TMP/ralph-unk-exhausted-proj"
+RBIN_UNK2="$TMP/ralph-unk-exhausted-bin"
+mkdir -p "$RALPH_UNK2" "$RBIN_UNK2"
+(cd "$RALPH_UNK2" && git_c init -q -b main)
+cat > "$RBIN_UNK2/issues-fixture.json" <<'EOF'
+[
+  {"number": 2050, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_UNK2/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_UNK2"
+cat >> "$RBIN_UNK2/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 5050, "isDraft": false, "headRefName": "issue-2050-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_UNK2/claude"
+cat > "$RBIN_UNK2/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view")
+    n=$(( $(cat "$d/pr-view-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$d/pr-view-calls"
+    echo "UNKNOWN null issue-2050-x"
+    exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_UNK2/gh"
+
+RALPH_UNK2_CFG="$TMP/ralph-unk-exhausted-config.json"
+cat > "$RALPH_UNK2_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+ralph_unk2_out=$(cd "$RALPH_UNK2" && PATH="$RBIN_UNK2:$PATH" CLAUDE_PROJECT_DIR="$RALPH_UNK2" \
+  ADK_LOGS_DIR="$TMP/ralph-unk-exhausted-logs" ADK_CONFIG_FILE="$RALPH_UNK2_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-unk-exhausted-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на всех попытках — прогон завершается штатно (задача застревает, не бесконечный ретрай)" \
+  0 $?
+pr_view_calls_unk2=$(cat "$RBIN_UNK2/pr-view-calls" 2>/dev/null || echo 0)
+assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на всех попытках — ровно 3 попытки, потом застревание" \
+  3 "$pr_view_calls_unk2"
+assert_contains "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN исчерпан — причина застревания называет неопределённость" \
+  "$ralph_unk2_out" "не удалось определить конфликтность PR (mergeable=UNKNOWN)"
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
