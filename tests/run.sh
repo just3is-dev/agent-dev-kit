@@ -5212,6 +5212,289 @@ rb_share_boundary_call_count=$(cat "$RBIN_RB_SHARE_BOUNDARY/claude-calls.log" 2>
 assert_exit "AC-5: adk-ralph: (issue #134) доля на пороге — headless-процесс вызван на #765 тоже (три вызова)" \
   3 "$rb_share_boundary_call_count"
 
+# ── issue #130, SPEC-003 AC-2: стоп-файл .adk/stop — единственный способ
+# вмешаться в ночной прогон без живой сессии. Стаб claude создаёт файл ВО
+# ВРЕМЯ первой итерации (пока сама итерация ещё не завершена) — итерация
+# дочитывается до вердикта (issue #1301 получает свой обычный исход), а
+# вторая не начинается вовсе: issue #1302 не получает ни одного вызова
+# claude, issue #1303 (третий доступный) не тронут и не залогирован ────────
+RALPH_STOP="$TMP/ralph-stop-proj"
+RBIN_STOP="$TMP/ralph-stop-bin"
+mkdir -p "$RALPH_STOP" "$RBIN_STOP"
+(cd "$RALPH_STOP" && git_c init -q -b main)
+
+cat > "$RBIN_STOP/issues-fixture.json" <<'EOF'
+[
+  {"number": 1301, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 1302, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 1303, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_STOP/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_STOP" "$RBIN_STOP/issues-fixture.json" "$RBIN_STOP/prs-fixture.json"
+claude_stub_guard "$RBIN_STOP"
+cat >> "$RBIN_STOP/claude" <<EOF
+echo "\$*" >> "\$d/claude-calls.log"
+issue_num=\$(printf '%s' "\$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+if [ "\$issue_num" = "1301" ]; then
+  mkdir -p "$RALPH_STOP/.adk"
+  touch "$RALPH_STOP/.adk/stop"
+  cat > "\$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9901, "isDraft": false, "headRefName": "issue-1301-x"}]
+PRJSON
+fi
+exit 0
+EOF
+chmod +x "$RBIN_STOP/claude"
+
+RALPH_STOP_LOGS="$TMP/ralph-stop-logs"
+RALPH_STOP_NOTIFY="$TMP/ralph-stop-notify.log"
+ralph_stop_out=$(cd "$RALPH_STOP" && PATH="$RBIN_STOP:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP" \
+  ADK_LOGS_DIR="$RALPH_STOP_LOGS" ADK_NOTIFY_FILE="$RALPH_STOP_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-2: adk-ralph: стоп-файл, созданный во время первой итерации, останавливает прогон (exit != 0)" \
+  1 $?
+assert_contains "AC-2: adk-ralph: сводка называет причину «стоп-файл»" \
+  "$ralph_stop_out" "стоп-файл"
+assert_contains "AC-2: adk-ralph: сводка всё равно перечисляет доигранный до вердикта issue #1301" \
+  "$ralph_stop_out" "#1301"
+
+stop_call_count=$(cat "$RBIN_STOP/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-2: adk-ralph: headless-процесс вызван ровно один раз — вторая итерация (issue #1302) не начата" \
+  1 "$stop_call_count"
+assert_not_contains "AC-2: adk-ralph: issue #1302 не тронут вовсе" "$ralph_stop_out" "#1302"
+assert_not_contains "AC-2: adk-ralph: issue #1303 (третий доступный) не тронут вовсе" "$ralph_stop_out" "#1303"
+
+stop_log_file="$RALPH_STOP_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+stop_log=$(cat "$stop_log_file" 2>/dev/null)
+assert_not_contains "AC-2: adk-ralph: в журнале нет незавершённой записи по невзятому issue #1302" \
+  "$stop_log" '"issue": "1302"'
+assert_not_contains "AC-2: adk-ralph: в журнале нет незавершённой записи по невзятому issue #1303" \
+  "$stop_log" '"issue": "1303"'
+stop_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=1301|type=task|result=ready' \
+  'event=run_end|reason=стоп-файл')
+stop_valid=$(jsonl_check "$stop_log_file" 3 "$stop_spec")
+assert_exit "AC-2: adk-ralph: журнал — run_start, issue #1301 доигран до вердикта, run_end с причиной «стоп-файл»" \
+  1 "$stop_valid"
+
+# Удаление стоп-файла — только на старте следующего прогона (issue #130):
+# прогон, который сам остановился из-за файла, его не трогает — второго
+# механизма (удаление «по факту срабатывания») скрипт не заводит.
+[ -e "$RALPH_STOP/.adk/stop" ]
+assert_exit "AC-2: adk-ralph: стоп-файл остаётся на диске после срабатывания — удаляет его только старт следующего прогона" \
+  0 $?
+
+# ── issue #130, AC-2: стоп-файл, лежащий ДО старта прогона (хвост от
+# предыдущего прогона), не должен убивать новый — удаляется на старте,
+# прогон идёт штатно до пустой очереди ──────────────────────────────────────
+RALPH_STOP_PRE="$TMP/ralph-stop-pre-proj"
+RBIN_STOP_PRE="$TMP/ralph-stop-pre-bin"
+mkdir -p "$RALPH_STOP_PRE/.adk" "$RBIN_STOP_PRE"
+(cd "$RALPH_STOP_PRE" && git_c init -q -b main)
+touch "$RALPH_STOP_PRE/.adk/stop"
+
+cat > "$RBIN_STOP_PRE/issues-fixture.json" <<'EOF'
+[
+  {"number": 1310, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_STOP_PRE/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_STOP_PRE" "$RBIN_STOP_PRE/issues-fixture.json" "$RBIN_STOP_PRE/prs-fixture.json"
+claude_stub_guard "$RBIN_STOP_PRE"
+cat >> "$RBIN_STOP_PRE/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9910, "isDraft": false, "headRefName": "issue-1310-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_STOP_PRE/claude"
+
+ralph_stop_pre_out=$(cd "$RALPH_STOP_PRE" && PATH="$RBIN_STOP_PRE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_PRE" \
+  ADK_LOGS_DIR="$TMP/ralph-stop-pre-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-pre-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-2: adk-ralph: стоп-файл, лежащий до старта, удаляется на старте — прогон завершается штатно (exit 0)" \
+  0 $?
+assert_contains "AC-2: adk-ralph: прогон с файлом до старта доигрывает до «очередь пуста», не «стоп-файл»" \
+  "$ralph_stop_pre_out" "очередь пуста"
+assert_not_contains "AC-2: adk-ralph: прогон с файлом до старта не называет причиной «стоп-файл»" \
+  "$ralph_stop_pre_out" "Причина остановки: стоп-файл"
+pre_call_count=$(cat "$RBIN_STOP_PRE/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-2: adk-ralph: единственный доступный issue #1310 всё же обработан (файл-хвост не заблокировал прогон)" \
+  1 "$pre_call_count"
+[ ! -e "$RALPH_STOP_PRE/.adk/stop" ]
+assert_exit "AC-2: adk-ralph: стоп-файл, лежавший до старта, больше не существует после удаления на старте" \
+  0 $?
+
+# ── issue #130, ADR-018: стоп-файл появляется во время обработки
+# ЕДИНСТВЕННОГО (последнего) доступного issue — следующий (несостоявшийся)
+# проход цикла нашёл бы «очередь пуста» (реально нет больше открытых
+# issues), но select_next для него вообще не вызывается: проверка
+# стоп-файла стоит раньше любого действия итерации, поэтому сводка обязана
+# называть «стоп-файл», не «очередь пуста», хотя очередь и правда опустела ─
+RALPH_STOP_LAST="$TMP/ralph-stop-last-proj"
+RBIN_STOP_LAST="$TMP/ralph-stop-last-bin"
+mkdir -p "$RALPH_STOP_LAST" "$RBIN_STOP_LAST"
+(cd "$RALPH_STOP_LAST" && git_c init -q -b main)
+
+cat > "$RBIN_STOP_LAST/issues-fixture.json" <<'EOF'
+[
+  {"number": 1340, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_STOP_LAST/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_STOP_LAST" "$RBIN_STOP_LAST/issues-fixture.json" "$RBIN_STOP_LAST/prs-fixture.json"
+claude_stub_guard "$RBIN_STOP_LAST"
+cat >> "$RBIN_STOP_LAST/claude" <<EOF
+echo "\$*" >> "\$d/claude-calls.log"
+mkdir -p "$RALPH_STOP_LAST/.adk"
+touch "$RALPH_STOP_LAST/.adk/stop"
+cat > "\$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9940, "isDraft": false, "headRefName": "issue-1340-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_STOP_LAST/claude"
+
+ralph_stop_last_out=$(cd "$RALPH_STOP_LAST" && PATH="$RBIN_STOP_LAST:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_LAST" \
+  ADK_LOGS_DIR="$TMP/ralph-stop-last-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-last-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-2: adk-ralph: стоп-файл на последнем доступном issue — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-2: adk-ralph: стоп-файл на последнем issue — сводка называет причиной «стоп-файл»" \
+  "$ralph_stop_last_out" "Причина остановки: стоп-файл"
+assert_not_contains "AC-2: adk-ralph: стоп-файл на последнем issue — сводка НЕ называет «очередь пуста», хотя очередь и правда опустела" \
+  "$ralph_stop_last_out" "Причина остановки: очередь пуста"
+stop_last_call_count=$(cat "$RBIN_STOP_LAST/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-2: adk-ralph: стоп-файл на последнем issue — headless-процесс вызван ровно один раз" \
+  1 "$stop_last_call_count"
+
+# ── issue #130: коллизия причин остановки — стоп-файл появляется во время
+# итерации, которая САМА в этой же итерации уже довела прогон до
+# breaker'а уровня прогона (maxStuckPerRun=2, дефолт). Приоритет — у
+# причины, обнаруженной раньше (тот же принцип, что actualization_breaker
+# vs run_breaker_reason): breaker вычисляется и ломает цикл ДО того, как
+# тот успевает вернуться к вершине цикла и увидеть стоп-файл на границе
+# следующей итерации — сводка обязана называть breaker, не «стоп-файл» ─────
+RALPH_STOP_VS_BREAKER="$TMP/ralph-stop-vs-breaker-proj"
+RBIN_STOP_VS_BREAKER="$TMP/ralph-stop-vs-breaker-bin"
+mkdir -p "$RALPH_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER"
+(cd "$RALPH_STOP_VS_BREAKER" && git_c init -q -b main)
+
+cat > "$RBIN_STOP_VS_BREAKER/issues-fixture.json" <<'EOF'
+[
+  {"number": 1320, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 1321, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 1322, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_STOP_VS_BREAKER/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER/issues-fixture.json" "$RBIN_STOP_VS_BREAKER/prs-fixture.json"
+claude_stub_guard "$RBIN_STOP_VS_BREAKER"
+cat >> "$RBIN_STOP_VS_BREAKER/claude" <<EOF
+echo "\$*" >> "\$d/claude-calls.log"
+issue_num=\$(printf '%s' "\$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "\$issue_num" in
+  1320)
+    cat > "\$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9920, "isDraft": true, "headRefName": "issue-1320-x"}]
+PRJSON
+    ;;
+  1321)
+    mkdir -p "$RALPH_STOP_VS_BREAKER/.adk"
+    touch "$RALPH_STOP_VS_BREAKER/.adk/stop"
+    cat > "\$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9920, "isDraft": true, "headRefName": "issue-1320-x"}, {"number": 9921, "isDraft": true, "headRefName": "issue-1321-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_STOP_VS_BREAKER/claude"
+
+ralph_stop_vs_breaker_out=$(cd "$RALPH_STOP_VS_BREAKER" && PATH="$RBIN_STOP_VS_BREAKER:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_VS_BREAKER" \
+  ADK_LOGS_DIR="$TMP/ralph-stop-vs-breaker-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-vs-breaker-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-2: adk-ralph: коллизия стоп-файл vs breaker застреваний — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-2: adk-ralph: коллизия — причина остановки breaker (обнаружен раньше), не «стоп-файл»" \
+  "$ralph_stop_vs_breaker_out" "Причина остановки: breaker: застревания за прогон"
+assert_not_contains "AC-2: adk-ralph: коллизия — сводка не называет «стоп-файл» причиной остановки" \
+  "$ralph_stop_vs_breaker_out" "Причина остановки: стоп-файл"
+svb_call_count=$(cat "$RBIN_STOP_VS_BREAKER/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вызван дважды (issue #1322 не тронут ни breaker'ом, ни стоп-файлом)" \
+  2 "$svb_call_count"
+
+# ── issue #130: коллизия причин остановки №2 — стоп-файл появляется во
+# время итерации 1, а гейты main краснеют только со ВТОРОЙ проверки (перед
+# несостоявшейся итерацией 2). Оба факта видны впервые одновременно на
+# границе итерации 2 — стоп-файл проверяется раньше системного breaker'а
+# (красные гейты обходятся дорогим scripts/check ради причины, которая и
+# так решена), поэтому сводка обязана называть «стоп-файл», не системный
+# breaker ────────────────────────────────────────────────────────────────
+RALPH_STOP_VS_GATES="$TMP/ralph-stop-vs-gates-proj"
+RBIN_STOP_VS_GATES="$TMP/ralph-stop-vs-gates-bin"
+mkdir -p "$RALPH_STOP_VS_GATES" "$RBIN_STOP_VS_GATES"
+(cd "$RALPH_STOP_VS_GATES" && git_c init -q -b main)
+mkdir -p "$RALPH_STOP_VS_GATES/scripts"
+cat > "$RALPH_STOP_VS_GATES/scripts/check" <<EOF
+#!/usr/bin/env bash
+count_file="$RALPH_STOP_VS_GATES/.check-calls"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+if [ "\$n" -le 1 ]; then
+  exit 0
+fi
+echo "scripts/check: намеренно красный после первой итерации (фикстура issue #130)" >&2
+exit 1
+EOF
+chmod +x "$RALPH_STOP_VS_GATES/scripts/check"
+
+cat > "$RBIN_STOP_VS_GATES/issues-fixture.json" <<'EOF'
+[
+  {"number": 1330, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 1331, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_STOP_VS_GATES/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_STOP_VS_GATES" "$RBIN_STOP_VS_GATES/issues-fixture.json" "$RBIN_STOP_VS_GATES/prs-fixture.json"
+claude_stub_guard "$RBIN_STOP_VS_GATES"
+cat >> "$RBIN_STOP_VS_GATES/claude" <<EOF
+echo "\$*" >> "\$d/claude-calls.log"
+mkdir -p "$RALPH_STOP_VS_GATES/.adk"
+touch "$RALPH_STOP_VS_GATES/.adk/stop"
+cat > "\$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9930, "isDraft": false, "headRefName": "issue-1330-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_STOP_VS_GATES/claude"
+
+ralph_stop_vs_gates_out=$(cd "$RALPH_STOP_VS_GATES" && PATH="$RBIN_STOP_VS_GATES:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_VS_GATES" \
+  ADK_LOGS_DIR="$TMP/ralph-stop-vs-gates-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-vs-gates-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-2: adk-ralph: коллизия стоп-файл vs красные гейты main — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-2: adk-ralph: коллизия — причина остановки «стоп-файл» (проверяется раньше системного breaker'а)" \
+  "$ralph_stop_vs_gates_out" "Причина остановки: стоп-файл"
+assert_not_contains "AC-2: adk-ralph: коллизия — сводка не называет системный breaker причиной" \
+  "$ralph_stop_vs_gates_out" "Причина остановки: системный breaker: красные гейты main"
+svg_call_count=$(cat "$RBIN_STOP_VS_GATES/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вызван один раз (issue #1331 не тронут)" \
+  1 "$svg_call_count"
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
