@@ -2975,6 +2975,28 @@ assert_not_contains "AC-7: adk-ralph: строка запуска не соде�
 assert_contains "AC-1: adk-ralph: инструкции headless-процесса называют номер обрабатываемой задачи" \
   "$claude_calls" "issue #1"
 
+# ── Документация изоляции v1 и задел OS-sandbox (issue #137, AC-7) ─────────
+check_ac_doc AC-7 "README называет категорию git в allowlist headless-процесса" \
+  "$KIT/README.md" "**git**: \`status\`, \`diff\`, \`add\`, \`commit\`, \`push\`, \`fetch\`, \`checkout\`,"
+check_ac_doc AC-7 "README называет категорию gh в allowlist headless-процесса" \
+  "$KIT/README.md" "**gh**: \`issue view/edit/list\`, \`pr create/view/edit/comment/ready\`,"
+check_ac_doc AC-7 "README называет контрактные scripts/* в allowlist headless-процесса" \
+  "$KIT/README.md" "контрактные \`scripts/*\` проекта: \`scripts/check\`, \`scripts/test\`"
+check_ac_doc AC-7 "README называет чтение/запись в корне проекта в allowlist headless-процесса" \
+  "$KIT/README.md" "чтение и запись файлов в корне проекта, без выхода за пределы рабочего"
+check_ac_doc AC-7 "README явным текстом фиксирует отсутствие --dangerously-skip-permissions у ralph" \
+  "$KIT/README.md" "\`adk-ralph.sh\` не передаёт \`--dangerously-skip-permissions\` дочернему \`claude -p\`"
+check_ac_doc AC-7 "README: защита в глубину headless-запуска та же, что в интерактивной сессии" \
+  "$KIT/README.md" "защита в глубину headless-запуска та же, что и в интерактивной сессии"
+check_ac_doc AC-7 "README перечисляет слои защиты в глубину (хуки-гейты, секрет-скан, draft-PR, защита main)" \
+  "$KIT/README.md" "секрет-скан перед коммитом, механика draft-PR (ready только после APPROVE"
+check_ac_doc AC-7 "README ссылается на docs/config.md по задела OS-sandbox" \
+  "$KIT/README.md" "задел без реализации, \`policies.autopilot.sandbox\`, в таблице атрибутов"
+check_ac_doc AC-7 "docs/config.md: policies.autopilot.sandbox помечен зарезервированным без потребителя" \
+  "$KIT/docs/config.md" "\`policies.autopilot.sandbox\` | объект (профиль \`sandbox-exec\`) | не задан | Зарезервирован, потребителя нет"
+check_ac_doc AC-7 "docs/config.md: policies.autopilot.sandbox описан как задел без реализации" \
+  "$KIT/docs/config.md" "Ни \`adk-ralph.sh\`, ни \`/autopilot\` этот атрибут сегодня не читают — реализации нет"
+
 # ── Блокер круга 4 ревью PR #141: adk-ralph.sh обязан пробросить
 # CLAUDE_PLUGIN_ROOT дочернему headless-процессу claude -p — иначе 10+ мест
 # ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/... в commands/work.md резолвятся в

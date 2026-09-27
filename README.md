@@ -235,6 +235,37 @@ gh label create owner:human 2>/dev/null; gh issue edit <N> --add-label owner:hum
 gh issue edit <N> --remove-label owner:human
 ```
 
+### Разрешения headless-процесса (ralph)
+
+Изоляция v1 — на уровне разрешений Claude Code, а не sandbox: `adk-ralph.sh`
+не передаёт `--dangerously-skip-permissions` дочернему `claude -p` (AC-7
+SPEC-003, `docs/specs/003-autonomy.md`). Инструмент, не разрешённый заранее,
+остановит headless-процесс на интерактивном запросе разрешения — спросить
+там некого, и первый же ночной прогон зависнет. Прежде чем оставлять ralph
+без присмотра, `.claude/settings.json` проекта должен разрешать минимум,
+которым пользуется `/work`:
+
+- **git**: `status`, `diff`, `add`, `commit`, `push`, `fetch`, `checkout`,
+  `branch`, `rebase`/`merge`, `log`;
+- **gh**: `issue view/edit/list`, `pr create/view/edit/comment/ready`,
+  `label create`;
+- контрактные `scripts/*` проекта: `scripts/check`, `scripts/test` (и
+  `scripts/fix`, если шаблон стека его определяет);
+- чтение и запись файлов в корне проекта, без выхода за пределы рабочего
+  дерева репозитория.
+
+Отсутствие `--dangerously-skip-permissions` — не единственный слой защиты:
+защита в глубину headless-запуска та же, что и в интерактивной сессии —
+хуки-гейты (PostToolUse `check`, Stop `test`, PreToolUse запреты),
+секрет-скан перед коммитом, механика draft-PR (ready только после APPROVE
+ревьюера) и серверная защита ветки main. Allowlist разрешений не заменяет
+эти слои — он лишь снимает интерактивный запрос там, где headless-процессу
+и так предстоит выполнить разрешённое действие.
+
+Полная OS-изоляция headless-процесса — не часть v1: она описана как
+задел без реализации, `policies.autopilot.sandbox`, в таблице атрибутов
+`docs/config.md`.
+
 ## Справочник
 
 ### Команды
