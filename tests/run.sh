@@ -4742,6 +4742,404 @@ assert_exit "AC-5: adk-ralph: (issue #135) серия конфликтов ак�
 assert_exit "AC-5: adk-ralph: (issue #135) серия конфликтов актуализации — каждый конфликтный merge прерван (.git/MERGE_HEAD не остался)" \
   0 $?
 
+# ── issue #134: breaker уровня прогона №1 — накопленные застревания
+# (SPEC-003 «Стадийный circuit breaker», AC-5 уровня прогона; ADR-016).
+# Три независимых issue без блокеров; claude-стаб оставляет черновиками PR
+# первых двух — после ВТОРОГО застревания (дефолт maxStuckPerRun=2) цикл
+# останавливается, третий issue не берётся вовсе (DoD issue #134) ─────────
+RALPH_RB_STUCK="$TMP/ralph-rb-stuck-proj"
+RBIN_RB_STUCK="$TMP/ralph-rb-stuck-bin"
+mkdir -p "$RALPH_RB_STUCK" "$RBIN_RB_STUCK"
+(cd "$RALPH_RB_STUCK" && git_c init -q -b main)
+
+cat > "$RBIN_RB_STUCK/issues-fixture.json" <<'EOF'
+[
+  {"number": 701, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 702, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 703, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_STUCK/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_STUCK" "$RBIN_RB_STUCK/issues-fixture.json" "$RBIN_RB_STUCK/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_STUCK"
+cat >> "$RBIN_RB_STUCK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  701)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9701, "isDraft": true, "headRefName": "issue-701-x"}]
+PRJSON
+    ;;
+  702)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9701, "isDraft": true, "headRefName": "issue-701-x"}, {"number": 9702, "isDraft": true, "headRefName": "issue-702-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_RB_STUCK/claude"
+
+RALPH_RB_STUCK_LOGS="$TMP/ralph-rb-stuck-logs"
+RALPH_RB_STUCK_NOTIFY="$TMP/ralph-rb-stuck-notify.log"
+ralph_rb_stuck_out=$(cd "$RALPH_RB_STUCK" && PATH="$RBIN_RB_STUCK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_STUCK" \
+  ADK_LOGS_DIR="$RALPH_RB_STUCK_LOGS" ADK_NOTIFY_FILE="$RALPH_RB_STUCK_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) 2 застревания за прогон (дефолт maxStuckPerRun) — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-5: adk-ralph: (issue #134) сводка называет причину «breaker: застревания за прогон»" \
+  "$ralph_rb_stuck_out" "breaker: застревания за прогон"
+
+rb_stuck_call_count=$(cat "$RBIN_RB_STUCK/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) headless-процесс вызван ровно дважды — issue #703 не берётся после breaker" \
+  2 "$rb_stuck_call_count"
+
+rb_stuck_log=$(cat "$RALPH_RB_STUCK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-5: adk-ralph: (issue #134) run_end фиксирует причину breaker'а застреваний" \
+  "$rb_stuck_log" '"reason": "breaker: застревания за прогон"'
+assert_not_contains "AC-5: adk-ralph: (issue #134) issue #703 не залогирован вовсе" \
+  "$rb_stuck_log" '"issue": "703"'
+
+rb_stuck_notify=$(cat "$RALPH_RB_STUCK_NOTIFY" 2>/dev/null)
+assert_contains "AC-5: adk-ralph: (issue #134) уведомление о срабатывании breaker'а застреваний" \
+  "$rb_stuck_notify" "breaker: застревания за прогон"
+
+# ── issue #134: breaker уровня прогона №2 — доля пропущенных из-за
+# зависимостей (ADR-016 §2-3). issue #711 без блокеров получает черновик PR
+# и застревает; #712-714 «Blocked by #711» пропускаются каскадом одним
+# батчем (skipped=3, stuck=1, знаменатель=4 — ровно минимум) — доля 3/4=0.75
+# выше дефолтного maxSkippedShare=0.5, прогон останавливается ДО обработки
+# независимого #715, который иначе стал бы следующим кандидатом ───────────
+RALPH_RB_SHARE="$TMP/ralph-rb-share-proj"
+RBIN_RB_SHARE="$TMP/ralph-rb-share-bin"
+mkdir -p "$RALPH_RB_SHARE" "$RBIN_RB_SHARE"
+(cd "$RALPH_RB_SHARE" && git_c init -q -b main)
+
+cat > "$RBIN_RB_SHARE/issues-fixture.json" <<'EOF'
+[
+  {"number": 711, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 712, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #711"},
+  {"number": 713, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #711"},
+  {"number": 714, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #711"},
+  {"number": 715, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_SHARE/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_SHARE" "$RBIN_RB_SHARE/issues-fixture.json" "$RBIN_RB_SHARE/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_SHARE"
+cat >> "$RBIN_RB_SHARE/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  711)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9711, "isDraft": true, "headRefName": "issue-711-x"}]
+PRJSON
+    ;;
+  715)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9711, "isDraft": true, "headRefName": "issue-711-x"}, {"number": 9715, "isDraft": false, "headRefName": "issue-715-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_RB_SHARE/claude"
+
+RALPH_RB_SHARE_LOGS="$TMP/ralph-rb-share-logs"
+RALPH_RB_SHARE_NOTIFY="$TMP/ralph-rb-share-notify.log"
+ralph_rb_share_out=$(cd "$RALPH_RB_SHARE" && PATH="$RBIN_RB_SHARE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARE" \
+  ADK_LOGS_DIR="$RALPH_RB_SHARE_LOGS" ADK_NOTIFY_FILE="$RALPH_RB_SHARE_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) доля пропущенных 3/4=0.75 выше дефолтного maxSkippedShare — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-5: adk-ralph: (issue #134) сводка называет причину «breaker: доля пропущенных за прогон»" \
+  "$ralph_rb_share_out" "breaker: доля пропущенных за прогон"
+
+rb_share_call_count=$(cat "$RBIN_RB_SHARE/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) headless-процесс вызван ровно один раз — issue #715 не берётся после breaker" \
+  1 "$rb_share_call_count"
+
+rb_share_log=$(cat "$RALPH_RB_SHARE_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-5: adk-ralph: (issue #134) run_end фиксирует причину breaker'а доли пропущенных" \
+  "$rb_share_log" '"reason": "breaker: доля пропущенных за прогон"'
+assert_not_contains "AC-5: adk-ralph: (issue #134) issue #715 не залогирован вовсе" \
+  "$rb_share_log" '"issue": "715"'
+
+rb_share_notify=$(cat "$RALPH_RB_SHARE_NOTIFY" 2>/dev/null)
+assert_contains "AC-5: adk-ralph: (issue #134) уведомление о срабатывании breaker'а доли пропущенных" \
+  "$rb_share_notify" "breaker: доля пропущенных за прогон"
+
+# ── issue #134: переходное состояние — прогон короче минимального
+# знаменателя (4) не останавливается, даже если доля пропущенных из
+# доступных на данный момент данных уже выше порога (ADR-016 §2). issue
+# #721 без блокеров застревает; #722 «Blocked by #721» пропускается
+# каскадом — знаменатель 1+0+1=2 < 4, доля 1/2=0.5 никогда не оценивается,
+# несмотря на то что 2 из 3 (0.667) уже выше дефолтного порога 0.5, если
+# бы оценка происходила без минимума. Прогон доигрывает штатно до «очередь
+# пуста», exit 0 ─────────────────────────────────────────────────────────
+RALPH_RB_SMALLN="$TMP/ralph-rb-smalln-proj"
+RBIN_RB_SMALLN="$TMP/ralph-rb-smalln-bin"
+mkdir -p "$RALPH_RB_SMALLN" "$RBIN_RB_SMALLN"
+(cd "$RALPH_RB_SMALLN" && git_c init -q -b main)
+
+cat > "$RBIN_RB_SMALLN/issues-fixture.json" <<'EOF'
+[
+  {"number": 721, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 722, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #721"},
+  {"number": 723, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #721"}
+]
+EOF
+cat > "$RBIN_RB_SMALLN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_SMALLN" "$RBIN_RB_SMALLN/issues-fixture.json" "$RBIN_RB_SMALLN/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_SMALLN"
+cat >> "$RBIN_RB_SMALLN/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9721, "isDraft": true, "headRefName": "issue-721-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_RB_SMALLN/claude"
+
+ralph_rb_smalln_out=$(cd "$RALPH_RB_SMALLN" && PATH="$RBIN_RB_SMALLN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SMALLN" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-smalln-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-smalln-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаменателя (2 задачи < 4) — не останавливается (exit 0)" \
+  0 $?
+assert_contains "AC-5: adk-ralph: (issue #134) прогон короче знаменателя — доигрывает до «очередь пуста»" \
+  "$ralph_rb_smalln_out" "очередь пуста"
+assert_not_contains "AC-5: adk-ralph: (issue #134) прогон короче знаменателя — breaker доли пропущенных не срабатывает" \
+  "$ralph_rb_smalln_out" "breaker: доля пропущенных"
+
+rb_smalln_call_count=$(cat "$RBIN_RB_SMALLN/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаменателя — headless-процесс вызван один раз (#721; #722/#723 пропущены зависимостью)" \
+  1 "$rb_smalln_call_count"
+
+# ── issue #134: переходное состояние — breaker и «очередь пуста»
+# совпадают на последней доступной задаче (ADR-016 §4). Два независимых
+# issue, оба черновиками PR — второе застревание срабатывает breaker'ом
+# РОВНО в момент, когда следующая попытка select_next и так вернула бы
+# «NONE» (issues больше нет). Причина в сводке — «breaker: застревания за
+# прогон», не «очередь пуста»: breaker проверяется сразу после самого
+# застревания, раньше следующего select_next ────────────────────────────
+RALPH_RB_LASTTASK="$TMP/ralph-rb-lasttask-proj"
+RBIN_RB_LASTTASK="$TMP/ralph-rb-lasttask-bin"
+mkdir -p "$RALPH_RB_LASTTASK" "$RBIN_RB_LASTTASK"
+(cd "$RALPH_RB_LASTTASK" && git_c init -q -b main)
+
+cat > "$RBIN_RB_LASTTASK/issues-fixture.json" <<'EOF'
+[
+  {"number": 781, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 782, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_LASTTASK/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_LASTTASK" "$RBIN_RB_LASTTASK/issues-fixture.json" "$RBIN_RB_LASTTASK/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_LASTTASK"
+cat >> "$RBIN_RB_LASTTASK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  781)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9781, "isDraft": true, "headRefName": "issue-781-x"}]
+PRJSON
+    ;;
+  782)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9781, "isDraft": true, "headRefName": "issue-781-x"}, {"number": 9782, "isDraft": true, "headRefName": "issue-782-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_RB_LASTTASK/claude"
+
+ralph_rb_lasttask_out=$(cd "$RALPH_RB_LASTTASK" && PATH="$RBIN_RB_LASTTASK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_LASTTASK" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-lasttask-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-lasttask-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) breaker на последней доступной задаче — прогон завершается с ошибкой" \
+  1 $?
+assert_contains "AC-5: adk-ralph: (issue #134) breaker на последней задаче — причина «breaker: застревания за прогон», не «очередь пуста»" \
+  "$ralph_rb_lasttask_out" "breaker: застревания за прогон"
+assert_not_contains "AC-5: adk-ralph: (issue #134) breaker на последней задаче — причина НЕ «очередь пуста» (breaker проверяется раньше)" \
+  "$ralph_rb_lasttask_out" "Причина остановки: очередь пуста"
+
+rb_lasttask_call_count=$(cat "$RBIN_RB_LASTTASK/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) breaker на последней задаче — обе задачи успели исполниться" \
+  2 "$rb_lasttask_call_count"
+
+# ── issue #134: пороги из конфига переопределяют дефолты (AC-5) — часть 1:
+# maxStuckPerRun=1 останавливает цикл уже после ПЕРВОГО застревания (дефолт
+# 2 продолжил бы после первого). Заодно — переходное состояние «порог 1 в
+# конфиге»: проверяется сразу после самого застревания, а не до старта
+# прогона (ADR-016 §1) ───────────────────────────────────────────────────
+RALPH_RB_STUCKCFG="$TMP/ralph-rb-stuckcfg-proj"
+RBIN_RB_STUCKCFG="$TMP/ralph-rb-stuckcfg-bin"
+mkdir -p "$RALPH_RB_STUCKCFG" "$RBIN_RB_STUCKCFG"
+(cd "$RALPH_RB_STUCKCFG" && git_c init -q -b main)
+
+cat > "$RBIN_RB_STUCKCFG/issues-fixture.json" <<'EOF'
+[
+  {"number": 771, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 772, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_STUCKCFG/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_STUCKCFG" "$RBIN_RB_STUCKCFG/issues-fixture.json" "$RBIN_RB_STUCKCFG/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_STUCKCFG"
+cat >> "$RBIN_RB_STUCKCFG/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9771, "isDraft": true, "headRefName": "issue-771-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_RB_STUCKCFG/claude"
+
+RALPH_RB_STUCKCFG_CFG="$TMP/ralph-rb-stuckcfg-config.json"
+cat > "$RALPH_RB_STUCKCFG_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 1}}}}
+EOF
+
+ralph_rb_stuckcfg_out=$(cd "$RALPH_RB_STUCKCFG" && PATH="$RBIN_RB_STUCKCFG:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_STUCKCFG" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-stuckcfg-logs" ADK_CONFIG_FILE="$RALPH_RB_STUCKCFG_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-stuckcfg-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=1 из конфига — прогон завершается с ошибкой после первого застревания" \
+  1 $?
+assert_contains "AC-5: adk-ralph: (issue #134) maxStuckPerRun=1 — сводка называет breaker застреваний" \
+  "$ralph_rb_stuckcfg_out" "breaker: застревания за прогон"
+rb_stuckcfg_call_count=$(cat "$RBIN_RB_STUCKCFG/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=1 — headless-процесс вызван один раз (issue #772 не берётся)" \
+  1 "$rb_stuckcfg_call_count"
+
+# ── issue #134: переходное состояние «порог 0 в конфиге» — не абсурдный
+# немедленный стоп до старта прогона (stuck_count=0 >= 0 никогда не
+# проверяется, пока не случилось хотя бы одно застревание), а стоп сразу
+# после ПЕРВОГО застревания — тот же исход, что maxStuckPerRun=1 (ADR-016
+# §1) ──────────────────────────────────────────────────────────────────
+RALPH_RB_ZERO="$TMP/ralph-rb-zero-proj"
+RBIN_RB_ZERO="$TMP/ralph-rb-zero-bin"
+mkdir -p "$RALPH_RB_ZERO" "$RBIN_RB_ZERO"
+(cd "$RALPH_RB_ZERO" && git_c init -q -b main)
+
+cat > "$RBIN_RB_ZERO/issues-fixture.json" <<'EOF'
+[
+  {"number": 791, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 792, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_ZERO/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_ZERO" "$RBIN_RB_ZERO/issues-fixture.json" "$RBIN_RB_ZERO/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_ZERO"
+cat >> "$RBIN_RB_ZERO/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9791, "isDraft": true, "headRefName": "issue-791-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_RB_ZERO/claude"
+
+RALPH_RB_ZERO_CFG="$TMP/ralph-rb-zero-config.json"
+cat > "$RALPH_RB_ZERO_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 0}}}}
+EOF
+
+ralph_rb_zero_out=$(cd "$RALPH_RB_ZERO" && PATH="$RBIN_RB_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_ZERO" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-zero-logs" ADK_CONFIG_FILE="$RALPH_RB_ZERO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-zero-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=0 из конфига — останавливается после первого (не до старта прогона)" \
+  1 $?
+assert_contains "AC-5: adk-ralph: (issue #134) maxStuckPerRun=0 — сводка называет breaker застреваний" \
+  "$ralph_rb_zero_out" "breaker: застревания за прогон"
+rb_zero_call_count=$(cat "$RBIN_RB_ZERO/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=0 — headless-процесс вызван ровно один раз (не ноль — breaker не мешает первой попытке)" \
+  1 "$rb_zero_call_count"
+
+# ── issue #134: пороги из конфига переопределяют дефолты (AC-5) — часть 2:
+# maxSkippedShare=0.3 останавливает цикл на доле РОВНО 0.5, которая НЕ
+# превышает дефолтный порог 0.5 (строгое «>», не «>=» — доля точно на
+# дефолтном пороге штатно НЕ останавливает прогон, фикстура выше с долей
+# 0.75 проверяет срабатывание уже на дефолте) — под дефолтом этот же прогон
+# дошёл бы до #765.
+# #761 без блокеров застревает; #762 без блокеров получает ready; #763,#764
+# «Blocked by #761» пропускаются каскадом одним батчем. Знаменатель впервые
+# достигает минимума (4 = 1 stuck + 1 ready + 2 skipped) сразу ПОСЛЕ
+# обработки #762 (ready, не skip) — оценка доли происходит на входе КАЖДОЙ
+# итерации, не только сразу после каскада, поэтому breaker обязан
+# сработать здесь же, не позже: независимый #765 не берётся вовсе ────────
+RALPH_RB_SHARECFG="$TMP/ralph-rb-sharecfg-proj"
+RBIN_RB_SHARECFG="$TMP/ralph-rb-sharecfg-bin"
+mkdir -p "$RALPH_RB_SHARECFG" "$RBIN_RB_SHARECFG"
+(cd "$RALPH_RB_SHARECFG" && git_c init -q -b main)
+
+cat > "$RBIN_RB_SHARECFG/issues-fixture.json" <<'EOF'
+[
+  {"number": 761, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 762, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 763, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #761"},
+  {"number": 764, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #761"},
+  {"number": 765, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_RB_SHARECFG/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_SHARECFG" "$RBIN_RB_SHARECFG/issues-fixture.json" "$RBIN_RB_SHARECFG/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_SHARECFG"
+cat >> "$RBIN_RB_SHARECFG/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  761)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9761, "isDraft": true, "headRefName": "issue-761-x"}]
+PRJSON
+    ;;
+  762)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9761, "isDraft": true, "headRefName": "issue-761-x"}, {"number": 9762, "isDraft": false, "headRefName": "issue-762-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_RB_SHARECFG/claude"
+
+RALPH_RB_SHARECFG_CFG="$TMP/ralph-rb-sharecfg-config.json"
+cat > "$RALPH_RB_SHARECFG_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxSkippedShare": 0.3}}}}
+EOF
+
+ralph_rb_sharecfg_out=$(cd "$RALPH_RB_SHARECFG" && PATH="$RBIN_RB_SHARECFG:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARECFG" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-sharecfg-logs" ADK_CONFIG_FILE="$RALPH_RB_SHARECFG_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-sharecfg-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 из конфига — доля РОВНО 0.5 (не превышает дефолт 0.5) останавливает прогон" \
+  1 $?
+assert_contains "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 — сводка называет breaker доли пропущенных" \
+  "$ralph_rb_sharecfg_out" "breaker: доля пропущенных за прогон"
+rb_sharecfg_call_count=$(cat "$RBIN_RB_SHARECFG/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 — headless-процесс НЕ вызван для #765 (два вызова: #761,#762)" \
+  2 "$rb_sharecfg_call_count"
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
