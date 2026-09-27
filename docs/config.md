@@ -67,15 +67,15 @@ exit-код; тот, кому не важна (значение не из зак
 
 | Атрибут | Тип / допустимые значения | Дефолт | Какое сегодняшнее поведение воспроизводит |
 |---|---|---|---|
-| `policies.merge` | `agent-after-approve` \| `human-review-required` \| `human-only` | `agent-after-approve` | Ready-PR мержит кто угодно, включая `/autopilot`, — сегодня ничего это не ограничивает. |
+| `policies.merge` | `agent-after-approve` \| `human-review-required` \| `human-only` | `agent-after-approve` | Ready-PR мержит кто угодно, включая `/autopilot` и `hooks/scripts/adk-ralph.sh`, — сегодня ничего это не ограничивает. Два энфорсера: `bash-guard.sh` (PreToolUse-хук, только команды агентских сессий, SPEC-002 AC-2) и сам `adk-ralph.sh` (issue #129, ADR-019) — он вызывает `gh pr merge` обычным процессом вне `claude -p`, хук его не видит, поэтому читает и энфорсит атрибут сам, с тем же fail-closed на неизвестное значение. |
 | `policies.review.maxRounds` | число | `2` | Зарезервирован спекой, потребителя пока нет. Сегодняшний лимит «два круга ревью без APPROVE → зовём человека» зашит текстом в `commands/work.md` (шаг 6) и `commands/autopilot.md`; атрибут не читается. |
 | `policies.review.humanApprovalRequired` | bool | `false` | Вердикт даёт reviewer-агент; человек не обязан approve'ить PR отдельно. |
 | `policies.autopilot.enabled` | bool | `true` | `/autopilot` стартует без ограничений; `false` — отказ старта без побочных эффектов. Два читателя: `commands/autopilot.md` («Политика прогона») и `hooks/scripts/adk-ralph.sh` (ADR-007 §5) — второй строже: любое значение вне `{"true","false"}` (не только отсутствие атрибута) там даёт fail-closed отказ старта, а не молчаливый дефолт `true`. |
-| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge <флаг> --delete-branch`, флаг — производная метода приземления, см. «Серверный метод приземления GitHub» ниже, не жёсткий `--squash`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). |
+| `policies.autopilot.canMerge` | bool | `true` | `/autopilot` мержит ready-PR сам (`gh pr merge <флаг> --delete-branch`, флаг — производная метода приземления, см. «Серверный метод приземления GitHub» ниже, не жёсткий `--squash`); `false` — ready-PR собираются в список «ждут человека» (`result=ready`, ADR-003). `hooks/scripts/adk-ralph.sh` читает тот же атрибут тем же образом (issue #129, ADR-019): опечатка в значении — fail-closed, merge не выполняется (не молчаливый дефолт `true`). |
 | `policies.autopilot.maxTasksPerRun` | число | `5` | Лимит задач `/autopilot` за прогон; аргумент команды его переопределяет (`commands/autopilot.md`, «Параметры»). |
 | `policies.autopilot.sandbox` | объект (профиль `sandbox-exec`) | не задан | Зарезервирован, потребителя нет: задел на будущую OS-изоляцию headless-процесса ralph поверх allowlist разрешений (README, «Разрешения headless-процесса (ralph)»). Профиль `sandbox-exec`: запись разрешена только в корень проекта и `tmp`, сеть — только `api.anthropic.com` и `github.com`. Ни `adk-ralph.sh`, ни `/autopilot` этот атрибут сегодня не читают — реализации нет, изоляция v1 ограничена разрешениями Claude Code. |
 | `policies.autopilot.breaker.maxStuckPerRun` | число (целое ≥0) | `2` | `hooks/scripts/adk-ralph.sh` — breaker уровня прогона (SPEC-003 «Стадийный circuit breaker», AC-5, issue #134, ADR-016): столько застреваний (`result=stuck`) за один прогон останавливают цикл — следующий issue не берётся. Проверяется сразу после каждого нового `result=stuck`, а не на входе прогона, поэтому `0` и `1` останавливают цикл уже на первом застревании, не раньше первой задачи. Опечатка в значении (не целое неотрицательное число) — предупреждение в stderr, использован дефолт `2`. |
-| `policies.autopilot.breaker.maxSkippedShare` | число ≥0 (доля `skipped/(ready+stuck+skipped)` не превышает 1, поэтому порог >1 фактически выключает breaker) | `0.5` | `hooks/scripts/adk-ralph.sh` — breaker уровня прогона (SPEC-003 «Стадийный circuit breaker», AC-5, issue #134, ADR-016): доля `result=skipped` от суммы `ready+stuck+skipped` за прогон (не включает `blocked-on-ready`, ADR-014) строго выше значения — остановка (значение ровно на пороге цикл не останавливает). Оценивается только когда эта сумма достигает минимум 4 — фиксированная константа, не атрибут конфига (тот же принцип, что порог системного breaker'а серии конфликтов, ADR-015); ниже минимума доля статистически не значима и не оценивается вовсе. Опечатка в значении (не число, включая отрицательное) — предупреждение в stderr, использован дефолт `0.5`. |
+| `policies.autopilot.breaker.maxSkippedShare` | число ≥0 (доля `skipped/(ready+merged+stuck+skipped)` не превышает 1, поэтому порог >1 фактически выключает breaker) | `0.5` | `hooks/scripts/adk-ralph.sh` — breaker уровня прогона (SPEC-003 «Стадийный circuit breaker», AC-5, issue #134, ADR-016): доля `result=skipped` от суммы `ready+merged+stuck+skipped` за прогон (не включает `blocked-on-ready`, ADR-014; `merged` добавлен issue #129, ADR-019 §9 — смерженная задача доиграна до исхода не менее определённо, чем ready-PR) строго выше значения — остановка (значение ровно на пороге цикл не останавливает). Оценивается только когда эта сумма достигает минимум 4 — фиксированная константа, не атрибут конфига (тот же принцип, что порог системного breaker'а серии конфликтов, ADR-015); ниже минимума доля статистически не значима и не оценивается вовсе. Опечатка в значении (не число, включая отрицательное) — предупреждение в stderr, использован дефолт `0.5`. |
 
 `policies.merge` энфорсится хуком bash-guard (SPEC-002 AC-2): `human-only`
 — merge из агентских сессий блокируется всегда; `human-review-required` —
@@ -90,6 +90,15 @@ merge (fail-closed, см. «Неизвестное значение атрибу
 CODEOWNERS) — без этого поле пустое даже при живом approve, и merge будет
 блокироваться всегда; включайте политику вместе с серверным требованием
 ревью.
+
+`hooks/scripts/adk-ralph.sh` — второй, независимый энфорсер той же
+политики (issue #129, ADR-019): `gh pr merge` он вызывает обычным
+процессом, не Bash-инструментом агентской сессии, поэтому bash-guard его
+не видит и не может заблокировать сам. Ralph читает `policies.merge` (и
+`policies.autopilot.canMerge`) той же дисциплиной fail-closed и тем же
+признаком approve (`reviewDecision`), но не полагается на bash-guard как
+на страховку — обе проверки независимы и обязаны совпадать по духу, не
+по коду (ralph не вызывает bash-guard.sh, он читает конфиг напрямую).
 
 ### `conventions` — как выглядит история
 
