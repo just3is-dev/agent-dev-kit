@@ -90,13 +90,9 @@ stuck=""    # issue-номера, застрявшие в этом прогон�
 skipped=""  # issue-номера, пропущенные в этом прогоне (зависимость от stuck)
 ready_nums=""  # issue-номера, ставшие ready в этом прогоне (подмножество
                # handled) — вход select_next для ADR-014 (issue #147)
-blocked_on_ready_nums=""  # issue-номера, уже отнесённые к blocked-on-ready в
-                          # этом прогоне (подмножество handled) — тот же
-                          # приём, что ready_nums: переживает итерации
-                          # внешнего цикла и передаётся в select_next, чтобы
-                          # неподвижная точка resolved_ready не забывала уже
-                          # найденные blocked-on-ready задачи (круг 2 ревью
-                          # PR #186, issue #147)
+blocked_on_ready_nums=""  # issue-номера, отнесённые к blocked-on-ready в этом
+                          # прогоне (подмножество handled), переживает
+                          # итерации внешнего цикла — см. ADR-014 п.2
 ready_count=0
 stuck_count=0
 skipped_count=0
@@ -240,17 +236,10 @@ for it in new_skips:
 
 excluded = handled | new_skip_numbers
 
-# issue #147, ADR-014 (круг 1 ревью PR #186): задача с открытым, но
-# resolved_ready блокером — «на подвеске», не молча потеряна (см. ADR-014
-# п.2). resolved_ready = issue, ставшие ready ЭТИМ прогоном (ready_now), плюс
-# уже найденные blocked-on-ready (в этом вызове — цикл до неподвижности ниже,
-# тем же приёмом, что каскад SKIP выше; И между вызовами — prev_blocked_on_ready,
-# накопленный в bash аналогично ready_nums: без этого задача, отнесённая к
-# blocked-on-ready на прошлой итерации внешнего цикла, уже в `handled` →
-# исключена из резолва следующего вызова → её зависимые молча теряются, круг
-# 2 ревью PR #186). ВСЕ открытые блокеры задачи должны быть resolved_ready
-# (не «хотя бы один» — иначе задача с одним ready- и одним нетронутым
-# блокером ложно считалась бы «на подвеске»).
+# blocked-on-ready (ADR-014 п.2): задача, ВСЕ открытые блокеры которой уже
+# resolved_ready (ready_now этого прогона + prev_blocked_on_ready прошлых
+# итераций внешнего цикла), — «на подвеске», не молча потеряна. Неподвижная
+# точка ниже — тем же приёмом, что каскад SKIP выше.
 resolved_ready = set(ready_now) | prev_blocked_on_ready
 blocked_on_ready_numbers = set()
 changed = True

@@ -3551,11 +3551,11 @@ assert_contains "issue #146: adk-ralph: ни одна задача не заст
 # именно к своему (второму) номеру, извлечённому регэкспом #146.
 ralph_blk_ready_line=$(printf '%s' "$ralph_blk_out" | grep '^Ready (ждут человека):')
 ralph_blk_bor_line=$(printf '%s' "$ralph_blk_out" | grep '^Заблокировано ready-PR блокера:')
-assert_not_contains "issue #146: adk-ralph: #500 (Blocked by #199 and #700, словесный разделитель) не выбрана как NEXT — #700 всё ещё открыт" \
+assert_not_contains "issue #146: adk-ralph: #500 (Blocked by #199 and #700, словесный разделитель) не входит в строку «Ready (ждут человека)»" \
   "$ralph_blk_ready_line" "#500"
-assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) не выбрана как NEXT" \
+assert_not_contains "issue #146: adk-ralph: #501 (Blocked by #199, #701, запятая — регрессия) не входит в строку «Ready (ждут человека)»" \
   "$ralph_blk_ready_line" "#501"
-assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) не выбрана как NEXT" \
+assert_not_contains "issue #146: adk-ralph: #502 (раздельные строки Blocked by #N — регрессия) не входит в строку «Ready (ждут человека)»" \
   "$ralph_blk_ready_line" "#502"
 assert_contains "issue #146: adk-ralph: #500 верно привязан к своему настоящему (второму) блокеру #700 — уходит в blocked-on-ready, не теряется" \
   "$ralph_blk_bor_line" "#500"
@@ -3568,7 +3568,6 @@ claude_blk_calls=$(cat "$RBIN_BLK/claude-calls.log" 2>/dev/null | grep -c .)
 assert_exit "issue #146: adk-ralph: headless-процесс не вызван ни разу (все шесть issues разрешились через reused-ready/blocked-on-ready, ни одна не стала NEXT)" \
   0 "$claude_blk_calls"
 
-ralph_blk_log=$(cat "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
 blk_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=700|type=task|result=ready|reused=true' \
@@ -3805,10 +3804,15 @@ assert_not_contains "issue #144: git checkout main отказывает — issu
 # прогона — до этой правки возврат дерева на main был только в конце
 # итерации (после успешной обработки), break внутри цикла на сбое
 # claude -p пропускал его целиком. Фикстура: issue #601 отрабатывает
-# штатно (ready-PR, дерево возвращается на main), issue #602 запускает
-# claude -p, который переключается на свою ветку и падает — дерево обязано
-# вернуться на main ПЕРЕД остановкой прогона (мутация «убрать возврат
-# дерева на break-пути claude -p» ловится последней проверкой) ───────────
+# штатно (claude -p реально вызывается и создаёт PR — prs-fixture.json
+# стартует пустым, тот же приём, что уже применён в других ralph-фикстурах
+# после согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186, иначе
+# статичный PR закоротил бы #601 на предстартовой проверке find_pr_state
+# ещё до вызова claude, и «штатно» было бы неправдой), дерево возвращается
+# на main. issue #602 запускает claude -p, который переключается на свою
+# ветку и падает — дерево обязано вернуться на main ПЕРЕД остановкой
+# прогона (мутация «убрать возврат дерева на break-пути claude -p»
+# ловится последней проверкой) ───────────────────────────────────────────
 RALPH_CFAIL_MID="$TMP/ralph-cfail-mid-proj"
 RBIN_CFAIL_MID="$TMP/ralph-cfail-mid-bin"
 mkdir -p "$RALPH_CFAIL_MID" "$RBIN_CFAIL_MID"
@@ -3822,9 +3826,7 @@ cat > "$RBIN_CFAIL_MID/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_CFAIL_MID/prs-fixture.json" <<'EOF'
-[
-  {"number": 701, "isDraft": false, "headRefName": "issue-601-x"}
-]
+[]
 EOF
 gh_ralph_stub "$RBIN_CFAIL_MID" "$RBIN_CFAIL_MID/issues-fixture.json" "$RBIN_CFAIL_MID/prs-fixture.json"
 claude_stub_guard "$RBIN_CFAIL_MID"
@@ -3832,6 +3834,11 @@ cat >> "$RBIN_CFAIL_MID/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
+if [ "$issue_num" = "601" ]; then
+  cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 701, "isDraft": false, "headRefName": "issue-601-x"}]
+PRJSON
+fi
 if [ "$issue_num" = "602" ]; then
   echo "claude: rate limit exceeded" >&2
   exit 1
@@ -3855,8 +3862,17 @@ assert_exit "issue #144: claude -p падает на НЕ первом issue —
 
 # ── issue #144 (п.2): break-путь сбоя `gh pr list` НЕ на первом issue
 # прогона — тот же пробел, что и для claude -p выше, но для другого
-# break-пути (find_pr_state). Стаб gh считает свои вызовы "pr list" и
-# отказывает начиная со второго ────────────────────────────────────────
+# break-пути (find_pr_state). prs-fixture.json стартует пустым (тот же
+# приём, что уже применён в checkout-fail/default-branch фикстурах после
+# согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186): статичный
+# PR для issue-611-x с начала прогона закорачивал бы #611 на предстартовой
+# проверке find_pr_state ещё до первого реального сбоя, и `claude` не
+# вызывался бы вовсе. Стаб claude сам дописывает PR для #611 после checkout
+# (реальный сценарий: #611 штатно проходит claude -p, PR становится ready);
+# стаб gh считает свои вызовы "pr list" и отказывает ровно на 4-м (#611 до
+# claude, #611 после, #612 до, #612 после) — то есть на предстартовой
+# проверке #612, ПОСЛЕ того как #612 уже реально запустил claude -p и
+# переключился на свою ветку ────────────────────────────────────────────
 RALPH_PRFAIL_MID="$TMP/ralph-prfail-mid-proj"
 RBIN_PRFAIL_MID="$TMP/ralph-prfail-mid-bin"
 mkdir -p "$RALPH_PRFAIL_MID" "$RBIN_PRFAIL_MID"
@@ -3870,9 +3886,7 @@ cat > "$RBIN_PRFAIL_MID/issues-fixture.json" <<'EOF'
 ]
 EOF
 cat > "$RBIN_PRFAIL_MID/prs-fixture.json" <<'EOF'
-[
-  {"number": 711, "isDraft": false, "headRefName": "issue-611-x"}
-]
+[]
 EOF
 cat > "$RBIN_PRFAIL_MID/gh" <<EOF
 #!/usr/bin/env bash
@@ -3884,11 +3898,11 @@ case "\$1 \$2" in
     [ -f "\$d/pr-list-calls" ] && n=\$(cat "\$d/pr-list-calls")
     n=\$((n + 1))
     echo "\$n" > "\$d/pr-list-calls"
-    if [ "\$n" -eq 1 ]; then
-      cat "$RBIN_PRFAIL_MID/prs-fixture.json"; exit 0
-    else
+    if [ "\$n" -eq 4 ]; then
       echo "gh: rate limit exceeded" >&2
       exit 1
+    else
+      cat "\$d/prs-fixture.json"; exit 0
     fi
     ;;
   "label create") exit 0 ;;
@@ -3900,7 +3914,13 @@ chmod +x "$RBIN_PRFAIL_MID/gh"
 claude_stub_guard "$RBIN_PRFAIL_MID"
 cat >> "$RBIN_PRFAIL_MID/claude" <<'EOF'
 issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
+if [ "$issue_num" = "611" ]; then
+  cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 711, "isDraft": false, "headRefName": "issue-611-x"}]
+PRJSON
+fi
 exit 0
 EOF
 chmod +x "$RBIN_PRFAIL_MID/claude"
@@ -3912,6 +3932,12 @@ assert_exit "issue #144: adk-ralph: gh pr list падает не на перво
   1 $?
 assert_contains "issue #144: gh pr list падает не на первом issue — стоп-причина называет именно issue #612" \
   "$ralph_prfail_mid_out" "gh pr list не удался при разборе issue #612"
+
+prfail_mid_claude_calls=$(cat "$RBIN_PRFAIL_MID/claude-calls.log" 2>/dev/null)
+assert_contains "issue #144: gh pr list падает не на первом issue — claude -p реально вызван для #611 (не закорочен статичным PR)" \
+  "$prfail_mid_claude_calls" "call 611"
+assert_contains "issue #144: gh pr list падает не на первом issue — claude -p реально вызван для #612 (сбой наступает после, не вместо, обработки #612)" \
+  "$prfail_mid_claude_calls" "call 612"
 
 prfail_mid_final_branch=$(git -C "$RALPH_PRFAIL_MID" rev-parse --abbrev-ref HEAD)
 [ "$prfail_mid_final_branch" = "main" ]
