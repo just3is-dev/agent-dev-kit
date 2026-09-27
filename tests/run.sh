@@ -6127,6 +6127,20 @@ mkdir -p "$RALPH_TRUNK_ORIGIN"
 RALPH_TRUNK="$TMP/ralph-trunk-proj"
 git_c clone -q "$RALPH_TRUNK_ORIGIN" "$RALPH_TRUNK"
 (cd "$RALPH_TRUNK" && git_c config user.email t@t && git_c config user.name t)
+# scripts/check со счётчиком (круг 2 ревью PR #195, тот же приём, что
+# фикстура (e) выше) — без него отсутствие исполняемого файла молча
+# пропускает гейт (run_main_gates), и позитивный путь этой фикстуры не
+# доказывал бы, что перегон гейтов после актуализации реально происходит,
+# а не просто отсутствует.
+mkdir -p "$RALPH_TRUNK/scripts"
+cat > "$RALPH_TRUNK/scripts/check" <<EOF
+#!/usr/bin/env bash
+count_file="$RALPH_TRUNK/.check-calls"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+exit 0
+EOF
+chmod +x "$RALPH_TRUNK/scripts/check"
 
 RBIN_TRUNK="$TMP/ralph-trunk-bin"
 mkdir -p "$RBIN_TRUNK"
@@ -6179,6 +6193,17 @@ assert_contains "AC-1: adk-ralph: (issue #129) default branch trunk — merge в
   "$trunk_merge_log" "5060"
 [ "$(git -C "$RALPH_TRUNK" rev-parse issue-2060-x)" = "$(git -C "$RALPH_TRUNK" rev-parse trunk)" ]
 assert_exit "AC-1: adk-ralph: (issue #129) ветка issue-2060-x реально перебазирована на актуальный trunk (не осталась позади — доказывает, что использован origin/\$default_branch, а не хардкод origin/main)" \
+  0 $?
+trunk_check_calls=$(cat "$RALPH_TRUNK/.check-calls" 2>/dev/null || echo 0)
+[ "$trunk_check_calls" -ge 2 ] 2>/dev/null
+assert_exit "AC-1: adk-ralph: (issue #129) гейты после актуализации реально перегнаны (scripts/check вызван ≥2 раз — не только системный breaker на trunk перед итерацией), не молча пропущены" \
+  0 $?
+# Сверка с ОРИГИНОМ (круг 2 ревью PR #195), не с локальным клоном: локальный
+# rev-parse issue-2060-x выше совпал бы с trunk даже без единого `git push`
+# (rebase уже переписал ветку локально) — реальное доказательство push'а
+# только в состоянии origin.
+[ "$(git -C "$RALPH_TRUNK_ORIGIN" rev-parse issue-2060-x)" = "$(git -C "$RALPH_TRUNK_ORIGIN" rev-parse trunk)" ]
+assert_exit "AC-1: adk-ralph: (issue #129) актуализированная ветка реально запушена в origin (не только переписана локально) до merge" \
   0 $?
 trunk_final_branch=$(git -C "$RALPH_TRUNK" rev-parse --abbrev-ref HEAD)
 [ "$trunk_final_branch" = "trunk" ]
