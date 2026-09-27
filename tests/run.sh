@@ -6420,7 +6420,13 @@ assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит з�
 # исполняется и получает ready. Бюджет — 4s (не 1s): #912 тоже исполняется
 # под тем же бюджетом задачи, запас нужен, чтобы его быстрое, но не
 # мгновенное, завершение не задело порог под нагрузкой CI (круг 1 ревью
-# PR #193) ───────────────────────────────────────────────────────────────
+# PR #193). Этот и следующие два блока (budget-run, budget-zero) задают
+# СВОЙ ADK_CONFIG_FILE на вызове adk-ralph.sh — тем самым перекрывают
+# ambient `export ADK_CONFIG_FILE=$RALPH_NOMERGE_CFG` секции ralph выше
+# (issue #129) для себя же: без явного `canMerge: false` в их собственном
+# конфиге ready-исход (#912/#921/#931) шёл бы через реальную merge-ветку
+# (resolve_ready_pr → `gh pr view`), а общий `gh_ralph_stub` эту команду
+# не реализует (рёбейз PR #193 поверх #129, круг 3 ревью) ─────────────────
 RALPH_BUDGET_TASK="$TMP/ralph-budget-task-proj"
 RBIN_BUDGET_TASK="$TMP/ralph-budget-task-bin"
 mkdir -p "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK"
@@ -6460,7 +6466,7 @@ chmod +x "$RBIN_BUDGET_TASK/claude"
 
 RALPH_BUDGET_TASK_CFG="$TMP/ralph-budget-task-config.json"
 cat > "$RALPH_BUDGET_TASK_CFG" <<'EOF'
-{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.06}}}}}
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0.06}}}}}
 EOF
 
 RALPH_BUDGET_TASK_LOGS="$TMP/ralph-budget-task-logs"
@@ -6497,6 +6503,61 @@ budget_task_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
 budget_task_valid=$(jsonl_check "$budget_task_log" 4 "$budget_task_spec")
 assert_exit "AC-3: adk-ralph: (issue #131) журнал — #911 stuck с причиной бюджета, #912 ready, run_end «очередь пуста»" \
   1 "$budget_task_valid"
+
+# ── issue #131, ADR-017 §1 (важное круга 2 ревью PR #193): group-kill
+# реально убивает и НАСТОЯЩИЙ дочерний процесс claude -p, не только сам
+# стаб-«лидера» — обе прежние фикстуры (RALPH_BUDGET_TASK выше и
+# RALPH_BUDGET_RUN ниже) используют `exec sleep N`, у которого нет
+# потомков вовсе (`exec` замещает образ процесса стаба, PID/PGID не
+# меняются) — group-kill там фактически не проверялся ни разу, хотя
+# ADR-017 ошибочно ссылался на «фикстуру с зависшим потомком». Здесь стаб
+# claude НЕ делает exec: он форкает настоящего дочернего `sleep 30` в
+# фоне (наследует ту же группу процессов, что и сам стаб — parent её не
+# меняет), пишет его PID в файл и ждёт — если group-kill (`kill -TERM/-KILL
+# -- "-$pid"`) реально бьёт всю группу, а не только PID лидера, ядро
+# доставляет сигнал ребёнку НАПРЯМУЮ (не через промежуточное
+# перенаправление стабом), и он погибает вместе с лидером ─────────────────
+RALPH_BUDGET_GROUPKILL="$TMP/ralph-budget-groupkill-proj"
+RBIN_BUDGET_GROUPKILL="$TMP/ralph-budget-groupkill-bin"
+mkdir -p "$RALPH_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL"
+(cd "$RALPH_BUDGET_GROUPKILL" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" <<'EOF'
+[
+  {"number": 971, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_GROUPKILL/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" "$RBIN_BUDGET_GROUPKILL/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_GROUPKILL"
+cat >> "$RBIN_BUDGET_GROUPKILL/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+sleep 30 &
+echo $! > "$d/child-pid"
+wait
+EOF
+chmod +x "$RBIN_BUDGET_GROUPKILL/claude"
+
+RALPH_BUDGET_GROUPKILL_CFG="$TMP/ralph-budget-groupkill-config.json"
+cat > "$RALPH_BUDGET_GROUPKILL_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0.06}}}}}
+EOF
+
+(cd "$RALPH_BUDGET_GROUPKILL" && PATH="$RBIN_BUDGET_GROUPKILL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_GROUPKILL" \
+  ADK_LOGS_DIR="$TMP/ralph-budget-groupkill-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_GROUPKILL_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-budget-groupkill-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh") >/dev/null 2>&1
+
+groupkill_child_pid=$(cat "$RBIN_BUDGET_GROUPKILL/child-pid" 2>/dev/null)
+# Небольшой запас после завершения ralph — сигнал доставляется ядром
+# практически мгновенно, но проверка статуса процесса из другого процесса
+# (эта оболочка) не синхронизирована с самим ralph.
+sleep 0.3
+kill -0 "$groupkill_child_pid" 2>/dev/null
+assert_exit "AC-3: adk-ralph: (issue #131, важное круга 2 ревью PR #193) group-kill убивает и НАСТОЯЩИЙ дочерний процесс claude -p, не только лидера группы" \
+  1 $?
 
 # ── issue #131, ADR-017: бюджет времени на прогон — превышение чисто
 # останавливает цикл: ТЕКУЩАЯ задача (#921, медленнее бюджета прогона, но
@@ -6544,7 +6605,7 @@ chmod +x "$RBIN_BUDGET_RUN/claude"
 
 RALPH_BUDGET_RUN_CFG="$TMP/ralph-budget-run-config.json"
 cat > "$RALPH_BUDGET_RUN_CFG" <<'EOF'
-{"policies": {"autopilot": {"budget": {"run": {"maxMinutes": 0.0166667}}}}}
+{"policies": {"autopilot": {"canMerge": false, "budget": {"run": {"maxMinutes": 0.0166667}}}}}
 EOF
 
 RALPH_BUDGET_RUN_LOGS="$TMP/ralph-budget-run-logs"
@@ -6605,7 +6666,7 @@ chmod +x "$RBIN_BUDGET_ZERO/claude"
 
 RALPH_BUDGET_ZERO_CFG="$TMP/ralph-budget-zero-config.json"
 cat > "$RALPH_BUDGET_ZERO_CFG" <<'EOF'
-{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0}}}}}
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0}}}}}
 EOF
 
 ralph_budget_zero_out=$(cd "$RALPH_BUDGET_ZERO" && PATH="$RBIN_BUDGET_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_ZERO" \
@@ -6621,12 +6682,17 @@ assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача д�
 assert_not_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача НЕ помечена stuck по бюджету" \
   "$ralph_budget_zero_out" "бюджет задачи по времени"
 
-# ── issue #131, ADR-017 §4 (круг 1 ревью PR #193): claude -p, убитый
-# ПОСРЕДИ работы по бюджету задачи, оставляет рабочее дерево грязным
-# (незакоммиченный трекаемый файл + неотслеживаемый файл) — прогон
-# останавливается ЦЕЛИКОМ честной причиной вместо продолжения на
-# заражённом дереве; #962 не берётся вовсе, дерево остаётся нетронутым
-# ровно таким, каким его оставил прерванный процесс ──────────────────────
+# ── issue #131, ADR-017 §4 (блокер круга 2 ревью PR #193): claude -p,
+# убитый ПОСРЕДИ работы по бюджету задачи, оставляет рабочее дерево грязным
+# (незакоммиченный трекаемый файл + неотслеживаемый файл) — #961 ПРОХОДИТ
+# обычный stuck-путь целиком (needs-human/уведомление/event=task
+# result=stuck с причиной бюджета — тот же DoD issue #131, что и на чистом
+# дереве), и только ПОСЛЕ него прогон останавливается ЦЕЛИКОМ честной
+# причиной вместо продолжения на заражённом дереве; #962 не берётся вовсе,
+# дерево остаётся нетронутым ровно таким, каким его оставил прерванный
+# процесс. Круг 1 (первая версия этой фикстуры) ошибочно ожидал, что #961
+# НЕ получает needs-human/event=task вовсе — именно это круг 2 признал
+# блокером: `break` в коде происходил раньше обычного stuck-пути ──────────
 RALPH_BUDGET_DIRTY="$TMP/ralph-budget-dirty-proj"
 RBIN_BUDGET_DIRTY="$TMP/ralph-budget-dirty-bin"
 mkdir -p "$RALPH_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY"
@@ -6671,9 +6737,10 @@ cat > "$RALPH_BUDGET_DIRTY_CFG" <<'EOF'
 {"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.06}}}}}
 EOF
 
+RALPH_BUDGET_DIRTY_NOTIFY="$TMP/ralph-budget-dirty-notify.log"
 ralph_budget_dirty_out=$(cd "$RALPH_BUDGET_DIRTY" && PATH="$RBIN_BUDGET_DIRTY:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_DIRTY" \
   ADK_LOGS_DIR="$TMP/ralph-budget-dirty-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_DIRTY_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-budget-dirty-notify.log" \
+  ADK_NOTIFY_FILE="$RALPH_BUDGET_DIRTY_NOTIFY" \
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи + грязное дерево — прогон останавливается целиком (exit 1)" \
   1 $?
@@ -6686,18 +6753,31 @@ assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — headl
 assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #962 не запущен (маркер стаба отсутствует)" \
   "$(cat "$RBIN_BUDGET_DIRTY/claude-calls.log" 2>/dev/null)" "962 NOT SUPPOSED TO RUN"
 
+# Блокер круга 2 ревью PR #193: обычный stuck-путь ОБЯЗАН отработать для
+# #961, несмотря на грязное дерево и последующую остановку всего прогона —
+# needs-human/уведомление/event=task result=stuck — тот же DoD issue #131,
+# что и на чистом дереве (иначе issue остаётся без метки, следующий прогон
+# берёт его заново уже на заражённом дереве).
 dirty_edit_log=$(cat "$RBIN_BUDGET_DIRTY/issue-edit.log" 2>/dev/null)
-assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #961 НЕ помечен needs-human (весь прогон остановлен раньше)" \
+assert_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #961 ВСЁ РАВНО помечен needs-human (обычный stuck-путь отработал до остановки прогона)" \
   "$dirty_edit_log" "issue edit 961"
+dirty_notify=$(cat "$RALPH_BUDGET_DIRTY_NOTIFY" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) грязное дерево — уведомление о застревании #961 всё равно отправлено" \
+  "$dirty_notify" "issue #961 застрял: бюджет задачи по времени"
 
 dirty_final_status=$(cd "$RALPH_BUDGET_DIRTY" && git status --porcelain)
 [ -n "$dirty_final_status" ]
 assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — правки прерванного процесса остались нетронутыми (не force-чекнуты)" \
   0 $?
 
-dirty_log=$(cat "$TMP/ralph-budget-dirty-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
-assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #961 не залогирован через обычный event=task (прогон остановлен раньше логирования исхода)" \
-  "$dirty_log" '"issue": "961"'
+dirty_log_file="$TMP/ralph-budget-dirty-logs/autopilot-$(date +%Y-%m-%d).jsonl"
+dirty_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=961|type=task|result=stuck|reason=бюджет задачи по времени' \
+  'event=run_end|reason=бюджет задачи по времени: рабочее дерево не чисто после прерывания issue #961')
+dirty_valid=$(jsonl_check "$dirty_log_file" 3 "$dirty_spec")
+assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — журнал: #961 залогирован обычным event=task result=stuck (не пропущен), run_end с причиной грязного дерева" \
+  1 "$dirty_valid"
 
 # ── issue #131: docs/config.md фиксирует дефолты 45/240 — прямая проверка
 # самих значений (не только «дефолт не мешает быстрому тесту»), которую
