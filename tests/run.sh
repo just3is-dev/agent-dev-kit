@@ -6691,7 +6691,7 @@ chmod +x "$RBIN_BUDGET_ZERO/claude"
 
 RALPH_BUDGET_ZERO_CFG="$TMP/ralph-budget-zero-config.json"
 cat > "$RALPH_BUDGET_ZERO_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0}}}}}
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0}, "run": {"maxMinutes": 0}}}}}
 EOF
 
 ralph_budget_zero_out=$(cd "$RALPH_BUDGET_ZERO" && PATH="$RBIN_BUDGET_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_ZERO" \
@@ -6702,6 +6702,15 @@ assert_exit "AC-3: adk-ralph: (issue #131) maxMinutes=0 — опечатка н�
   0 $?
 assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — предупреждение в stderr, использован дефолт" \
   "$ralph_budget_zero_out" "не положительное число минут, использован дефолт"
+# Важное №2 круга 4 ревью PR #193: прежний assert выше проверял только текст
+# «использован дефолт» без самого числа — замену дефолта 45→5 или 240→60 в
+# hooks/scripts/adk-ralph.sh:1076-1077 набор бы не заметил. Проверяем оба
+# литерала напрямую, тем же прогоном (task.maxMinutes=0 и run.maxMinutes=0
+# оба невалидны в конфиге выше).
+assert_contains "AC-3: adk-ralph: (issue #131, важное №2 круга 4 ревью PR #193) budget.task.maxMinutes невалиден — использован дефолт именно 45 (не другое число)" \
+  "$ralph_budget_zero_out" "policies.autopilot.budget.task.maxMinutes='0' — не положительное число минут, использован дефолт 45"
+assert_contains "AC-3: adk-ralph: (issue #131, важное №2 круга 4 ревью PR #193) budget.run.maxMinutes невалиден — использован дефолт именно 240 (не другое число)" \
+  "$ralph_budget_zero_out" "policies.autopilot.budget.run.maxMinutes='0' — не положительное число минут, использован дефолт 240"
 assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача доигрывает штатно до ready (дефолт, не мгновенный stuck)" \
   "$ralph_budget_zero_out" "#931"
 assert_not_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача НЕ помечена stuck по бюджету" \
@@ -6866,6 +6875,14 @@ PRJSON
     # стаб реально дошёл до "работы" над #3002, не раньше — иначе TERM мог
     # бы застать ralph до старта #3002 и не проверить нужный путь вовсе.
     touch "$d/task2-started"
+    # $$ здесь — PID самого этого стаба, который exec (и выше, в adk-ralph.sh:
+    # `exec claude -p ...` в фоновом job'е) сохраняет тем же, что и claude_pid
+    # в ralph — до и после следующего exec ниже. Записываем его до `exec sleep
+    # 30`, чтобы тестовая оболочка могла ПОСЛЕ сигнала проверить, что группа
+    # процессов реально убита (важное №1 круга 4 ревью PR #193: обработчик
+    # сигнала ни разу не проверялся на факт, что claude -p действительно убит,
+    # а не остаётся сиротой).
+    echo "$$" > "$d/task2-pid"
     exec sleep 30
     ;;
 esac
@@ -6927,6 +6944,20 @@ wait "$ralph_signal_pid"
 ralph_signal_rc=$?
 assert_exit "AC-3: adk-ralph: (issue #131) SIGTERM самому adk-ralph.sh — exit 143 (конвенция 128+15)" \
   143 "$ralph_signal_rc"
+
+# Важное №1 круга 4 ревью PR #193: ни одна прежняя фикстура не проверяла,
+# что ralph_signal_cleanup реально убивает claude -p, а не оставляет его
+# сиротой — мутация «убрать `kill` из ralph_signal_cleanup» давала 0 FAIL.
+# wait выше вернулся уже ПОСЛЕ того, как обработчик сигнала внутри ralph
+# отработал (kill -TERM группе, sleep 0.2, kill -KILL при необходимости) и
+# только потом вызвал exit — к этому моменту стаб #3002 обязан быть мёртв.
+task2_pid=$(cat "$RBIN_SIGNAL/task2-pid" 2>/dev/null)
+task2_alive=1
+if [ -n "$task2_pid" ] && ! kill -0 "$task2_pid" 2>/dev/null; then
+  task2_alive=0
+fi
+assert_exit "AC-3: adk-ralph: (issue #131, важное №1 круга 4 ревью PR #193) SIGTERM ralph — claude -p (#3002, стаб-сирота) реально убит, не остаётся жить после сигнала" \
+  0 "$task2_alive"
 
 ralph_signal_log=$(cat "$RALPH_SIGNAL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
 assert_contains "AC-3: adk-ralph: (issue #131) SIGTERM — журнал: #3001 result=merged ДО сигнала" \
