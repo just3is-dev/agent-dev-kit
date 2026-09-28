@@ -133,7 +133,13 @@ notifier="$SCRIPT_DIR/notify-send.sh"
 # переменная, непустая ровно на время жизни фонового claude -p (выставляется/
 # очищается вокруг каждого запуска ниже); обработчик сигнала добивает именно
 # её (и группу процессов, если она ещё жива), а не полагается на то, что
-# сигнал и так дойдёт.
+# сигнал и так дойдёт. `done="${merged_count:-0}"` (не литеральный `0`) —
+# круг 4 ревью PR #193: после интеграции issue #129 (merge ready-PR)
+# обработчик обязан отражать реально смерженное этим прогоном до сигнала,
+# тем же полем, что и штатный хвост цикла в самом конце файла — до этой
+# правки сигнал после успешного merge искажал бы журнал буквальным нулём
+# независимо от факта merge. Реестр `event=run_end.reason` (ADR-007 §3 /
+# ADR-001) синхронизирован новым значением "прерван сигналом <sig>".
 claude_pid=""
 ralph_signal_cleanup() {
   local sig="$1" sig_exit=130
@@ -148,7 +154,7 @@ ralph_signal_cleanup() {
     sleep 0.2
     kill -0 "$claude_pid" 2>/dev/null && kill -KILL -- "-$claude_pid" 2>/dev/null
   fi
-  "$logger" "$run_unit" event=run_end done=0 ready="${ready_count:-0}" \
+  "$logger" "$run_unit" event=run_end done="${merged_count:-0}" ready="${ready_count:-0}" \
     stuck="${stuck_count:-0}" skipped="${skipped_count:-0}" \
     blocked_on_ready="${blocked_on_ready_count:-0}" reason="прерван сигналом $sig" || true
   exit "$sig_exit"
