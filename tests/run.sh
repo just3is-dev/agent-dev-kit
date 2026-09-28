@@ -6413,6 +6413,569 @@ ralph_mb_log=$(cat "$TMP/ralph-mb-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev
 assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит запись по #2081 (не пропала молча)" \
   "$ralph_mb_log" '"issue": "2081"'
 
+# ── issue #131, ADR-017: бюджет времени на задачу — превышение прерывает
+# claude -p (SIGTERM/SIGKILL группе процессов, стаб #911 сам заменяет себя
+# на `sleep 30`), застревание уровня задачи (needs-human, уведомление,
+# result=stuck с причиной), цикл ПРОДОЛЖАЕТСЯ — независимый #912 всё равно
+# исполняется и получает ready. Бюджет — 4s (не 1s): #912 тоже исполняется
+# под тем же бюджетом задачи, запас нужен, чтобы его быстрое, но не
+# мгновенное, завершение не задело порог под нагрузкой CI (круг 1 ревью
+# PR #193). Этот и следующие два блока (budget-run, budget-zero) задают
+# СВОЙ ADK_CONFIG_FILE на вызове adk-ralph.sh — тем самым перекрывают
+# ambient `export ADK_CONFIG_FILE=$RALPH_NOMERGE_CFG` секции ralph выше
+# (issue #129) для себя же: без явного `canMerge: false` в их собственном
+# конфиге ready-исход (#912/#921/#931) шёл бы через реальную merge-ветку
+# (resolve_ready_pr → `gh pr view`), а общий `gh_ralph_stub` эту команду
+# не реализует (рёбейз PR #193 поверх #129, круг 3 ревью) ─────────────────
+RALPH_BUDGET_TASK="$TMP/ralph-budget-task-proj"
+RBIN_BUDGET_TASK="$TMP/ralph-budget-task-bin"
+mkdir -p "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK"
+(cd "$RALPH_BUDGET_TASK" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_TASK/issues-fixture.json" <<'EOF'
+[
+  {"number": 911, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 912, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_TASK/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_TASK" "$RBIN_BUDGET_TASK/issues-fixture.json" "$RBIN_BUDGET_TASK/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_TASK"
+cat >> "$RBIN_BUDGET_TASK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  911)
+    # #911 — «завис»: заменяет себя на sleep, дольше бюджета задачи ниже
+    # (4s). exec — не форк, PID стаба остаётся PID'ом sleep, adk-ralph.sh
+    # прерывает его напрямую SIGTERM/SIGKILL группе процессов.
+    exec sleep 30
+    ;;
+  912)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9912, "isDraft": false, "headRefName": "issue-912-x"}]
+PRJSON
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_TASK/claude"
+
+RALPH_BUDGET_TASK_CFG="$TMP/ralph-budget-task-config.json"
+cat > "$RALPH_BUDGET_TASK_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0.06}}}}}
+EOF
+
+RALPH_BUDGET_TASK_LOGS="$TMP/ralph-budget-task-logs"
+RALPH_BUDGET_TASK_NOTIFY="$TMP/ralph-budget-task-notify.log"
+
+budget_task_start=$(date +%s)
+ralph_budget_task_out=$(cd "$RALPH_BUDGET_TASK" && PATH="$RBIN_BUDGET_TASK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_TASK" \
+  ADK_LOGS_DIR="$RALPH_BUDGET_TASK_LOGS" ADK_CONFIG_FILE="$RALPH_BUDGET_TASK_CFG" \
+  ADK_NOTIFY_FILE="$RALPH_BUDGET_TASK_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_budget_task_rc=$?
+budget_task_elapsed=$(( $(date +%s) - budget_task_start ))
+assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи превышен — прогон всё равно доигрывает очередь до конца (exit 0)" \
+  0 "$ralph_budget_task_rc"
+assert_contains "AC-3: adk-ralph: (issue #131) сводка называет застрявшую по бюджету задачу с причиной" \
+  "$ralph_budget_task_out" "#911 (бюджет задачи по времени)"
+assert_contains "AC-3: adk-ralph: (issue #131) сводка перечисляет ready-задачу #912 — цикл продолжился" \
+  "$ralph_budget_task_out" "#912"
+# круг 4 ревью PR #193 (важное №1): без проверки по времени мутация «убрать
+# set -m» (group-kill бьёт по несуществующей группе процессов, #911 не убит)
+# даёт 0 FAIL — набор просто идёт дольше (стаб #911 «exec sleep 30» доигрывает
+# сам за ~30s), но по-прежнему проходит: assert_contains/assert_exit выше не
+# видят разницы между «прервано по бюджету за ~4s» и «доиграно естественно за
+# ~30s». Порог 15s — с большим запасом выше реального времени прогона (бюджет
+# задачи 3.6s + до 1s опроса + до 5×0.2s грации на TERM + время #912), но
+# далеко ниже 30s, которые потребовались бы, не сработай group-kill вообще.
+[ "$budget_task_elapsed" -lt 15 ]
+assert_exit "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) прогон завершился заметно быстрее, чем длится зависший стаб — #911 реально прерван по бюджету, не доигран естественно" \
+  0 $?
+
+budget_task_call_count=$(cat "$RBIN_BUDGET_TASK/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #131) headless-процесс вызван дважды — #912 исполнен, не пропущен" \
+  2 "$budget_task_call_count"
+
+budget_task_edit_log=$(cat "$RBIN_BUDGET_TASK/issue-edit.log" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) #911 помечен needs-human из-за бюджета задачи" \
+  "$budget_task_edit_log" "issue edit 911 --add-label needs-human"
+budget_task_notify=$(cat "$RALPH_BUDGET_TASK_NOTIFY" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) уведомление о застревании #911 называет бюджет задачи" \
+  "$budget_task_notify" "issue #911 застрял: бюджет задачи по времени"
+
+budget_task_log="$RALPH_BUDGET_TASK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+budget_task_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=911|type=task|result=stuck|reason=бюджет задачи по времени' \
+  'event=task|issue=912|type=task|result=ready' \
+  'event=run_end|done=0|ready=1|stuck=1|reason=очередь пуста')
+budget_task_valid=$(jsonl_check "$budget_task_log" 4 "$budget_task_spec")
+assert_exit "AC-3: adk-ralph: (issue #131) журнал — #911 stuck с причиной бюджета, #912 ready, run_end «очередь пуста»" \
+  1 "$budget_task_valid"
+
+# ── issue #131, ADR-017 §1 (важное круга 2 ревью PR #193): group-kill
+# реально убивает и НАСТОЯЩИЙ дочерний процесс claude -p, не только сам
+# стаб-«лидера» — обе прежние фикстуры (RALPH_BUDGET_TASK выше и
+# RALPH_BUDGET_RUN ниже) используют `exec sleep N`, у которого нет
+# потомков вовсе (`exec` замещает образ процесса стаба, PID/PGID не
+# меняются) — group-kill там фактически не проверялся ни разу, хотя
+# ADR-017 ошибочно ссылался на «фикстуру с зависшим потомком». Здесь стаб
+# claude НЕ делает exec: он форкает настоящего дочернего `sleep 30` в
+# фоне (наследует ту же группу процессов, что и сам стаб — parent её не
+# меняет), пишет его PID в файл и ждёт — если group-kill (`kill -TERM/-KILL
+# -- "-$pid"`) реально бьёт всю группу, а не только PID лидера, ядро
+# доставляет сигнал ребёнку НАПРЯМУЮ (не через промежуточное
+# перенаправление стабом), и он погибает вместе с лидером ─────────────────
+RALPH_BUDGET_GROUPKILL="$TMP/ralph-budget-groupkill-proj"
+RBIN_BUDGET_GROUPKILL="$TMP/ralph-budget-groupkill-bin"
+mkdir -p "$RALPH_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL"
+(cd "$RALPH_BUDGET_GROUPKILL" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" <<'EOF'
+[
+  {"number": 971, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_GROUPKILL/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" "$RBIN_BUDGET_GROUPKILL/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_GROUPKILL"
+cat >> "$RBIN_BUDGET_GROUPKILL/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+sleep 30 &
+echo $! > "$d/child-pid"
+wait
+EOF
+chmod +x "$RBIN_BUDGET_GROUPKILL/claude"
+
+RALPH_BUDGET_GROUPKILL_CFG="$TMP/ralph-budget-groupkill-config.json"
+cat > "$RALPH_BUDGET_GROUPKILL_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0.06}}}}}
+EOF
+
+groupkill_start=$(date +%s)
+(cd "$RALPH_BUDGET_GROUPKILL" && PATH="$RBIN_BUDGET_GROUPKILL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_GROUPKILL" \
+  ADK_LOGS_DIR="$TMP/ralph-budget-groupkill-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_GROUPKILL_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-budget-groupkill-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh") >/dev/null 2>&1
+groupkill_elapsed=$(( $(date +%s) - groupkill_start ))
+# круг 4 ревью PR #193 (важное №1, тот же класс, что RALPH_BUDGET_TASK выше):
+# без проверки по времени мутация «убрать set -m» даёт 0 FAIL здесь тоже —
+# adk-ralph.sh просто ждёт естественного конца `sleep 30` в стабе (~30s) вместо
+# прерывания по бюджету 3.6s, а единственная существующая проверка ниже (жив
+# ли дочерний процесс) в итоге всё равно проходит, просто позже. Порог — тот
+# же, что у RALPH_BUDGET_TASK.
+[ "$groupkill_elapsed" -lt 15 ]
+assert_exit "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) прогон group-kill завершился заметно быстрее, чем длится зависший child — реально прерван по бюджету, не доигран естественно" \
+  0 $?
+
+groupkill_child_pid=$(cat "$RBIN_BUDGET_GROUPKILL/child-pid" 2>/dev/null)
+# Небольшой запас после завершения ralph — сигнал доставляется ядром
+# практически мгновенно, но проверка статуса процесса из другого процесса
+# (эта оболочка) не синхронизирована с самим ralph.
+sleep 0.3
+kill -0 "$groupkill_child_pid" 2>/dev/null
+assert_exit "AC-3: adk-ralph: (issue #131, важное круга 2 ревью PR #193) group-kill убивает и НАСТОЯЩИЙ дочерний процесс claude -p, не только лидера группы" \
+  1 $?
+
+# ── issue #131, ADR-017: бюджет времени на прогон — превышение чисто
+# останавливает цикл: ТЕКУЩАЯ задача (#921, медленнее бюджета прогона, но
+# быстрее бюджета задачи — переходное состояние «остаток бюджета прогона
+# меньше бюджета задачи») доводится до вердикта (event=task result=ready),
+# СЛЕДУЮЩАЯ (#922) не начинается вовсе ─────────────────────────────────────
+RALPH_BUDGET_RUN="$TMP/ralph-budget-run-proj"
+RBIN_BUDGET_RUN="$TMP/ralph-budget-run-bin"
+mkdir -p "$RALPH_BUDGET_RUN" "$RBIN_BUDGET_RUN"
+(cd "$RALPH_BUDGET_RUN" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_RUN/issues-fixture.json" <<'EOF'
+[
+  {"number": 921, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 922, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_RUN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_RUN" "$RBIN_BUDGET_RUN/issues-fixture.json" "$RBIN_BUDGET_RUN/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_RUN"
+cat >> "$RBIN_BUDGET_RUN/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  921)
+    # 2s реальной работы — дольше дефолтного бюджета прогона ниже (1s), но
+    # на порядки быстрее дефолтного бюджета задачи (45 минут): задача
+    # обязана доиграть до ready, не быть прерванной по budget задачи.
+    sleep 2
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9921, "isDraft": false, "headRefName": "issue-921-x"}]
+PRJSON
+    exit 0
+    ;;
+  922)
+    echo "922 NOT SUPPOSED TO RUN" >> "$d/claude-calls.log"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_RUN/claude"
+
+RALPH_BUDGET_RUN_CFG="$TMP/ralph-budget-run-config.json"
+cat > "$RALPH_BUDGET_RUN_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"run": {"maxMinutes": 0.0166667}}}}}
+EOF
+
+RALPH_BUDGET_RUN_LOGS="$TMP/ralph-budget-run-logs"
+RALPH_BUDGET_RUN_NOTIFY="$TMP/ralph-budget-run-notify.log"
+
+ralph_budget_run_out=$(cd "$RALPH_BUDGET_RUN" && PATH="$RBIN_BUDGET_RUN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_RUN" \
+  ADK_LOGS_DIR="$RALPH_BUDGET_RUN_LOGS" ADK_CONFIG_FILE="$RALPH_BUDGET_RUN_CFG" \
+  ADK_NOTIFY_FILE="$RALPH_BUDGET_RUN_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) бюджет прогона исчерпан — прогон останавливается с ошибкой (exit 1)" \
+  1 $?
+assert_contains "AC-3: adk-ralph: (issue #131) сводка называет причину «бюджет прогона по времени»" \
+  "$ralph_budget_run_out" "бюджет прогона по времени"
+assert_contains "AC-3: adk-ralph: (issue #131) сводка перечисляет доигранную ready-задачу #921" \
+  "$ralph_budget_run_out" "#921"
+
+budget_run_call_count=$(cat "$RBIN_BUDGET_RUN/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #131) headless-процесс вызван один раз — #922 не начат вовсе" \
+  1 "$budget_run_call_count"
+assert_not_contains "AC-3: adk-ralph: (issue #131) #922 не запущен — маркер стаба отсутствует в логе" \
+  "$(cat "$RBIN_BUDGET_RUN/claude-calls.log" 2>/dev/null)" "922 NOT SUPPOSED TO RUN"
+
+budget_run_log="$RALPH_BUDGET_RUN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+budget_run_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=921|type=task|result=ready' \
+  'event=run_end|done=0|ready=1|reason=бюджет прогона по времени')
+budget_run_valid=$(jsonl_check "$budget_run_log" 3 "$budget_run_spec")
+assert_exit "AC-3: adk-ralph: (issue #131) журнал — #921 доведён до ready, run_end с причиной бюджета прогона" \
+  1 "$budget_run_valid"
+
+# ── issue #131, ADR-017 §3: ноль в конфиге — опечатка, не «без лимита»:
+# предупреждение в stderr, использован дефолт (45 минут) — быстрая задача
+# доигрывает штатно, не «застревает мгновенно» ──────────────────────────────
+RALPH_BUDGET_ZERO="$TMP/ralph-budget-zero-proj"
+RBIN_BUDGET_ZERO="$TMP/ralph-budget-zero-bin"
+mkdir -p "$RALPH_BUDGET_ZERO" "$RBIN_BUDGET_ZERO"
+(cd "$RALPH_BUDGET_ZERO" && git_c init -q -b main)
+
+cat > "$RBIN_BUDGET_ZERO/issues-fixture.json" <<'EOF'
+[
+  {"number": 931, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_ZERO/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_ZERO" "$RBIN_BUDGET_ZERO/issues-fixture.json" "$RBIN_BUDGET_ZERO/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_ZERO"
+cat >> "$RBIN_BUDGET_ZERO/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9931, "isDraft": false, "headRefName": "issue-931-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_ZERO/claude"
+
+RALPH_BUDGET_ZERO_CFG="$TMP/ralph-budget-zero-config.json"
+cat > "$RALPH_BUDGET_ZERO_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0}, "run": {"maxMinutes": 0}}}}}
+EOF
+
+ralph_budget_zero_out=$(cd "$RALPH_BUDGET_ZERO" && PATH="$RBIN_BUDGET_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_ZERO" \
+  ADK_LOGS_DIR="$TMP/ralph-budget-zero-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_ZERO_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-budget-zero-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) maxMinutes=0 — опечатка не ломает прогон (exit 0)" \
+  0 $?
+assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — предупреждение в stderr, использован дефолт" \
+  "$ralph_budget_zero_out" "не положительное число минут, использован дефолт"
+# Важное №2 круга 4 ревью PR #193: прежний assert выше проверял только текст
+# «использован дефолт» без самого числа — замену дефолта 45→5 или 240→60 в
+# hooks/scripts/adk-ralph.sh:1076-1077 набор бы не заметил. Проверяем оба
+# литерала напрямую, тем же прогоном (task.maxMinutes=0 и run.maxMinutes=0
+# оба невалидны в конфиге выше).
+assert_contains "AC-3: adk-ralph: (issue #131, важное №2 круга 4 ревью PR #193) budget.task.maxMinutes невалиден — использован дефолт именно 45 (не другое число)" \
+  "$ralph_budget_zero_out" "policies.autopilot.budget.task.maxMinutes='0' — не положительное число минут, использован дефолт 45"
+assert_contains "AC-3: adk-ralph: (issue #131, важное №2 круга 4 ревью PR #193) budget.run.maxMinutes невалиден — использован дефолт именно 240 (не другое число)" \
+  "$ralph_budget_zero_out" "policies.autopilot.budget.run.maxMinutes='0' — не положительное число минут, использован дефолт 240"
+assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача доигрывает штатно до ready (дефолт, не мгновенный stuck)" \
+  "$ralph_budget_zero_out" "#931"
+assert_not_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — задача НЕ помечена stuck по бюджету" \
+  "$ralph_budget_zero_out" "бюджет задачи по времени"
+
+# ── issue #131, ADR-017 §4 (блокер круга 2 ревью PR #193): claude -p,
+# убитый ПОСРЕДИ работы по бюджету задачи, оставляет рабочее дерево грязным
+# (незакоммиченный трекаемый файл + неотслеживаемый файл) — #961 ПРОХОДИТ
+# обычный stuck-путь целиком (needs-human/уведомление/event=task
+# result=stuck с причиной бюджета — тот же DoD issue #131, что и на чистом
+# дереве), и только ПОСЛЕ него прогон останавливается ЦЕЛИКОМ честной
+# причиной вместо продолжения на заражённом дереве; #962 не берётся вовсе,
+# дерево остаётся нетронутым ровно таким, каким его оставил прерванный
+# процесс. Круг 1 (первая версия этой фикстуры) ошибочно ожидал, что #961
+# НЕ получает needs-human/event=task вовсе — именно это круг 2 признал
+# блокером: `break` в коде происходил раньше обычного stuck-пути ──────────
+RALPH_BUDGET_DIRTY="$TMP/ralph-budget-dirty-proj"
+RBIN_BUDGET_DIRTY="$TMP/ralph-budget-dirty-bin"
+mkdir -p "$RALPH_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY"
+(cd "$RALPH_BUDGET_DIRTY" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_BUDGET_DIRTY/issues-fixture.json" <<'EOF'
+[
+  {"number": 961, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 962, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_BUDGET_DIRTY/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY/issues-fixture.json" "$RBIN_BUDGET_DIRTY/prs-fixture.json"
+claude_stub_guard "$RBIN_BUDGET_DIRTY"
+cat >> "$RBIN_BUDGET_DIRTY/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  961)
+    # Реалистичная «середина работы»: своя ветка, незакоммиченная правка
+    # трекаемого файла, свежий неотслеживаемый файл — затем зависает дольше
+    # бюджета задачи ниже.
+    git checkout -q -b issue-961-x
+    echo half-done >> seed.txt
+    echo scratch > half-done.txt
+    exec sleep 30
+    ;;
+  962)
+    echo "962 NOT SUPPOSED TO RUN" >> "$d/claude-calls.log"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_BUDGET_DIRTY/claude"
+
+RALPH_BUDGET_DIRTY_CFG="$TMP/ralph-budget-dirty-config.json"
+cat > "$RALPH_BUDGET_DIRTY_CFG" <<'EOF'
+{"policies": {"autopilot": {"budget": {"task": {"maxMinutes": 0.06}}}}}
+EOF
+
+RALPH_BUDGET_DIRTY_NOTIFY="$TMP/ralph-budget-dirty-notify.log"
+ralph_budget_dirty_out=$(cd "$RALPH_BUDGET_DIRTY" && PATH="$RBIN_BUDGET_DIRTY:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_DIRTY" \
+  ADK_LOGS_DIR="$TMP/ralph-budget-dirty-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_DIRTY_CFG" \
+  ADK_NOTIFY_FILE="$RALPH_BUDGET_DIRTY_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи + грязное дерево — прогон останавливается целиком (exit 1)" \
+  1 $?
+assert_contains "AC-3: adk-ralph: (issue #131) причина называет грязное дерево после прерывания по бюджету" \
+  "$ralph_budget_dirty_out" "рабочее дерево не чисто после прерывания issue #961"
+
+dirty_call_count=$(cat "$RBIN_BUDGET_DIRTY/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — headless-процесс вызван один раз (#962 не начат)" \
+  1 "$dirty_call_count"
+assert_not_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #962 не запущен (маркер стаба отсутствует)" \
+  "$(cat "$RBIN_BUDGET_DIRTY/claude-calls.log" 2>/dev/null)" "962 NOT SUPPOSED TO RUN"
+
+# Блокер круга 2 ревью PR #193: обычный stuck-путь ОБЯЗАН отработать для
+# #961, несмотря на грязное дерево и последующую остановку всего прогона —
+# needs-human/уведомление/event=task result=stuck — тот же DoD issue #131,
+# что и на чистом дереве (иначе issue остаётся без метки, следующий прогон
+# берёт его заново уже на заражённом дереве).
+dirty_edit_log=$(cat "$RBIN_BUDGET_DIRTY/issue-edit.log" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) грязное дерево — #961 ВСЁ РАВНО помечен needs-human (обычный stuck-путь отработал до остановки прогона)" \
+  "$dirty_edit_log" "issue edit 961"
+dirty_notify=$(cat "$RALPH_BUDGET_DIRTY_NOTIFY" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) грязное дерево — уведомление о застревании #961 всё равно отправлено" \
+  "$dirty_notify" "issue #961 застрял: бюджет задачи по времени"
+
+dirty_final_status=$(cd "$RALPH_BUDGET_DIRTY" && git status --porcelain)
+[ -n "$dirty_final_status" ]
+assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — правки прерванного процесса остались нетронутыми (не force-чекнуты)" \
+  0 $?
+
+# круг 4 ревью PR #193 (важное №2): «дерево не тронуто» проверялась ТОЛЬКО
+# через `git status --porcelain` непусто — мутация «добавить
+# return_to_default_branch || true перед итоговым break» проходила бы 0 FAIL,
+# хотя дерево реально уезжает на default branch вместе с незакоммиченными
+# правками (тот же класс бага, что блокер круга 1): `git status --porcelain`
+# после такого переноса всё ещё непусто (правки просто теперь на main), и
+# проверка выше этого не отличает. Явная проверка текущей ветки закрывает
+# именно это.
+dirty_final_branch=$(cd "$RALPH_BUDGET_DIRTY" && git symbolic-ref --short HEAD 2>/dev/null)
+[ "$dirty_final_branch" = "issue-961-x" ]
+assert_exit "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) грязное дерево — рабочее дерево ОСТАЛОСЬ на ветке задачи issue-961-x, НЕ переключилось на default branch" \
+  0 $?
+
+dirty_log_file="$TMP/ralph-budget-dirty-logs/autopilot-$(date +%Y-%m-%d).jsonl"
+dirty_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=961|type=task|result=stuck|reason=бюджет задачи по времени' \
+  'event=run_end|reason=бюджет задачи по времени: рабочее дерево не чисто после прерывания issue #961')
+dirty_valid=$(jsonl_check "$dirty_log_file" 3 "$dirty_spec")
+assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — журнал: #961 залогирован обычным event=task result=stuck (не пропущен), run_end с причиной грязного дерева" \
+  1 "$dirty_valid"
+
+# ── issue #131, ADR-017 §1 (важное №3 круга 4 ревью PR #193): обработчик
+# сигнала самому ralph (`ralph_signal_cleanup`, INT/TERM) писал
+# `event=run_end done=0` БЕЗУСЛОВНО — после интеграции issue #129 (merge
+# ready-PR) сигнал, пришедший ПОСЛЕ успешного merge этим же прогоном,
+# искажал бы журнал буквальным нулём вместо реального числа смерженных.
+# Путь вообще не был покрыт ни одной фикстурой. Сценарий: #3001 реально
+# мержится (стабовый `gh pr merge`, тот же приём, что RALPH_MERGE выше) —
+# merged_count становится 1 — ЗАТЕМ тестовая оболочка шлёт настоящий SIGTERM
+# самому процессу adk-ralph.sh, пока тот исполняет claude -p для #3002
+# (стаб «завис» дольше времени, разумного для теста). Ожидание: exit 143
+# (конвенция 128+15, круг 2), event=run_end done=1 (не 0), reason="прерван
+# сигналом TERM" (значение внесено в реестр ADR-007 §3 / ADR-001 этим же
+# кругом) ──────────────────────────────────────────────────────────────────
+RALPH_SIGNAL_ORIGIN="$TMP/ralph-signal-origin"
+mkdir -p "$RALPH_SIGNAL_ORIGIN"
+(cd "$RALPH_SIGNAL_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_SIGNAL_ORIGIN" && git_c branch issue-3001-x)
+
+RALPH_SIGNAL="$TMP/ralph-signal-proj"
+git_c clone -q "$RALPH_SIGNAL_ORIGIN" "$RALPH_SIGNAL"
+(cd "$RALPH_SIGNAL" && git_c config user.email t@t && git_c config user.name t)
+
+RBIN_SIGNAL="$TMP/ralph-signal-bin"
+mkdir -p "$RBIN_SIGNAL"
+cat > "$RBIN_SIGNAL/issues-fixture.json" <<'EOF'
+[
+  {"number": 3001, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 3002, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SIGNAL/prs-fixture.json" <<'EOF'
+[]
+EOF
+claude_stub_guard "$RBIN_SIGNAL"
+cat >> "$RBIN_SIGNAL/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  3001)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 8001, "isDraft": false, "headRefName": "issue-3001-x"}]
+PRJSON
+    exit 0
+    ;;
+  3002)
+    # Маркер для тестовой оболочки: сигнал шлётся только после того, как
+    # стаб реально дошёл до "работы" над #3002, не раньше — иначе TERM мог
+    # бы застать ralph до старта #3002 и не проверить нужный путь вовсе.
+    touch "$d/task2-started"
+    # $$ здесь — PID самого этого стаба, который exec (и выше, в adk-ralph.sh:
+    # `exec claude -p ...` в фоновом job'е) сохраняет тем же, что и claude_pid
+    # в ralph — до и после следующего exec ниже. Записываем его до `exec sleep
+    # 30`, чтобы тестовая оболочка могла ПОСЛЕ сигнала проверить, что группа
+    # процессов реально убита (важное №1 круга 4 ревью PR #193: обработчик
+    # сигнала ни разу не проверялся на факт, что claude -p действительно убит,
+    # а не остаётся сиротой).
+    echo "$$" > "$d/task2-pid"
+    exec sleep 30
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_SIGNAL/claude"
+# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — самописный стаб,
+# тот же приём, что RALPH_MERGE выше.
+cat > "$RBIN_SIGNAL/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-3001-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_SIGNAL/gh"
+
+RALPH_SIGNAL_CFG="$TMP/ralph-signal-config.json"
+cat > "$RALPH_SIGNAL_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
+
+RALPH_SIGNAL_LOGS="$TMP/ralph-signal-logs"
+RALPH_SIGNAL_NOTIFY="$TMP/ralph-signal-notify.log"
+RALPH_SIGNAL_OUT="$TMP/ralph-signal-out.log"
+
+# Фон запускается через `exec` внутри подоболочки (тот же приём, что "exec
+# sleep N" в стабах claude выше): без него `$!` был бы PID-ом самой
+# подоболочки, а не adk-ralph.sh, и TERM ушёл бы обёртке, а не скрипту с его
+# ловушкой INT/TERM.
+(
+  cd "$RALPH_SIGNAL" || exit 1
+  PATH="$RBIN_SIGNAL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SIGNAL" \
+    ADK_LOGS_DIR="$RALPH_SIGNAL_LOGS" ADK_CONFIG_FILE="$RALPH_SIGNAL_CFG" \
+    ADK_NOTIFY_FILE="$RALPH_SIGNAL_NOTIFY" \
+    CLAUDE_PLUGIN_ROOT="$KIT" exec "$HOOKS/adk-ralph.sh"
+) >"$RALPH_SIGNAL_OUT" 2>&1 &
+ralph_signal_pid=$!
+
+signal_task2_started=0
+for _ in $(seq 1 100); do
+  if [ -e "$RBIN_SIGNAL/task2-started" ]; then
+    signal_task2_started=1
+    break
+  fi
+  sleep 0.1
+done
+assert_exit "AC-3: adk-ralph: (issue #131, круг 4 ревью PR #193) фикстура сигнала — #3002 реально начат до отправки сигнала (#3001 уже смержен)" \
+  1 "$signal_task2_started"
+
+kill -TERM "$ralph_signal_pid" 2>/dev/null
+wait "$ralph_signal_pid"
+ralph_signal_rc=$?
+assert_exit "AC-3: adk-ralph: (issue #131) SIGTERM самому adk-ralph.sh — exit 143 (конвенция 128+15)" \
+  143 "$ralph_signal_rc"
+
+# Важное №1 круга 4 ревью PR #193: ни одна прежняя фикстура не проверяла,
+# что ralph_signal_cleanup реально убивает claude -p, а не оставляет его
+# сиротой — мутация «убрать `kill` из ralph_signal_cleanup» давала 0 FAIL.
+# wait выше вернулся уже ПОСЛЕ того, как обработчик сигнала внутри ralph
+# отработал (kill -TERM группе, sleep 0.2, kill -KILL при необходимости) и
+# только потом вызвал exit — к этому моменту стаб #3002 обязан быть мёртв.
+task2_pid=$(cat "$RBIN_SIGNAL/task2-pid" 2>/dev/null)
+task2_alive=1
+if [ -n "$task2_pid" ] && ! kill -0 "$task2_pid" 2>/dev/null; then
+  task2_alive=0
+fi
+assert_exit "AC-3: adk-ralph: (issue #131, важное №1 круга 4 ревью PR #193) SIGTERM ralph — claude -p (#3002, стаб-сирота) реально убит, не остаётся жить после сигнала" \
+  0 "$task2_alive"
+
+ralph_signal_log=$(cat "$RALPH_SIGNAL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #131) SIGTERM — журнал: #3001 result=merged ДО сигнала" \
+  "$ralph_signal_log" '"result": "merged"'
+assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) SIGTERM — event=run_end.done отражает реально смерженное этим прогоном (1), не безусловный литеральный 0" \
+  "$ralph_signal_log" '"done": "1"'
+assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) SIGTERM — event=run_end.reason называет причину сигналом (значение внесено в реестр ADR-007 §3 / ADR-001)" \
+  "$ralph_signal_log" '"reason": "прерван сигналом TERM"'
+
+# ── issue #131: docs/config.md фиксирует дефолты 45/240 — прямая проверка
+# самих значений (не только «дефолт не мешает быстрому тесту»), которую
+# реальным ожиданием бюджета в минутах в тесте не поставить ─────────────
+budget_config_doc_text=$(cat "$KIT/docs/config.md")
+assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.task.maxMinutes = 45" \
+  "$budget_config_doc_text" '| `policies.autopilot.budget.task.maxMinutes` | число (положительное, минуты) | `45` |'
+assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.run.maxMinutes = 240" \
+  "$budget_config_doc_text" '| `policies.autopilot.budget.run.maxMinutes` | число (положительное, минуты) | `240` |'
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
