@@ -6891,8 +6891,8 @@ assert_exit "AC-6: adk-ralph: (issue #132) журнал — #971 c tokens=3500 (
 ralph_tok_976=$(grep '"issue": "976"' "$ralph_tok_log" 2>/dev/null)
 assert_not_contains "AC-6: adk-ralph: (issue #132) у задачи без usage поля tokens нет вовсе (не 0 и не мусор)" \
   "$ralph_tok_976" '"tokens"'
-assert_contains "AC-6: adk-ralph: (issue #132) сводка показывает расход токенов задачи #971" \
-  "$ralph_tok_out" "3500"
+assert_contains "AC-6: adk-ralph: (issue #132) сводка показывает построчный расход задачи #971 (не только сумму прогона)" \
+  "$ralph_tok_out" "/3500 ток."
 assert_contains "AC-6: adk-ralph: (issue #132) сводка содержит раздел расхода" \
   "$ralph_tok_out" "Расход"
 
@@ -7052,7 +7052,7 @@ adr001_text=$(tr '\n' ' ' < "$KIT/docs/adr/001-journal-event-schema.md" | tr -s 
 assert_contains "AC-6: ADR-001 фиксирует состав токен-счётчика (input + output + cache_creation)" \
   "$adr001_text" "input + output + cache_creation"
 assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
-  "$adr001_text" "cache_read"
+  "$adr001_text" "БЕЗ cache_read"
 
 # ── issue #131, ADR-017 §1 (важное №3 круга 4 ревью PR #193): обработчик
 # сигнала самому ralph (`ralph_signal_cleanup`, INT/TERM) писал

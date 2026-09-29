@@ -1444,6 +1444,20 @@ while [ "$exit_code" -eq 0 ]; do
       fi
       pr_state="budget-exceeded"
     else
+      # Финальный ответ headless-процесса — обратно в консоль прогона
+      # (круг 1 ревью PR #197): stdout теперь уходит в файл, а текст
+      # .result объясняет человеку исход задачи (почему PR не создан,
+      # чем кончилось ревью) — без печати он терялся бы вместе с
+      # trap-очисткой work_dir. Отказ разбора — молча: ниже его честно
+      # обработает ветка «usage не прочитан».
+      python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("result", ""))
+except Exception:
+    pass
+' "$work_dir/claude-out.json"
       # Снятие usage (issue #132) — только после сам-завершившегося
       # процесса: после kill по бюджету времени файл может быть пустым или
       # оборванным, там расход не читается (минуты пишутся, токены нет).
@@ -1465,21 +1479,21 @@ while [ "$exit_code" -eq 0 ]; do
           "бюджет задачи ($task_token_budget) при issue #$issue_num." >&2
         pr_state="token-budget-exceeded"
       else
-      pr_state=$(find_pr_state "$issue_num")
+        pr_state=$(find_pr_state "$issue_num")
 
-      if [ "$pr_state" = "error" ]; then
-        # Сбой gh pr list — не факт «PR не создан» (ADR-007 §2/§3): прогон
-        # останавливается целиком, issue не логируется как обработанный.
-        echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
-        cat "$work_dir/gh-pr-list.err" >&2
-        stop_reason="gh pr list не удался при разборе issue #$issue_num"
-        exit_code=1
-        # Тот же общий путь возврата дерева, что и на break-пути claude -p выше
-        # (issue #144, п.2) — claude -p к этому моменту уже отработал и мог
-        # переключить дерево на ветку задачи.
-        return_to_default_branch || true
-        break
-      fi
+        if [ "$pr_state" = "error" ]; then
+          # Сбой gh pr list — не факт «PR не создан» (ADR-007 §2/§3): прогон
+          # останавливается целиком, issue не логируется как обработанный.
+          echo "adk-ralph: gh pr list не удался при разборе issue #$issue_num:" >&2
+          cat "$work_dir/gh-pr-list.err" >&2
+          stop_reason="gh pr list не удался при разборе issue #$issue_num"
+          exit_code=1
+          # Тот же общий путь возврата дерева, что и на break-пути claude -p выше
+          # (issue #144, п.2) — claude -p к этому моменту уже отработал и мог
+          # переключить дерево на ветку задачи.
+          return_to_default_branch || true
+          break
+        fi
       fi
     fi
   fi
