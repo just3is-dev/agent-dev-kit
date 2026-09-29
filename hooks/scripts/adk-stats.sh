@@ -277,5 +277,11 @@ for week in sorted(weekly):
     avg_week_rounds = d["rounds"] / d["tasks"] if d["tasks"] else 0
     print(f"  - {week}: задач {d['tasks']}, среднее кругов {avg_week_rounds:.1f}")
 PYEOF
+main_rc=$?
 
+# Раздел расхода печатается и при упавшем агрегаторе (наблюдаемость), но
+# код возврата скрипта — от основного агрегатора: его падение не должно
+# маскироваться успешным хвостом (exit 0 при сломанных агрегатах лгал бы
+# потребителям /stats и /consolidate).
 print_usage_section silent
+exit "$main_rc"
