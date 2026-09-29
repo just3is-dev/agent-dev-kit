@@ -7420,6 +7420,129 @@ check_ac_doc AC-4 "commands/plan.md: планировщик помечает з�
 check_ac_doc AC-4 "skills/decompose: правило label size:large для заметно более крупной задачи" \
   "$KIT/skills/decompose/SKILL.md" "size:large"
 
+# ── issue #138, AC-8: консервативные дефолты сведены, совместимость без
+# конфига доказана — ralph отрабатывает полный цикл на дефолтах из
+# docs/config.md (проект вовсе без adk.config.json и проект с конфигом без
+# блоков budget/breaker), дефолты кода и таблицы доки сверены попарно,
+# интерактивный /autopilot не читает атрибуты вехи и хранит свой
+# предохранитель ────────────────────────────────────────────────────────────
+
+# сверка код<->дока: дефолт каждого атрибута вехи в adk-ralph.sh совпадает
+# с задокументированным в таблице docs/config.md (расхождение = таблица
+# лжёт потребителю или код ушёл от спеки)
+ralph_src=$(cat "$KIT/hooks/scripts/adk-ralph.sh")
+config_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+assert_contains "AC-8: дефолт task.maxMinutes в коде — 45" "$ralph_src" '"policies.autopilot.budget.task.maxMinutes" "45"'
+assert_contains "AC-8: дефолт task.maxMinutes в docs/config.md — 45" "$config_doc" '| `policies.autopilot.budget.task.maxMinutes` | число (положительное, минуты) | `45` |'
+assert_contains "AC-8: дефолт run.maxMinutes в коде — 240" "$ralph_src" '"policies.autopilot.budget.run.maxMinutes" "240"'
+assert_contains "AC-8: дефолт run.maxMinutes в docs/config.md — 240" "$config_doc" '| `policies.autopilot.budget.run.maxMinutes` | число (положительное, минуты) | `240` |'
+assert_contains "AC-8: дефолт task.maxTokens в коде — 300000" "$ralph_src" '"policies.autopilot.budget.task.maxTokens" "300000"'
+assert_contains "AC-8: дефолт task.maxTokens в docs/config.md — 300000" "$config_doc" '| `policies.autopilot.budget.task.maxTokens` | число (положительное, токены) | `300000` |'
+assert_contains "AC-8: дефолт run.maxTokens в коде — 2000000" "$ralph_src" '"policies.autopilot.budget.run.maxTokens" "2000000"'
+assert_contains "AC-8: дефолт run.maxTokens в docs/config.md — 2000000" "$config_doc" '| `policies.autopilot.budget.run.maxTokens` | число (положительное, токены) | `2000000` |'
+assert_contains "AC-8: дефолт sizeLargeMultiplier в коде — 2" "$ralph_src" '"policies.autopilot.budget.sizeLargeMultiplier" "2"'
+assert_contains "AC-8: дефолт sizeLargeMultiplier в docs/config.md — 2" "$config_doc" '| `policies.autopilot.budget.sizeLargeMultiplier` | число (>= 1) | `2` |'
+assert_contains "AC-8: дефолт breaker.maxStuckPerRun в коде — 2" "$ralph_src" '"policies.autopilot.breaker.maxStuckPerRun" "2"'
+assert_contains "AC-8: дефолт breaker.maxStuckPerRun в docs/config.md — 2" "$config_doc" '| `policies.autopilot.breaker.maxStuckPerRun` | число (целое ≥0) | `2` |'
+assert_contains "AC-8: дефолт breaker.maxSkippedShare в коде — 0.5" "$ralph_src" '"policies.autopilot.breaker.maxSkippedShare" "0.5"'
+assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md — 0.5" "$config_doc" '`0.5` |'
+
+# docs/config.md несёт абзац переходного состояния спеки
+assert_contains "AC-8: docs/config.md описывает переходное состояние — первые прогоны на консервативных дефолтах, ранний стоп — принятое направление отказа" \
+  "$config_doc" "ранний стоп"
+assert_contains "AC-8: docs/config.md называет калибровку по /stats" \
+  "$config_doc" "калибруются по `/stats`"
+
+# интерактивный /autopilot не меняется вехой: не читает budget/breaker,
+# хранит собственный предохранитель
+autopilot_doc=$(cat "$KIT/commands/autopilot.md")
+assert_not_contains "AC-8: autopilot.md не читает атрибуты budget" "$autopilot_doc" "policies.autopilot.budget"
+assert_not_contains "AC-8: autopilot.md не читает атрибуты breaker" "$autopilot_doc" "policies.autopilot.breaker"
+assert_contains "AC-8: autopilot.md сохраняет предохранитель «два застревания подряд»" "$autopilot_doc" "два застревания подряд"
+
+# ralph: полный цикл на проекте ВООБЩЕ без adk.config.json — дефолты
+RALPH_NC_ORIGIN="$TMP/ralph-noconfig-origin"
+mkdir -p "$RALPH_NC_ORIGIN"
+(cd "$RALPH_NC_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_NC_ORIGIN" && git_c branch issue-991-x && git_c branch issue-992-x)
+RALPH_NC="$TMP/ralph-noconfig-proj"
+RBIN_NC="$TMP/ralph-noconfig-bin"
+mkdir -p "$RBIN_NC"
+git_c clone -q "$RALPH_NC_ORIGIN" "$RALPH_NC"
+(cd "$RALPH_NC" && git_c config user.email t@t && git_c config user.name t)
+cat > "$RBIN_NC/issues-fixture.json" <<'EOF'
+[
+  {"number": 991, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 992, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
+[]
+EOF
+# свой gh-стаб: дефолтная политика (canMerge=true) ведёт ready через
+# merge-ветку — нужны pr view/pr merge (приём фикстуры RALPH_MB)
+cat > "$RBIN_NC/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-991-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_NC/gh"
+claude_stub_guard "$RBIN_NC"
+cat >> "$RBIN_NC/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 9$issue_num, "isDraft": false, "headRefName": "issue-$issue_num-x"}]
+PRJSON
+printf '{"type":"result","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":0}}\n'
+exit 0
+EOF
+chmod +x "$RBIN_NC/claude"
+ralph_nc_out=$(cd "$RALPH_NC" && PATH="$RBIN_NC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NC" \
+  ADK_LOGS_DIR="$TMP/ralph-noconfig-logs" ADK_CONFIG_FILE="$TMP/ralph-noconfig-absent.json" \
+  ADK_NOTIFY_FILE="$TMP/ralph-noconfig-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_nc_st=$?
+assert_exit "AC-8: adk-ralph: (issue #138) проект вовсе без adk.config.json — полный цикл на дефолтах, exit 0" 0 "$ralph_nc_st"
+assert_not_contains "AC-8: adk-ralph: (issue #138) без конфига нет ни одного предупреждения о невалидных значениях (дефолты применены молча)" \
+  "$ralph_nc_out" "использован дефолт"
+ralph_nc_log=$(cat "$TMP/ralph-noconfig-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-8: adk-ralph: (issue #138) без конфига обе задачи доиграны — исход записан и по второй" \
+  "$ralph_nc_log" '"issue": "992"'
+nc_merge_calls=$(cat "$RBIN_NC/pr-merge-calls.log" 2>/dev/null | grep -c "pr merge")
+assert_exit "AC-8: adk-ralph: (issue #138) дефолтная политика agent-after-approve с canMerge=true мержит ready-PR (оба)" \
+  2 "$nc_merge_calls"
+assert_contains "AC-8: adk-ralph: (issue #138) прогон без конфига дошёл до пустой очереди" \
+  "$ralph_nc_out" "очередь пуста"
+
+# ralph: конфиг есть, но БЕЗ блоков budget/breaker — те же дефолты
+RALPH_NB_CFG="$TMP/ralph-noblocks-config.json"
+cat > "$RALPH_NB_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false}}}
+EOF
+rm -rf "$TMP/ralph-noblocks-logs"
+: > "$RBIN_NC/claude-calls.log"
+cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
+[]
+EOF
+ralph_nb_out=$(cd "$RALPH_NC" && PATH="$RBIN_NC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NC" \
+  ADK_LOGS_DIR="$TMP/ralph-noblocks-logs" ADK_CONFIG_FILE="$RALPH_NB_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-noblocks-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-8: adk-ralph: (issue #138) конфиг без блоков budget/breaker — полный цикл на дефолтах, exit 0" 0 $?
+assert_not_contains "AC-8: adk-ralph: (issue #138) отсутствие блоков не рождает предупреждений (отсутствие атрибута = дефолт, не опечатка)" \
+  "$ralph_nb_out" "использован дефолт"
+assert_contains "AC-8: adk-ralph: (issue #138) прогон с конфигом без блоков дошёл до пустой очереди" \
+  "$ralph_nb_out" "очередь пуста"
+
 # ── issue #131, ADR-017 §1 (важное №3 круга 4 ревью PR #193): обработчик
 # сигнала самому ralph (`ralph_signal_cleanup`, INT/TERM) писал
 # `event=run_end done=0` БЕЗУСЛОВНО — после интеграции issue #129 (merge
