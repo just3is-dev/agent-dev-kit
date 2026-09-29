@@ -6826,6 +6826,236 @@ dirty_valid=$(jsonl_check "$dirty_log_file" 3 "$dirty_spec")
 assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — журнал: #961 залогирован обычным event=task result=stuck (не пропущен), run_end с причиной грязного дерева" \
   1 "$dirty_valid"
 
+
+# ── issue #132, AC-3/AC-6: расход токенов — снятие usage headless-процесса,
+# запись в event=task (duration + tokens: input+output+cache_creation, БЕЗ
+# cache_read), токеновая половина жёстких бюджетов (задача → stuck, прогон →
+# чистая остановка), сводка показывает расход. Стаб claude печатает в stdout
+# result-JSON, как настоящий `claude -p --output-format json`; ralph
+# перехватывает stdout per-итерации в файл и парсит usage после завершения ──
+RALPH_TOK="$TMP/ralph-tokens-proj"
+RBIN_TOK="$TMP/ralph-tokens-bin"
+mkdir -p "$RALPH_TOK" "$RBIN_TOK"
+(cd "$RALPH_TOK" && git_c init -q -b main)
+cat > "$RBIN_TOK/issues-fixture.json" <<'EOF'
+[
+  {"number": 971, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 976, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_TOK/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_TOK" "$RBIN_TOK/issues-fixture.json" "$RBIN_TOK/prs-fixture.json"
+claude_stub_guard "$RBIN_TOK"
+cat >> "$RBIN_TOK/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  971)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9971, "isDraft": false, "headRefName": "issue-971-x"}]
+PRJSON
+    # cache_read гигантский нарочно: он НЕ входит в счётчик (issue #132)
+    printf '{"type":"result","result":"итог задачи 971 от headless-процесса","usage":{"input_tokens":1000,"output_tokens":2000,"cache_creation_input_tokens":500,"cache_read_input_tokens":99999}}\n'
+    ;;
+  976)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9976, "isDraft": false, "headRefName": "issue-976-x"}]
+PRJSON
+    # без stdout вовсе — usage не прочитается, задача отрабатывает штатно
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_TOK/claude"
+RALPH_TOK_CFG="$TMP/ralph-tokens-config.json"
+cat > "$RALPH_TOK_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false}}}
+EOF
+RALPH_TOK_LOGS="$TMP/ralph-tokens-logs"
+ralph_tok_out=$(cd "$RALPH_TOK" && PATH="$RBIN_TOK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TOK" \
+  ADK_LOGS_DIR="$RALPH_TOK_LOGS" ADK_CONFIG_FILE="$RALPH_TOK_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-tokens-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-6: adk-ralph: (issue #132) прогон с usage и без usage завершается штатно" 0 $?
+ralph_tok_log="$RALPH_TOK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_tok_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=971|result=ready|tokens=3500|duration?' \
+  'event=task|issue=976|result=ready|duration?' \
+  'event=run_end|tokens=3500|reason=очередь пуста')
+ralph_tok_valid=$(jsonl_check "$ralph_tok_log" 4 "$ralph_tok_spec")
+assert_exit "AC-6: adk-ralph: (issue #132) журнал — #971 c tokens=3500 (input+output+cache_creation, без cache_read) и duration, #976 без tokens, run_end с суммой прогона" \
+  1 "$ralph_tok_valid"
+ralph_tok_976=$(grep '"issue": "976"' "$ralph_tok_log" 2>/dev/null)
+assert_not_contains "AC-6: adk-ralph: (issue #132) у задачи без usage поля tokens нет вовсе (не 0 и не мусор)" \
+  "$ralph_tok_976" '"tokens"'
+assert_contains "AC-6: adk-ralph: (issue #132) сводка показывает построчный расход задачи #971 (не только сумму прогона)" \
+  "$ralph_tok_out" "/3500 ток."
+assert_contains "AC-6: adk-ralph: (issue #132) сводка содержит раздел расхода" \
+  "$ralph_tok_out" "Расход"
+assert_contains "AC-6: adk-ralph: (issue #132, круг 2 ревью PR #197) финальный .result headless-процесса печатается в консоль прогона" \
+  "$ralph_tok_out" "итог задачи 971 от headless-процесса"
+
+# токеновый бюджет задачи: превышение → needs-human + result=stuck про
+# токены, цикл продолжается (вторая задача исполняется); merge не вызывается
+# даже при ready-PR превысившей задачи (жёсткий бюджет, DoD issue #132)
+RALPH_TOKB_ORIGIN="$TMP/ralph-tokbudget-origin"
+mkdir -p "$RALPH_TOKB_ORIGIN"
+(cd "$RALPH_TOKB_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
+(cd "$RALPH_TOKB_ORIGIN" && git_c branch issue-973-x)
+RALPH_TOKB="$TMP/ralph-tokbudget-proj"
+RBIN_TOKB="$TMP/ralph-tokbudget-bin"
+mkdir -p "$RBIN_TOKB"
+git_c clone -q "$RALPH_TOKB_ORIGIN" "$RALPH_TOKB"
+(cd "$RALPH_TOKB" && git_c config user.email t@t && git_c config user.name t)
+cat > "$RBIN_TOKB/issues-fixture.json" <<'EOF'
+[
+  {"number": 972, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 973, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_TOKB/prs-fixture.json" <<'EOF'
+[]
+EOF
+# свой gh-стаб (не gh_ralph_stub): canMerge=true ведёт ready-исход #973 через
+# реальную merge-ветку resolve_ready_pr → нужны pr view/pr merge (тот же
+# приём, что фикстура RALPH_MB issue #129 выше)
+cat > "$RBIN_TOKB/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+case "$1 $2" in
+  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
+  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
+  "label create") exit 0 ;;
+  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-973-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
+  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$RBIN_TOKB/gh"
+claude_stub_guard "$RBIN_TOKB"
+cat >> "$RBIN_TOKB/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  972)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9972, "isDraft": false, "headRefName": "issue-972-x"}]
+PRJSON
+    printf '{"type":"result","usage":{"input_tokens":3000,"output_tokens":400,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    ;;
+  973)
+    printf '{"type":"result","usage":{"input_tokens":10,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}\n'
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9973, "isDraft": false, "headRefName": "issue-973-x"}]
+PRJSON
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_TOKB/claude"
+RALPH_TOKB_CFG="$TMP/ralph-tokbudget-config.json"
+cat > "$RALPH_TOKB_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true, "budget": {"task": {"maxTokens": 1000}}}}}
+EOF
+RALPH_TOKB_LOGS="$TMP/ralph-tokbudget-logs"
+RALPH_TOKB_NOTIFY="$TMP/ralph-tokbudget-notify.log"
+ralph_tokb_out=$(cd "$RALPH_TOKB" && PATH="$RBIN_TOKB:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TOKB" \
+  ADK_LOGS_DIR="$RALPH_TOKB_LOGS" ADK_CONFIG_FILE="$RALPH_TOKB_CFG" \
+  ADK_NOTIFY_FILE="$RALPH_TOKB_NOTIFY" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-3: adk-ralph: (issue #132) превышение токенового бюджета задачи не останавливает прогон (exit 0)" 0 $?
+tokb_edit_log=$(cat "$RBIN_TOKB/issue-edit.log" 2>/dev/null)
+assert_contains "AC-3: adk-ralph: (issue #132) #972 помечен needs-human по токеновому бюджету" \
+  "$tokb_edit_log" "issue edit 972 --add-label needs-human"
+assert_contains "AC-3: adk-ralph: (issue #132) уведомление называет токеновый бюджет" \
+  "$(cat "$RALPH_TOKB_NOTIFY" 2>/dev/null)" "issue #972 застрял: бюджет задачи по токенам"
+tokb_merge_calls=$(cat "$RBIN_TOKB/pr-merge-calls.log" 2>/dev/null | grep -c "9972")
+assert_exit "AC-3: adk-ralph: (issue #132) merge превысившей задачи не вызывается, несмотря на ready-PR и canMerge=true" \
+  0 "$tokb_merge_calls"
+tokb_call_count=$(cat "$RBIN_TOKB/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #132) цикл продолжился — обе задачи исполнены headless-процессом" \
+  2 "$tokb_call_count"
+ralph_tokb_log="$RALPH_TOKB_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_tokb_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=972|result=stuck|reason=бюджет задачи по токенам|tokens=3500' \
+  'event=task|issue=973|result=merged|tokens=20' \
+  'event=run_end|reason=очередь пуста')
+ralph_tokb_valid=$(jsonl_check "$ralph_tokb_log" 4 "$ralph_tokb_spec")
+assert_exit "AC-3: adk-ralph: (issue #132) журнал — #972 stuck по токенам (расход записан), #973 смержен, прогон дошёл до пустой очереди" \
+  1 "$ralph_tokb_valid"
+
+# токеновый бюджет прогона: сумма превысила — чистая остановка, следующая
+# задача не берётся (headless вызван один раз)
+RALPH_TOKR="$TMP/ralph-tokrun-proj"
+RBIN_TOKR="$TMP/ralph-tokrun-bin"
+mkdir -p "$RALPH_TOKR" "$RBIN_TOKR"
+(cd "$RALPH_TOKR" && git_c init -q -b main)
+cat > "$RBIN_TOKR/issues-fixture.json" <<'EOF'
+[
+  {"number": 974, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 975, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_TOKR/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_TOKR" "$RBIN_TOKR/issues-fixture.json" "$RBIN_TOKR/prs-fixture.json"
+claude_stub_guard "$RBIN_TOKR"
+cat >> "$RBIN_TOKR/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+if [ "$issue_num" = "974" ]; then
+  cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9974, "isDraft": false, "headRefName": "issue-974-x"}]
+PRJSON
+  printf '{"type":"result","usage":{"input_tokens":3000,"output_tokens":400,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+fi
+exit 0
+EOF
+chmod +x "$RBIN_TOKR/claude"
+RALPH_TOKR_CFG="$TMP/ralph-tokrun-config.json"
+cat > "$RALPH_TOKR_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"run": {"maxTokens": 3000}}}}}
+EOF
+RALPH_TOKR_LOGS="$TMP/ralph-tokrun-logs"
+ralph_tokr_out=$(cd "$RALPH_TOKR" && PATH="$RBIN_TOKR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TOKR" \
+  ADK_LOGS_DIR="$RALPH_TOKR_LOGS" ADK_CONFIG_FILE="$RALPH_TOKR_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-tokrun-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_tokr_rc=$?
+assert_exit "AC-3: adk-ralph: (issue #132) исчерпанный токеновый бюджет прогона — остановка с ненулевым exit (как у временного)" \
+  1 "$ralph_tokr_rc"
+tokr_call_count=$(cat "$RBIN_TOKR/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "AC-3: adk-ralph: (issue #132) вторая задача не начата — headless вызван один раз" \
+  1 "$tokr_call_count"
+assert_contains "AC-3: adk-ralph: (issue #132) сводка называет причину «бюджет прогона по токенам»" \
+  "$ralph_tokr_out" "бюджет прогона по токенам"
+ralph_tokr_log="$RALPH_TOKR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_tokr_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=974|result=ready|tokens=3500' \
+  'event=run_end|tokens=3500|reason=бюджет прогона по токенам')
+ralph_tokr_valid=$(jsonl_check "$ralph_tokr_log" 3 "$ralph_tokr_spec")
+assert_exit "AC-3: adk-ralph: (issue #132) журнал — #974 доведена до вердикта (ready), run_end с причиной токенового бюджета прогона" \
+  1 "$ralph_tokr_valid"
+
+# документация: config.md и ADR-001
+budget_tokens_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.task.maxTokens = 300000" \
+  "$budget_tokens_doc" '| `policies.autopilot.budget.task.maxTokens` | число (положительное, токены) | `300000` |'
+assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.run.maxTokens = 2000000" \
+  "$budget_tokens_doc" '| `policies.autopilot.budget.run.maxTokens` | число (положительное, токены) | `2000000` |'
+adr001_text=$(tr '\n' ' ' < "$KIT/docs/adr/001-journal-event-schema.md" | tr -s ' ')
+assert_contains "AC-6: ADR-001 фиксирует состав токен-счётчика (input + output + cache_creation)" \
+  "$adr001_text" "input + output + cache_creation"
+assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
+  "$adr001_text" "БЕЗ cache_read"
+
 # ── issue #131, ADR-017 §1 (важное №3 круга 4 ревью PR #193): обработчик
 # сигнала самому ralph (`ralph_signal_cleanup`, INT/TERM) писал
 # `event=run_end done=0` БЕЗУСЛОВНО — после интеграции issue #129 (merge
