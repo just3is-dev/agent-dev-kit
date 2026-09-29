@@ -38,6 +38,7 @@ print_usage_section() {
 import json
 import math
 import os
+import re
 import statistics
 import sys
 
@@ -66,11 +67,14 @@ for path in sys.argv[2:]:
             dur = ev.get("duration")
             tok = ev.get("tokens")
             # adk-log пишет оба поля строками ("60s", "3500") — читаем
-            # ровно эту форму: строка цифр. Всё остальное (bool, float,
-            # "1_000", отрицательные, мусор) — не расход, отбрасывается.
-            if isinstance(dur, str) and dur.endswith("s") and dur[:-1].isdigit():
+            # ровно эту форму: строка ASCII-цифр (isdigit() истинен и для
+            # Unicode-цифр вроде "²", которые int() не принимает, — без
+            # ASCII-проверки валидная JSON-строка роняла бы скрипт). Всё
+            # остальное (bool, float, "1_000", отрицательные, не-ASCII,
+            # мусор) — не расход, отбрасывается.
+            if isinstance(dur, str) and re.fullmatch(r"[0-9]+s", dur):
                 durations_min.append(int(dur[:-1]) / 60)
-            if isinstance(tok, str) and tok.isdigit():
+            if isinstance(tok, str) and re.fullmatch(r"[0-9]+", tok):
                 tokens.append(int(tok))
 
 def p90(vals):

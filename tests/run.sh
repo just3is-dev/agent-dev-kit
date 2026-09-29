@@ -691,6 +691,7 @@ cat > "$STATS_USAGE/autopilot-2026-09-29.jsonl" <<'EOF'
 {"event":"task","issue":"48","type":"task","result":"ready","tokens":true,"timestamp":"2026-09-29T08:41:55Z"}
 {"event":"task","issue":"49","type":"task","result":"ready","tokens":2.9,"timestamp":"2026-09-29T08:41:56Z"}
 {"event":"task","issue":"50","type":"task","result":"ready","tokens":"1_000","timestamp":"2026-09-29T08:41:57Z"}
+{"event":"task","issue":"51","type":"task","result":"ready","tokens":"²","duration":"¹s","timestamp":"2026-09-29T08:41:58Z"}
 {"event":"run_end","done":"1","ready":"1","stuck":"1","skipped":"1","tokens":"24500","reason":"очередь пуста","timestamp":"2026-09-29T08:42:00Z"}
 EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_USAGE" "$HOOKS/adk-stats.sh" 2>&1)
@@ -699,7 +700,7 @@ assert_contains "AC-6: adk-stats: (issue #136) агрегаты задач не�
   "$stats_out" "Всего задач: 1"
 assert_contains "AC-6: adk-stats: (issue #136) минуты — своё n и медиана/p90/максимум (мусор и отрицательные отброшены)" \
   "$stats_out" "минуты (n=3): медиана 2.0, p90 10.0, максимум 10.0"
-assert_contains "AC-6: adk-stats: (issue #136) токены — своё n (шире минут: запись только с tokens), целые без экспоненты на >=1e6; bool/float/подчёркивания не в счёте" \
+assert_contains "AC-6: adk-stats: (issue #136) токены — своё n (шире минут: запись только с tokens), целые без экспоненты на >=1e6; bool/float/подчёркивания/Unicode-цифры не в счёте и не роняют скрипт" \
   "$stats_out" "токены (n=4): медиана 11750, p90 1234567, максимум 1234567"
 
 # записи прогонов без полей расхода — прежний вывод не меняется ни на строку
