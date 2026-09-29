@@ -838,6 +838,44 @@ resolve_ready_pr() {
   printf 'MERGED'
 }
 
+# mark_stuck <issue_num> <issue_type> <reason> — общий путь застревания
+# задачи для обеих точек: ветки STUCK finish_ready_outcome и основного
+# stuck-пути цикла (issue #209, до него ~25 строк были продублированы и уже
+# расходились на практике — порядок «счётчики до журнала», круг 1 ревью
+# PR #191). Метка needs-human — единственный механизм HITL: об отказе gh
+# нельзя молчать (без громкого предупреждения журнал и уведомление
+# утверждали бы stuck, а метки не было бы, и следующий прогон взял бы issue
+# заново), но это и не блокер прогона. Счётчики — до записи в журнал
+# (issue #135: сводка прогона — второй канал, которому нельзя молчать об
+# этом issue, если запись в журнал откажет), затем event=task result=stuck,
+# затем breaker уровня прогона (issue #134, ADR-016 §1) сразу после
+# инкремента stuck_count — само срабатывание откладывается до общей точки
+# цикла. Возвращает 0 — штатно; 1 — отказала запись журнала (journal_break
+# уже выставил stop_reason). Решение о return_to_default_branch остаётся у
+# вызывающего кода: на пути с грязным деревом после прерывания по бюджету
+# дерево трогать нельзя (ADR-017 §4).
+mark_stuck() {
+  local issue_num="$1" issue_type="$2" reason="$3"
+  (cd "$root" && gh label create needs-human >/dev/null 2>&1) || true
+  if ! (cd "$root" && gh issue edit "$issue_num" --add-label needs-human) \
+    >/dev/null 2>"$work_dir/gh-issue-edit.err"; then
+    echo "adk-ralph: не удалось пометить issue #$issue_num меткой needs-human:" >&2
+    cat "$work_dir/gh-issue-edit.err" >&2
+  fi
+  "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
+  stuck=$(csv_add "$stuck" "$issue_num")
+  stuck_count=$((stuck_count + 1))
+  stuck_summary="$stuck_summary #$issue_num ($reason)"
+  if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" $task_extra; then
+    journal_break
+    return 1
+  fi
+  if run_breaker_check_stuck; then
+    run_breaker_reason="breaker: застревания за прогон"
+  fi
+  return 0
+}
+
 # finish_ready_outcome <issue_num> <issue_type> <reused: true|false> — общая
 # точка исходов «PR ready» (issue #129, ADR-019) для обеих веток вызова,
 # использующих find_pr_state в этом скрипте: предстартовой (issue уже был
@@ -883,27 +921,10 @@ finish_ready_outcome() {
       ;;
     STUCK\ *)
       reason="${resolved#STUCK }"
-      (cd "$root" && gh label create needs-human >/dev/null 2>&1) || true
-      if ! (cd "$root" && gh issue edit "$issue_num" --add-label needs-human) \
-        >/dev/null 2>"$work_dir/gh-issue-edit.err"; then
-        # Тот же принцип, что draft/none ниже: needs-human — единственный
-        # механизм HITL, молчать об отказе нельзя, но и не блокер прогона.
-        echo "adk-ralph: не удалось пометить issue #$issue_num меткой needs-human:" >&2
-        cat "$work_dir/gh-issue-edit.err" >&2
-      fi
-      "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
-      stuck=$(csv_add "$stuck" "$issue_num")
-      stuck_count=$((stuck_count + 1))
-      stuck_summary="$stuck_summary #$issue_num ($reason)"
-      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" $task_extra; then
-        journal_break
+      # Общий stuck-путь (mark_stuck): needs-human, уведомление, счётчики,
+      # журнал, breaker — тем же порядком, что и draft/none в цикле.
+      if ! mark_stuck "$issue_num" "$issue_type" "$reason"; then
         return 1
-      fi
-      # Breaker уровня прогона — накопленные застревания (issue #134,
-      # ADR-016 §1), сразу после инкремента stuck_count — тот же порядок,
-      # что и draft/none ниже.
-      if run_breaker_check_stuck; then
-        run_breaker_reason="breaker: застревания за прогон"
       fi
       ;;
     *)
@@ -1585,27 +1606,13 @@ except Exception:
     else
       reason="PR не создан"
     fi
-    (cd "$root" && gh label create needs-human >/dev/null 2>&1) || true
-    if ! (cd "$root" && gh issue edit "$issue_num" --add-label needs-human) \
-      >/dev/null 2>"$work_dir/gh-issue-edit.err"; then
-      # needs-human — единственный механизм HITL для этой задачи: молчать
-      # об отказе нельзя. Не останавливаем весь прогон за это (в отличие
-      # от сбоя gh pr list выше) — но без громкого предупреждения журнал
-      # и уведомление утверждали бы stuck, а метки не было бы, и
-      # следующий прогон взял бы issue заново.
-      echo "adk-ralph: не удалось пометить issue #$issue_num меткой needs-human:" >&2
-      cat "$work_dir/gh-issue-edit.err" >&2
-    fi
-    "$notifier" "Ralph" "issue #$issue_num застрял: $reason" || true
-    # Счётчики — до записи в журнал, той же логикой, что у "ready" выше:
-    # needs-human уже поставлена и уведомление уже отправлено, но сводка
-    # прогона — второй канал, которому тоже нельзя молчать об этом issue,
-    # если запись в журнал ниже откажет (issue #135, круг 1 ревью PR #191).
-    stuck=$(csv_add "$stuck" "$issue_num")
-    stuck_count=$((stuck_count + 1))
-    stuck_summary="$stuck_summary #$issue_num ($reason)"
-    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" $task_extra; then
-      journal_break
+    # Общий stuck-путь (mark_stuck): needs-human, уведомление, счётчики до
+    # журнала, event=task result=stuck, breaker. Срабатывание breaker'а
+    # откладывается до общей точки ниже (после return_to_default_branch,
+    # рядом с actualization_breaker_tripped) — claude -p уже отработал на
+    # ветке задачи, дерево обязано вернуться на default branch прежде, чем
+    # цикл остановится.
+    if ! mark_stuck "$issue_num" "$issue_type" "$reason"; then
       # На грязном дереве после прерывания по бюджету задачи (ADR-017 §4)
       # инвариант «не трогать дерево» действует и здесь — отказ записи
       # журнала не повод его нарушить (осталось с круга 3 ревью PR #193).
@@ -1613,17 +1620,6 @@ except Exception:
         return_to_default_branch || true
       fi
       break
-    fi
-    # Breaker уровня прогона — накопленные застревания (issue #134,
-    # ADR-016 §1). Проверяется сразу после инкремента stuck_count выше
-    # (не в ready-ветке), поэтому порог 0/1 не может сработать до первого
-    # реального застревания этого прогона. Само срабатывание откладывается
-    # до общей точки ниже (после return_to_default_branch, рядом с
-    # actualization_breaker_tripped) — claude -p уже отработал на ветке
-    # задачи, дерево обязано вернуться на default branch прежде, чем цикл
-    # остановится.
-    if run_breaker_check_stuck; then
-      run_breaker_reason="breaker: застревания за прогон"
     fi
   fi
 
