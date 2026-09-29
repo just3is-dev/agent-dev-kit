@@ -1047,8 +1047,12 @@ run_main_gates() {
 # (включая эффективные бюджеты size:large в цикле):
 clamp_budget_seconds=1000000000       # 10**9 с (~31 год): защита 64-битной $(( ))
 clamp_budget_tokens=1000000000000000  # 10**15: потолок писателя журнала (ADR-001)
+clamp_stuck_threshold=1000000000000000000  # 10**18 (< 2**63-1): порог stuck
+                                      # сравнивает bash ([ -ge ]) — большее
+                                      # целое ломало бы его (круг 1 PR #227)
 # config_number <путь> <дефолт> <режим> — печатает валидированное число.
-# Режимы: nonneg_int (целое >= 0), nonneg_float (конечное число >= 0),
+# Режимы: nonneg_int (целое >= 0, кламп clamp_stuck_threshold),
+# nonneg_float (конечное число >= 0),
 # positive_minutes (конечное число минут > 0 — печатает целые СЕКУНДЫ с
 # клампом [1, clamp_budget_seconds]), positive_tokens (целое > 0, кламп
 # clamp_budget_tokens), multiplier_ge1 (конечное число >= 1: меньший
@@ -1060,7 +1064,7 @@ config_number() {
   raw=$(adk_config_get "$path" "$default")
   python3 -c '
 import math, sys
-path, raw, default, mode, clamp_s, clamp_t = sys.argv[1:7]
+path, raw, default, mode, clamp_s, clamp_t, clamp_i = sys.argv[1:8]
 DESCRIPTION = {
     "nonneg_int": "не целое неотрицательное число",
     "nonneg_float": "не число",
@@ -1073,11 +1077,10 @@ def parse(text):
         value = int(text)
         if value < 0:
             raise ValueError
-        # кламп до 10**18 (< 2**63-1): сравнение порога делает bash
-        # ([ -ge ]), большее целое ломало бы его «integer expression
-        # expected» с rc=2 (блокер круга 1 ревью PR #227); счётчики
-        # прогона до таких значений не дорастают — наблюдаемо эквивалентно
-        return min(value, 10**18)
+        # сравнение порога делает bash ([ -ge ]) — целое больше 2**63-1
+        # ломало бы его «integer expression expected» с rc=2 (блокер
+        # круга 1 ревью PR #227); счётчики прогона до клампа не дорастают
+        return min(value, int(clamp_i))
     if mode == "positive_tokens":
         value = int(text)
         if value <= 0:
@@ -1107,7 +1110,8 @@ except (TypeError, ValueError, OverflowError):
     )
     result = parse(default)
 print(result)
-' "$path" "$raw" "$default" "$mode" "$clamp_budget_seconds" "$clamp_budget_tokens"
+' "$path" "$raw" "$default" "$mode" "$clamp_budget_seconds" "$clamp_budget_tokens" \
+  "$clamp_stuck_threshold"
 }
 
 # parse_claude_tokens <файл stdout claude -p --output-format json> — сумма

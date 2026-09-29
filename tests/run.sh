@@ -7565,7 +7565,7 @@ assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md �
 # дефолтов держат пины пар «путь + дефолт» выше, здесь — стражи самой
 # конструкции
 assert_contains "AC-8: fallback любого атрибута — парсинг дефолта из вызова (issue #210: дубль констант устранён)" "$ralph_src" '    result = parse(default)'
-assert_contains "AC-8: потолок токеновых бюджетов — 10**15, единственный источник (код)" "$ralph_src" 'clamp_budget_tokens=1000000000000000'
+assert_contains "issue #210: потолок токеновых бюджетов — 10**15, единственный источник (код)" "$ralph_src" 'clamp_budget_tokens=1000000000000000'
 assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (код)" "$ralph_src" 'run_breaker_min_denominator=4'
 assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (docs/config.md)" "$config_doc" 'минимум 4'
 
