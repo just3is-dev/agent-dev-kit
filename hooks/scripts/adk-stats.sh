@@ -8,9 +8,10 @@
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
 # агрегатов. Расход прогонов — отдельный раздел по autopilot-*.jsonl
 # (issue #136, поля — ADR-001 «Расширения схемы»; описание раздела —
-# commands/stats.md); без записей расхода раздел не печатается. Битые строки (невалидный JSON, JSON не-объект, оборванная
-# multibyte UTF-8 последовательность) пропускаются с предупреждением в
-# stderr, не роняют скрипт.
+# commands/stats.md); без записей расхода раздел не печатается.
+# Битые строки (невалидный JSON, JSON не-объект, оборванная multibyte
+# UTF-8 последовательность) пропускаются с предупреждением в stderr,
+# не роняют скрипт.
 set -u
 
 . "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
@@ -64,20 +65,13 @@ for path in sys.argv[2:]:
                 continue
             dur = ev.get("duration")
             tok = ev.get("tokens")
-            if isinstance(dur, str) and dur.endswith("s"):
-                try:
-                    sec = int(dur[:-1])
-                    if sec >= 0:
-                        durations_min.append(sec / 60)
-                except ValueError:
-                    pass
-            if tok is not None:
-                try:
-                    tok_n = int(tok)
-                    if tok_n >= 0:
-                        tokens.append(tok_n)
-                except (TypeError, ValueError):
-                    pass
+            # adk-log пишет оба поля строками ("60s", "3500") — читаем
+            # ровно эту форму: строка цифр. Всё остальное (bool, float,
+            # "1_000", отрицательные, мусор) — не расход, отбрасывается.
+            if isinstance(dur, str) and dur.endswith("s") and dur[:-1].isdigit():
+                durations_min.append(int(dur[:-1]) / 60)
+            if isinstance(tok, str) and tok.isdigit():
+                tokens.append(int(tok))
 
 def p90(vals):
     # nearest-rank: элемент на позиции ceil(0.9 * n)
@@ -89,10 +83,10 @@ if not durations_min and not tokens:
         print("Расход в записях прогонов не записан (полей duration/tokens нет).")
     sys.exit(0)
 
-# n у каждой строки своё: выборки различаются законно (tokens не пишется
-# у прерванных по бюджету времени задач — ADR-001), общий счётчик в
-# заголовке врал бы про обе (круг 1 ревью PR #199). Токены — целые без
-# экспоненты: с ~1e6 формат :g терял точность калибровочной метрики.
+# n у каждой метрики своё: выборки законно различаются (tokens не
+# пишется у прерванных по бюджету времени задач — ADR-001), общий
+# счётчик вводил бы в заблуждение. Токены — целые: экспонента теряла бы
+# точность калибровочной метрики.
 print("Расход задач прогонов (autopilot-*.jsonl):")
 if durations_min:
     print(
