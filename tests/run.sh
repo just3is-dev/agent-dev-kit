@@ -7445,13 +7445,29 @@ assert_contains "AC-8: дефолт sizeLargeMultiplier в docs/config.md — 2"
 assert_contains "AC-8: дефолт breaker.maxStuckPerRun в коде — 2" "$ralph_src" '"policies.autopilot.breaker.maxStuckPerRun" "2"'
 assert_contains "AC-8: дефолт breaker.maxStuckPerRun в docs/config.md — 2" "$config_doc" '| `policies.autopilot.breaker.maxStuckPerRun` | число (целое ≥0) | `2` |'
 assert_contains "AC-8: дефолт breaker.maxSkippedShare в коде — 0.5" "$ralph_src" '"policies.autopilot.breaker.maxSkippedShare" "0.5"'
-assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md — 0.5" "$config_doc" '`0.5` |'
+assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md — 0.5" "$config_doc" '| `policies.autopilot.breaker.maxSkippedShare` | число ≥0 (доля `skipped/(ready+merged+stuck+skipped)` не превышает 1, поэтому порог >1 фактически выключает breaker) | `0.5` |'
+# fallback-дефолты при невалидном значении и минимальный знаменатель доли —
+# тот же контракт «дефолт из таблицы», но зашитый в другие места кода:
+# расхождение с таблицей не поймала бы сверка основных дефолтов выше
+assert_contains "AC-8: fallback maxStuckPerRun при невалидном значении — 2 (код)" "$ralph_src" '    threshold = 2'
+assert_contains "AC-8: fallback maxSkippedShare при невалидном значении — 0.5 (код)" "$ralph_src" '    threshold = 0.5'
+assert_contains "AC-8: fallback sizeLargeMultiplier при невалидном значении — 2 (код: оба дефолта строки — adk_config_get и python-fallback)" "$ralph_src" '"$(adk_config_get "policies.autopilot.budget.sizeLargeMultiplier" "2")" "2")'
+assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (код)" "$ralph_src" 'run_breaker_min_denominator=4'
+assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (docs/config.md)" "$config_doc" 'минимум 4'
 
 # docs/config.md несёт абзац переходного состояния спеки
 assert_contains "AC-8: docs/config.md описывает переходное состояние — первые прогоны на консервативных дефолтах, ранний стоп — принятое направление отказа" \
   "$config_doc" "ранний стоп"
 assert_contains "AC-8: docs/config.md называет калибровку по /stats" \
-  "$config_doc" "калибруются по `/stats`"
+  "$config_doc" 'калибруются по `/stats`'
+# сырая вёрстка, не tr-склейка: GFM считает таблицу законченной только на
+# пустой строке — абзац, приклеенный к последней строке таблицы, рендерится
+# её продолжением и в вебе не виден как текст (блокер круга 1 PR #205)
+awk 'prev ~ /^$/ && /^Переходное состояние вехи SPEC-003/ {found=1} {prev=$0} END {exit !found}' "$KIT/docs/config.md"
+assert_exit "AC-8: абзац переходного состояния отделён от таблицы пустой строкой (GFM не съест его строками таблицы)" 0 $?
+para_starts=$(grep -c '^Переходное состояние вехи SPEC-003' "$KIT/docs/config.md") || true
+[ "$para_starts" = "1" ]
+assert_exit "AC-8: абзац переходного состояния начинается с колонки 0 ровно один раз (para_starts=$para_starts)" 0 $?
 
 # интерактивный /autopilot не меняется вехой: не читает budget/breaker,
 # хранит собственный предохранитель
@@ -7489,7 +7505,7 @@ case "$1 $2" in
   "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
   "label create") exit 0 ;;
   "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-991-x"; exit 0 ;;
+  "pr view") echo "MERGEABLE null issue-${3#9}-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
   *) echo "unexpected gh call: $*" >&2; exit 1 ;;
 esac
@@ -7506,6 +7522,9 @@ printf '{"type":"result","usage":{"input_tokens":100,"output_tokens":50,"cache_c
 exit 0
 EOF
 chmod +x "$RBIN_NC/claude"
+# ADK_CONFIG_FILE указывает на заведомо несуществующий файл: adk_config_get
+# трактует отсутствие файла как «конфига нет» (это и проверяем), а явное
+# переопределение защищает фикстуру от конфига из окружения разработчика
 ralph_nc_out=$(cd "$RALPH_NC" && PATH="$RBIN_NC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NC" \
   ADK_LOGS_DIR="$TMP/ralph-noconfig-logs" ADK_CONFIG_FILE="$TMP/ralph-noconfig-absent.json" \
   ADK_NOTIFY_FILE="$TMP/ralph-noconfig-notify.log" \
@@ -7517,9 +7536,11 @@ assert_not_contains "AC-8: adk-ralph: (issue #138) без конфига нет 
 ralph_nc_log=$(cat "$TMP/ralph-noconfig-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
 assert_contains "AC-8: adk-ralph: (issue #138) без конфига обе задачи доиграны — исход записан и по второй" \
   "$ralph_nc_log" '"issue": "992"'
-nc_merge_calls=$(cat "$RBIN_NC/pr-merge-calls.log" 2>/dev/null | grep -c "pr merge")
-assert_exit "AC-8: adk-ralph: (issue #138) дефолтная политика agent-after-approve с canMerge=true мержит ready-PR (оба)" \
-  2 "$nc_merge_calls"
+nc_merge_log=$(cat "$RBIN_NC/pr-merge-calls.log" 2>/dev/null)
+assert_contains "AC-8: adk-ralph: (issue #138) дефолтная политика agent-after-approve с canMerge=true мержит PR первой задачи (9991)" \
+  "$nc_merge_log" "pr merge 9991"
+assert_contains "AC-8: adk-ralph: (issue #138) дефолтная политика мержит и PR второй задачи (9992)" \
+  "$nc_merge_log" "pr merge 9992"
 assert_contains "AC-8: adk-ralph: (issue #138) прогон без конфига дошёл до пустой очереди" \
   "$ralph_nc_out" "очередь пуста"
 
@@ -7542,6 +7563,9 @@ assert_not_contains "AC-8: adk-ralph: (issue #138) отсутствие блок
   "$ralph_nb_out" "использован дефолт"
 assert_contains "AC-8: adk-ralph: (issue #138) прогон с конфигом без блоков дошёл до пустой очереди" \
   "$ralph_nb_out" "очередь пуста"
+ralph_nb_log=$(cat "$TMP/ralph-noblocks-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+assert_contains "AC-8: adk-ralph: (issue #138) без блоков обе задачи доиграны до ready (canMerge=false — merge не для агента)" \
+  "$ralph_nb_log" '"ready": "2"'
 
 # ── issue #131, ADR-017 §1 (важное №3 круга 4 ревью PR #193): обработчик
 # сигнала самому ralph (`ralph_signal_cleanup`, INT/TERM) писал
