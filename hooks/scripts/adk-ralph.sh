@@ -244,23 +244,9 @@ run_breaker_reason=""
 # конфига — предупреждение в stderr и дефолт 2 (та же дисциплина, что и
 # остальной разбор конфига в этом скрипте).
 run_breaker_check_stuck() {
-  local raw
-  raw=$(adk_config_get "policies.autopilot.breaker.maxStuckPerRun" "2")
-  python3 -c '
-import sys
-raw, stuck = sys.argv[1], int(sys.argv[2])
-try:
-    threshold = int(raw)
-    if threshold < 0:
-        raise ValueError
-except (TypeError, ValueError):
-    sys.stderr.write(
-        "adk-ralph: policies.autopilot.breaker.maxStuckPerRun=%r — не целое"
-        " неотрицательное число, использован дефолт 2\n" % (raw,)
-    )
-    threshold = 2
-sys.exit(0 if stuck >= threshold else 1)
-' "$raw" "$stuck_count"
+  local threshold
+  threshold=$(config_number "policies.autopilot.breaker.maxStuckPerRun" "2" nonneg_int)
+  [ "$stuck_count" -ge "$threshold" ]
 }
 
 # run_breaker_check_skipped_share — true (exit 0), когда доля пропущенных
@@ -279,31 +265,15 @@ sys.exit(0 if stuck >= threshold else 1)
 # знаменателя и на исходе ready/merged/stuck обычной задачи, не только на
 # пропуске (ADR-016 §2-3).
 run_breaker_check_skipped_share() {
-  local raw total
-  raw=$(adk_config_get "policies.autopilot.breaker.maxSkippedShare" "0.5")
+  local threshold total
+  threshold=$(config_number "policies.autopilot.breaker.maxSkippedShare" "0.5" nonneg_float)
   total=$((ready_count + merged_count + stuck_count + skipped_count))
+  [ "$total" -ge "$run_breaker_min_denominator" ] || return 1
   python3 -c '
-import math, sys
-raw, skipped, total, min_denominator = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-try:
-    threshold = float(raw)
-    # not isfinite: float("nan") проходит проверку знака (nan < 0 даёт
-    # False), а share > nan всегда False — breaker молча выключался без
-    # предупреждения (issue #213, тот же класс, что isfinite бюджетов в
-    # PR #193); inf сюда же — «порог» обязан быть конечным числом
-    if threshold < 0 or not math.isfinite(threshold):
-        raise ValueError
-except (TypeError, ValueError):
-    sys.stderr.write(
-        "adk-ralph: policies.autopilot.breaker.maxSkippedShare=%r — не число,"
-        " использован дефолт 0.5\n" % (raw,)
-    )
-    threshold = 0.5
-if total < min_denominator:
-    sys.exit(1)
-share = skipped / total
-sys.exit(0 if share > threshold else 1)
-' "$raw" "$skipped_count" "$total" "$run_breaker_min_denominator"
+import sys
+skipped, total, threshold = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
+sys.exit(0 if skipped / total > threshold else 1)
+' "$skipped_count" "$total" "$threshold"
 }
 
 journal_break() { # journal_break — общая точка остановки на отказе
@@ -1053,65 +1023,96 @@ run_main_gates() {
   return 0
 }
 
-# ── Бюджеты времени (issue #131, SPEC-003 «Жёсткие бюджеты», временная
-# половина AC-3; ADR-017) — в отличие от breaker'ов выше, это не реакция на
-# содержимое очереди issues, а безусловный потолок длительности: одной
-# задачи (task_budget_seconds) и прогона целиком (run_budget_seconds).
-# adk_budget_seconds <путь> <дефолт-минуты> — печатает валидированный бюджет
-# в целых секундах ($SECONDS — bash-таймер целых секунд, секунды здесь
-# внутреннее удобство измерения, конфиг остаётся в минутах, докс —
-# docs/config.md). Ноль, отрицательное, нечисловое, "nan" и "inf" — одна и та
-# же дисциплина (предупреждение в stderr, использован дефолт): "nan"/"inf" не
-# ловятся сравнением `<= 0` (сравнение с nan всегда false, inf > 0), поэтому
-# нужна явная проверка на конечность — `round()`/`int()` ниже сами тоже внутри
-# try/except (ValueError/OverflowError, см. комментарий у `seconds =` ниже),
-# но без этой проверки nan/inf добрались бы туда без явного предупреждения о
-# причине (не число минут vs переполнение при умножении) в одной и той же
-# ветке except, что против ADR-017 §3 (круг 1 ревью PR #193).
-# Ноль/отрицательное — не «без лимита»: бюджеты спеки жёсткие, спека не
-# описывает способа их отключить. Верхняя граница `10**9` секунд (~31 год) —
-# защита от абсурдно большого, но конечного значения, которое не влезло бы в
-# 64-битную арифметику `$(( ))` ниже по коду.
-adk_budget_seconds() {
-  local path="$1" default_minutes="$2" raw
-  raw=$(adk_config_get "$path" "$default_minutes")
+# ── Бюджеты (issues #131/#132, SPEC-003 «Жёсткие бюджеты», AC-3; ADR-017) —
+# в отличие от breaker'ов выше, это не реакция на содержимое очереди issues,
+# а безусловные потолки: длительности и расхода токенов одной задачи и
+# прогона целиком. Конфиг времени — в минутах, внутри скрипт считает целые
+# секунды ($SECONDS — bash-таймер целых секунд); докс — docs/config.md.
+#
+# Вся валидация числовых атрибутов конфига — одна функция config_number
+# (issue #210, до неё пять разнородных python-вставок с неполным набором
+# проверок): isfinite против nan/inf (сравнение с nan всегда false — порог
+# молча выключался бы, issue #213; тот же класс у бюджетов — круг 1 ревью
+# PR #193), OverflowError против конечных, но переполняющих арифметику
+# значений ("1e307"/"1e308" проходят isfinite, а minutes * 60 как float
+# переполняется в inf ДО клампа — int(round(inf)) кидает OverflowError;
+# без перехвата python падал бы трейсом, stdout пуст, [ … -ge "" ] молча
+# всегда false — бюджет фактически отключён, круг 2 ревью PR #193), клампы
+# и единый формат предупреждения. Невалидное значение — предупреждение в
+# stderr и дефолт: бюджеты жёсткие по спеке, «без лимита» ими не
+# выражается, ноль/отрицательное — не «выключить». Fallback — тот же парсер
+# на строке дефолта из вызова: дублирующихся констант дефолтов больше нет,
+# расхождение fallback'а с таблицей доки невозможно по построению.
+# Верхние потолки — единственный источник для всех потребителей ниже
+# (включая эффективные бюджеты size:large в цикле):
+clamp_budget_seconds=1000000000       # 10**9 с (~31 год): защита 64-битной $(( ))
+clamp_budget_tokens=1000000000000000  # 10**15: потолок писателя журнала (ADR-001)
+# config_number <путь> <дефолт> <режим> — печатает валидированное число.
+# Режимы: nonneg_int (целое >= 0), nonneg_float (конечное число >= 0),
+# positive_minutes (конечное число минут > 0 — печатает целые СЕКУНДЫ с
+# клампом [1, clamp_budget_seconds]), positive_tokens (целое > 0, кламп
+# clamp_budget_tokens), multiplier_ge1 (конечное число >= 1: меньший
+# множитель дал бы крупной задаче бюджет меньше типовой). Имя без
+# adk_-префикса: функция локальна для ralph, префикс — конвенция экспорта
+# из hooks/scripts/lib/*.sh (ADR-002).
+config_number() {
+  local path="$1" default="$2" mode="$3" raw
+  raw=$(adk_config_get "$path" "$default")
   python3 -c '
-import math
-import sys
-path, raw, default_minutes = sys.argv[1:4]
-try:
-    minutes = float(raw)
-    if not math.isfinite(minutes) or minutes <= 0:
+import math, sys
+path, raw, default, mode, clamp_s, clamp_t = sys.argv[1:7]
+DESCRIPTION = {
+    "nonneg_int": "не целое неотрицательное число",
+    "nonneg_float": "не число",
+    "positive_minutes": "не положительное число минут",
+    "positive_tokens": "не положительное целое токенов",
+    "multiplier_ge1": "не число >= 1",
+}[mode]
+def parse(text):
+    if mode == "nonneg_int":
+        value = int(text)
+        if value < 0:
+            raise ValueError
+        return value
+    if mode == "positive_tokens":
+        value = int(text)
+        if value <= 0:
+            raise ValueError
+        return min(value, int(clamp_t))
+    value = float(text)
+    if not math.isfinite(value):
         raise ValueError
-    # round()/int() внутри try — не только валидация значения (issue #131,
-    # круг 2 ревью PR #193): "1e307"/"1e308" конечны и положительны, проходят
-    # проверку isfinite/<=0 выше, но `minutes * 60` как float переполняется в
-    # inf ДО клампа `min(seconds, 10**9)` ниже — `int(round(inf))` кидает
-    # необработанный OverflowError, python падает трейсом, stdout пуст,
-    # `[ … -ge "" ]` в цикле молча всегда false — бюджет фактически
-    # отключается, тот же класс бага, что уже чинили для nan/inf. Считать
-    # секунды внутри try и ловить OverflowError здесь же — не отдельной
-    # проверкой до умножения — так одна и та же строка предупреждения
-    # покрывает оба случая (не число vs переполнение).
-    seconds = max(1, int(round(minutes * 60)))
+    if mode == "positive_minutes":
+        if value <= 0:
+            raise ValueError
+        return min(max(1, int(round(value * 60))), int(clamp_s))
+    if mode == "multiplier_ge1":
+        if value < 1:
+            raise ValueError
+        return value
+    # nonneg_float
+    if value < 0:
+        raise ValueError
+    return value
+try:
+    result = parse(raw)
 except (TypeError, ValueError, OverflowError):
     sys.stderr.write(
-        "adk-ralph: %s=%r — не положительное число минут, использован дефолт %s\n"
-        % (path, raw, default_minutes)
+        "adk-ralph: %s=%r — %s, использован дефолт %s\n"
+        % (path, raw, DESCRIPTION, default)
     )
-    minutes = float(default_minutes)
-    seconds = max(1, int(round(minutes * 60)))
-print(min(seconds, 10**9))
-' "$path" "$raw" "$default_minutes"
+    result = parse(default)
+print(result)
+' "$path" "$raw" "$default" "$mode" "$clamp_budget_seconds" "$clamp_budget_tokens"
 }
 
-# adk_parse_tokens <файл stdout claude -p --output-format json> — сумма
+# parse_claude_tokens <файл stdout claude -p --output-format json> — сумма
 # input + output + cache_creation, БЕЗ cache_read (issue #132, состав —
 # ADR-001 «Расширения схемы»: cache_read на порядок больше и отражает
 # кэш-политику, не объём работы). Нет файла / не JSON / нет usage —
 # ненулевой exit: поле tokens не пишется, токеновый бюджет задачи не
 # энфорсится, прогон продолжается (переходное состояние спеки).
-adk_parse_tokens() {
+parse_claude_tokens() {
   python3 -c '
 import json, sys
 try:
@@ -1126,59 +1127,19 @@ print(total)
 ' "$1"
 }
 
-# adk_budget_tokens <путь> <дефолт> — валидированный токеновый бюджет
-# (issue #132): положительное целое; иначе предупреждение в stderr и
-# дефолт — та же дисциплина, что adk_budget_seconds выше: бюджеты жёсткие
-# по спеке, «без лимита» ими не выражается. Дефолты — ставка (фактики по
-# токенам до этой задачи не существовало), калибруются по /stats.
-adk_budget_tokens() {
-  local path="$1" default_tokens="$2" raw
-  raw=$(adk_config_get "$path" "$default_tokens")
-  python3 -c '
-import sys
-path, raw, default_tokens = sys.argv[1:4]
-try:
-    tokens = int(raw)
-    if tokens <= 0:
-        raise ValueError
-except (TypeError, ValueError):
-    sys.stderr.write(
-        "adk-ralph: %s=%r — не положительное целое токенов, использован дефолт %s\n"
-        % (path, raw, default_tokens)
-    )
-    tokens = int(default_tokens)
-print(min(tokens, 10**15))
-' "$path" "$raw" "$default_tokens"
-}
-
-task_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.task.maxMinutes" "45")
-run_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.run.maxMinutes" "240")
+task_budget_seconds=$(config_number "policies.autopilot.budget.task.maxMinutes" "45" positive_minutes)
+run_budget_seconds=$(config_number "policies.autopilot.budget.run.maxMinutes" "240" positive_minutes)
 # Снимок $SECONDS перед стартом цикла — элапсед прогона везде далее считается
 # относительно этой точки, не относительно старта самого интерпретатора bash.
 run_start_seconds=$SECONDS
-task_token_budget=$(adk_budget_tokens "policies.autopilot.budget.task.maxTokens" "300000")
+task_token_budget=$(config_number "policies.autopilot.budget.task.maxTokens" "300000" positive_tokens)
 # Множитель бюджетов задач с label size:large (issue #133, SPEC-003 AC-4):
 # планировщик отличает крупное от типового, но плохо угадывает цифры —
-# категория вместо числа. Валидация — та же дисциплина, что у бюджетов:
-# число >= 1 (меньший множитель дал бы крупной задаче бюджет меньше
-# типовой — противоречие смыслу атрибута), иначе предупреждение и дефолт 2.
-size_multiplier=$(python3 -c '
-import math, sys
-path, raw, default = sys.argv[1:4]
-try:
-    m = float(raw)
-    if not math.isfinite(m) or m < 1:
-        raise ValueError
-except (TypeError, ValueError):
-    sys.stderr.write(
-        "adk-ralph: %s=%r — не число >= 1, использован дефолт %s\n"
-        % (path, raw, default)
-    )
-    m = float(default)
-print(m)
-' "policies.autopilot.budget.sizeLargeMultiplier" \
-  "$(adk_config_get "policies.autopilot.budget.sizeLargeMultiplier" "2")" "2")
-run_token_budget=$(adk_budget_tokens "policies.autopilot.budget.run.maxTokens" "2000000")
+# категория вместо числа. Валидация — общий config_number (число >= 1:
+# меньший множитель дал бы крупной задаче бюджет меньше типовой —
+# противоречие смыслу атрибута), иначе предупреждение и дефолт 2.
+size_multiplier=$(config_number "policies.autopilot.budget.sizeLargeMultiplier" "2" multiplier_ge1)
+run_token_budget=$(config_number "policies.autopilot.budget.run.maxTokens" "2000000" positive_tokens)
 run_tokens_used=0  # сумма расхода прогона (issue #132) — токеновая половина
                    # бюджета прогона и поле tokens= в event=run_end
 
@@ -1335,21 +1296,22 @@ while [ "$exit_code" -eq 0 ]; do
   effective_task_token_budget="$task_token_budget"
   if [ "${issue_sized:-}" = "large" ]; then
     # Один вызов на оба значения; умножение внутри try с OverflowError и
-    # клампами теми же порогами, что у базовых хелперов (10**9 сек /
-    # 10**15 токенов) — иначе валидный по isfinite множитель вида 1e308
-    # давал бы пустой stdout и молча выключенные бюджеты: тот же класс,
-    # что чинился в adk_budget_seconds (issue #131, круг 2 ревью PR #193;
+    # клампами из единого источника (clamp_budget_seconds/clamp_budget_tokens
+    # у config_number, issue #210) — иначе валидный по isfinite множитель
+    # вида 1e308 давал бы пустой stdout и молча выключенные бюджеты: тот же
+    # класс, что чинился для бюджетов (issue #131, круг 2 ревью PR #193;
     # здесь — круг 1 ревью PR #198).
     effective_budgets=$(python3 -c '
 import sys
-sec, tok, m = sys.argv[1:4]
+sec, tok, m, clamp_s, clamp_t = sys.argv[1:6]
 try:
-    esec = min(max(1, int(round(float(sec) * float(m)))), 10**9)
-    etok = min(max(1, int(round(float(tok) * float(m)))), 10**15)
+    esec = min(max(1, int(round(float(sec) * float(m)))), int(clamp_s))
+    etok = min(max(1, int(round(float(tok) * float(m)))), int(clamp_t))
 except OverflowError:
-    esec, etok = 10**9, 10**15
+    esec, etok = int(clamp_s), int(clamp_t)
 print(esec, etok)
-' "$task_budget_seconds" "$task_token_budget" "$size_multiplier")
+' "$task_budget_seconds" "$task_token_budget" "$size_multiplier" \
+  "$clamp_budget_seconds" "$clamp_budget_tokens")
     effective_task_budget_seconds="${effective_budgets%% *}"
     effective_task_token_budget="${effective_budgets##* }"
   fi
@@ -1542,7 +1504,7 @@ except Exception:
       # Снятие usage (issue #132) — только после сам-завершившегося
       # процесса: после kill по бюджету времени файл может быть пустым или
       # оборванным, там расход не читается (минуты пишутся, токены нет).
-      if task_tokens=$(adk_parse_tokens "$work_dir/claude-out.json"); then
+      if task_tokens=$(parse_claude_tokens "$work_dir/claude-out.json"); then
         run_tokens_used=$((run_tokens_used + task_tokens))
       else
         task_tokens=""

@@ -7530,12 +7530,14 @@ assert_contains "AC-8: дефолт breaker.maxStuckPerRun в коде — 2" "$
 assert_contains "AC-8: дефолт breaker.maxStuckPerRun в docs/config.md — 2" "$config_doc" '| `policies.autopilot.breaker.maxStuckPerRun` | число (целое ≥0) | `2` |'
 assert_contains "AC-8: дефолт breaker.maxSkippedShare в коде — 0.5" "$ralph_src" '"policies.autopilot.breaker.maxSkippedShare" "0.5"'
 assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md — 0.5" "$config_doc" '| `policies.autopilot.breaker.maxSkippedShare` | конечное число ≥0 (доля `skipped/(ready+merged+stuck+skipped)` не превышает 1, поэтому порог >1 фактически выключает breaker) | `0.5` |'
-# fallback-дефолты при невалидном значении и минимальный знаменатель доли —
-# тот же контракт «дефолт из таблицы», но зашитый в другие места кода:
-# расхождение с таблицей не поймала бы сверка основных дефолтов выше
-assert_contains "AC-8: fallback maxStuckPerRun при невалидном значении — 2 (код)" "$ralph_src" '    threshold = 2'
-assert_contains "AC-8: fallback maxSkippedShare при невалидном значении — 0.5 (код)" "$ralph_src" '    threshold = 0.5'
-assert_contains "AC-8: fallback sizeLargeMultiplier при невалидном значении — 2 (код: оба дефолта строки — adk_config_get и python-fallback)" "$ralph_src" '"$(adk_config_get "policies.autopilot.budget.sizeLargeMultiplier" "2")" "2")'
+# fallback-дефолты: после консолидации #210 дублирующихся констант в коде
+# нет — при невалидном значении общий валидатор парсит ту же строку
+# дефолта, что передана вызовом (result = parse(default)), поэтому
+# расхождение fallback'а с таблицей доки невозможно по построению; сверку
+# дефолтов держат пины пар «путь + дефолт» выше, здесь — стражи самой
+# конструкции
+assert_contains "AC-8: fallback любого атрибута — парсинг дефолта из вызова (issue #210: дубль констант устранён)" "$ralph_src" '    result = parse(default)'
+assert_contains "AC-8: дефолт sizeLargeMultiplier в вызове валидатора — 2" "$ralph_src" '"policies.autopilot.budget.sizeLargeMultiplier" "2" multiplier_ge1'
 assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (код)" "$ralph_src" 'run_breaker_min_denominator=4'
 assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (docs/config.md)" "$config_doc" 'минимум 4'
 
