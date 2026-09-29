@@ -7243,10 +7243,62 @@ ralph_sz0_valid=$(jsonl_check "$ralph_sz0_log" 4 "$ralph_sz0_spec")
 assert_exit "AC-4: adk-ralph: (issue #133) журнал — дефолтный множитель зажат коридором: #984 ready (1500<2000), #986 stuck (2500>2000)" \
   1 "$ralph_sz0_valid"
 
+# регрессионный страж клампа (круг 2 ревью PR #198): множитель 1e308 —
+# эффективный бюджет становится клампом 10**15, а не пустой строкой;
+# расход 2e18 больше клампа → stuck. При откате фикса OverflowError
+# бюджет был бы пуст, сравнение в bash — всегда false, задача прошла бы
+# ready — тест это ловит (расход 2e18 заодно исчерпывает бюджет прогона —
+# его кламп тот же 10**15, поэтому прогон завершается его причиной, exit 1;
+# ключевое отличие от отката — result=stuck самой задачи, при пустом
+# бюджете она была бы ready).
+RALPH_SZC="$TMP/ralph-sizedclamp-proj"
+RBIN_SZC="$TMP/ralph-sizedclamp-bin"
+mkdir -p "$RALPH_SZC" "$RBIN_SZC"
+(cd "$RALPH_SZC" && git_c init -q -b main)
+cat > "$RBIN_SZC/issues-fixture.json" <<'EOF'
+[
+  {"number": 987, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SZC/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_SZC" "$RBIN_SZC/issues-fixture.json" "$RBIN_SZC/prs-fixture.json"
+claude_stub_guard "$RBIN_SZC"
+cat >> "$RBIN_SZC/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9987, "isDraft": false, "headRefName": "issue-987-x"}]
+PRJSON
+printf '{"type":"result","usage":{"input_tokens":2000000000000000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}\n'
+exit 0
+EOF
+chmod +x "$RBIN_SZC/claude"
+RALPH_SZC_CFG="$TMP/ralph-sizedclamp-config.json"
+cat > "$RALPH_SZC_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 1e308, "task": {"maxTokens": 1000}}}}}
+EOF
+RALPH_SZC_LOGS="$TMP/ralph-sizedclamp-logs"
+ralph_szc_out=$(cd "$RALPH_SZC" && PATH="$RBIN_SZC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZC" \
+  ADK_LOGS_DIR="$RALPH_SZC_LOGS" ADK_CONFIG_FILE="$RALPH_SZC_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-sizedclamp-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-4: adk-ralph: (issue #133, круг 2) множитель 1e308 — расход учтён и в бюджете прогона (остановка, exit 1)" 1 $?
+assert_contains "AC-4: adk-ralph: (issue #133, круг 2) расход выше клампа 10**15 застревает — бюджет не выключен переполнением" \
+  "$ralph_szc_out" "превысил бюджет задачи (1000000000000000)"
+ralph_szc_log="$RALPH_SZC_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_szc_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=987|result=stuck|reason=бюджет задачи по токенам' \
+  'event=run_end|reason=бюджет прогона по токенам')
+ralph_szc_valid=$(jsonl_check "$ralph_szc_log" 3 "$ralph_szc_spec")
+assert_exit "AC-4: adk-ralph: (issue #133, круг 2) журнал — #987 stuck по токенам при клампе" \
+  1 "$ralph_szc_valid"
+
 # документация: config.md, планировщик ставит label (plan.md + skills/decompose)
 sz_config_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
 assert_contains "AC-4: docs/config.md документирует дефолт policies.autopilot.budget.sizeLargeMultiplier = 2" \
-  "$sz_config_doc" '| `policies.autopilot.budget.sizeLargeMultiplier` | число (положительное) | `2` |'
+  "$sz_config_doc" '| `policies.autopilot.budget.sizeLargeMultiplier` | число (>= 1) | `2` |'
 check_ac_doc AC-4 "commands/plan.md: планировщик помечает заметно крупные задачи label size:large" \
   "$KIT/commands/plan.md" "size:large"
 check_ac_doc AC-4 "skills/decompose: правило label size:large для заметно более крупной задачи" \
