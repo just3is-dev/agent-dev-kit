@@ -15,7 +15,7 @@
 # AC-2, приоритет при коллизии причин остановки — ADR-018. Расход задач
 # (duration/tokens в event=task, usage из --output-format json, состав
 # счётчика и токеновые бюджеты задачи/прогона) — issue #132, ADR-001
-# «Расширения схемы». Merge ready-PR
+# «Расширения схемы»; множитель бюджетов size:large — issue #133. Merge ready-PR
 # по policies.merge/canMerge — issue #129, ADR-019: fail-closed на
 # неизвестное значение конфига (никогда не мержит), human-only/
 # human-review-required-без-approve — «ждут человека» (result=ready, как
@@ -371,7 +371,8 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # select_next — один проход: печатает 0+ строк "SKIP <N> <type>" (каскад
 # пропуска зависимостей от уже застрявших/пропущенных в этом прогоне задач,
 # до неподвижной точки — переход по цепочке зависимостей), затем ровно одну
-# строку "NEXT <N> <type>" (следующая задача к исполнению) либо "NONE"
+# строку "NEXT <N> <type> <size>" (следующая задача к исполнению; <size> —
+# "large" при label size:large, иначе "-", issue #133) либо "NONE"
 # (доступных задач не осталось).
 select_next() {
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
@@ -510,7 +511,8 @@ for it in issues:
         print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
 
 if candidate:
-    print(f"NEXT {candidate['number']} {type_of(candidate)}")
+    sized = "large" if "size:large" in labels_of(candidate) else "-"
+    print(f"NEXT {candidate['number']} {type_of(candidate)} {sized}")
 else:
     print("NONE")
 PYEOF
@@ -1130,6 +1132,26 @@ run_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.run.maxMinute
 # относительно этой точки, не относительно старта самого интерпретатора bash.
 run_start_seconds=$SECONDS
 task_token_budget=$(adk_budget_tokens "policies.autopilot.budget.task.maxTokens" "300000")
+# Множитель бюджетов задач с label size:large (issue #133, SPEC-003 AC-4):
+# планировщик отличает крупное от типового, но плохо угадывает цифры —
+# категория вместо числа. Валидация — та же дисциплина, что у бюджетов:
+# положительное число, иначе предупреждение и дефолт 2.
+size_multiplier=$(python3 -c '
+import math, sys
+path, raw, default = sys.argv[1:4]
+try:
+    m = float(raw)
+    if not math.isfinite(m) or m <= 0:
+        raise ValueError
+except (TypeError, ValueError):
+    sys.stderr.write(
+        "adk-ralph: %s=%r — не положительное число, использован дефолт %s\n"
+        % (path, raw, default)
+    )
+    m = float(default)
+print(m)
+' "policies.autopilot.budget.sizeLargeMultiplier" \
+  "$(adk_config_get "policies.autopilot.budget.sizeLargeMultiplier" "2")" "2")
 run_token_budget=$(adk_budget_tokens "policies.autopilot.budget.run.maxTokens" "2000000")
 run_tokens_used=0  # сумма расхода прогона (issue #132) — токеновая половина
                    # бюджета прогона и поле tokens= в event=run_end
@@ -1271,6 +1293,7 @@ while [ "$exit_code" -eq 0 ]; do
     NEXT\ *)
       issue_num=$(printf '%s' "$status_line" | awk '{print $2}')
       issue_type=$(printf '%s' "$status_line" | awk '{print $3}')
+      issue_sized=$(printf '%s' "$status_line" | awk '{print $4}')
       ;;
     *)
       echo "adk-ralph: неожиданный вывод выбора задачи: $status_line" >&2
@@ -1279,6 +1302,17 @@ while [ "$exit_code" -eq 0 ]; do
       break
       ;;
   esac
+
+  # Эффективные бюджеты задачи (issue #133): label size:large умножает обе
+  # половины (минуты и токены) на size_multiplier; без label — базовые.
+  effective_task_budget_seconds="$task_budget_seconds"
+  effective_task_token_budget="$task_token_budget"
+  if [ "${issue_sized:-}" = "large" ]; then
+    effective_task_budget_seconds=$(python3 -c 'import sys; print(max(1, int(round(float(sys.argv[1]) * float(sys.argv[2])))))' \
+      "$task_budget_seconds" "$size_multiplier")
+    effective_task_token_budget=$(python3 -c 'import sys; print(max(1, int(round(float(sys.argv[1]) * float(sys.argv[2])))))' \
+      "$task_token_budget" "$size_multiplier")
+  fi
 
   # ── Предстартовая проверка PR (ADR-014, issue #147) ──────────────────────
   # find_pr_state ДО запуска claude -p, не только после: issue с уже открытым
@@ -1363,7 +1397,7 @@ while [ "$exit_code" -eq 0 ]; do
     # нужна вся группа целиком (проверено эмпирически на bash 3.2 и 5).
     {
       while kill -0 "$claude_pid" 2>/dev/null; do
-        if [ $((SECONDS - task_iter_start)) -ge "$task_budget_seconds" ]; then
+        if [ $((SECONDS - task_iter_start)) -ge "$effective_task_budget_seconds" ]; then
           task_budget_hit=1
           kill -TERM -- "-$claude_pid" 2>/dev/null || true
           break
@@ -1433,7 +1467,7 @@ except Exception:
       # ниже сходятся в тот же stuck-код, что и «PR остался черновиком»/«PR не
       # создан».
       echo "adk-ralph: claude -p превысил бюджет задачи по времени" \
-        "(${task_budget_seconds}s) при issue #$issue_num — процесс прерван." >&2
+        "(${effective_task_budget_seconds}s) при issue #$issue_num — процесс прерван." >&2
       # Прерванный ПОСРЕДИ работы claude -p (в отличие от штатного result=stuck
       # ниже, где процесс успел завершиться сам и work.md уже закоммитил свои
       # шаги) мог оставить незакоммиченные правки — неотслеживаемые файлы,
@@ -1476,14 +1510,14 @@ except Exception:
           "#$issue_num) — токены не записаны, токеновый бюджет задачи не" \
           "применён." >&2
       fi
-      if [ -n "$task_tokens" ] && [ "$task_tokens" -gt "$task_token_budget" ]; then
+      if [ -n "$task_tokens" ] && [ "$task_tokens" -gt "$effective_task_token_budget" ]; then
         # Токеновая половина жёсткого бюджета задачи (issue #132): usage
         # известен только по завершении процесса, поэтому проверка
         # post-hoc — застревание фиксируется независимо от состояния PR
         # (find_pr_state не вызывается, как и при бюджете времени): даже
         # готовый PR превысившей задачи не мержится этим прогоном.
         echo "adk-ralph: расход задачи ($task_tokens токенов) превысил" \
-          "бюджет задачи ($task_token_budget) при issue #$issue_num." >&2
+          "бюджет задачи ($effective_task_token_budget) при issue #$issue_num." >&2
         pr_state="token-budget-exceeded"
       else
         pr_state=$(find_pr_state "$issue_num")

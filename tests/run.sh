@@ -7056,6 +7056,175 @@ assert_contains "AC-6: ADR-001 фиксирует состав токен-счё
 assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
   "$adr001_text" "БЕЗ cache_read"
 
+
+# ── issue #133, AC-4: множитель бюджета для задач с label size:large —
+# оба бюджета задачи (минуты и токены) умножаются на
+# policies.autopilot.budget.sizeLargeMultiplier (дефолт 2); задача без
+# label живёт на базовых бюджетах. Прогон A: дефолтный множитель — #981
+# (size:large, спит дольше базового бюджета времени, расход между базой и
+# базой×2) выживает по обеим половинам, #982 (без label, тот же расход)
+# застревает по токенам ─────────────────────────────────────────────────────
+RALPH_SZ="$TMP/ralph-sized-proj"
+RBIN_SZ="$TMP/ralph-sized-bin"
+mkdir -p "$RALPH_SZ" "$RBIN_SZ"
+(cd "$RALPH_SZ" && git_c init -q -b main)
+cat > "$RBIN_SZ/issues-fixture.json" <<'EOF'
+[
+  {"number": 981, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"},
+  {"number": 982, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SZ/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_SZ" "$RBIN_SZ/issues-fixture.json" "$RBIN_SZ/prs-fixture.json"
+claude_stub_guard "$RBIN_SZ"
+cat >> "$RBIN_SZ/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  981)
+    # дольше базового бюджета времени (3s), но меньше умноженного (6s)
+    sleep 4
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9981, "isDraft": false, "headRefName": "issue-981-x"}]
+PRJSON
+    printf '{"type":"result","usage":{"input_tokens":1200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    ;;
+  982)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9982, "isDraft": false, "headRefName": "issue-982-x"}]
+PRJSON
+    printf '{"type":"result","usage":{"input_tokens":1200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    ;;
+esac
+exit 0
+EOF
+chmod +x "$RBIN_SZ/claude"
+RALPH_SZ_CFG="$TMP/ralph-sized-config.json"
+cat > "$RALPH_SZ_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0.05, "maxTokens": 1000}}}}}
+EOF
+RALPH_SZ_LOGS="$TMP/ralph-sized-logs"
+ralph_sz_out=$(cd "$RALPH_SZ" && PATH="$RBIN_SZ:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ" \
+  ADK_LOGS_DIR="$RALPH_SZ_LOGS" ADK_CONFIG_FILE="$RALPH_SZ_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-sized-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-4: adk-ralph: (issue #133) прогон с sized-задачей завершается штатно" 0 $?
+ralph_sz_log="$RALPH_SZ_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_sz_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=981|result=ready|tokens=1500' \
+  'event=task|issue=982|result=stuck|reason=бюджет задачи по токенам|tokens=1500' \
+  'event=run_end|reason=очередь пуста')
+ralph_sz_valid=$(jsonl_check "$ralph_sz_log" 4 "$ralph_sz_spec")
+assert_exit "AC-4: adk-ralph: (issue #133) журнал — #981 (size:large) ready при расходе между базой и базой×2 и сне дольше базового времени; #982 без label с тем же расходом застрял" \
+  1 "$ralph_sz_valid"
+sz_edit_log=$(cat "$RBIN_SZ/issue-edit.log" 2>/dev/null)
+assert_not_contains "AC-4: adk-ralph: (issue #133) sized-задача НЕ помечена needs-human (бюджет с множителем не превышен)" \
+  "$sz_edit_log" "issue edit 981"
+assert_contains "AC-4: adk-ralph: (issue #133) задача без label помечена needs-human на том же расходе" \
+  "$sz_edit_log" "issue edit 982 --add-label needs-human"
+
+# множитель читается из конфига (не зашит): sizeLargeMultiplier=5, расход
+# 4500 между базой (1000) и базой×5 — sized-задача проходит
+RALPH_SZ5="$TMP/ralph-sized5-proj"
+RBIN_SZ5="$TMP/ralph-sized5-bin"
+mkdir -p "$RALPH_SZ5" "$RBIN_SZ5"
+(cd "$RALPH_SZ5" && git_c init -q -b main)
+cat > "$RBIN_SZ5/issues-fixture.json" <<'EOF'
+[
+  {"number": 983, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SZ5/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_SZ5" "$RBIN_SZ5/issues-fixture.json" "$RBIN_SZ5/prs-fixture.json"
+claude_stub_guard "$RBIN_SZ5"
+cat >> "$RBIN_SZ5/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9983, "isDraft": false, "headRefName": "issue-983-x"}]
+PRJSON
+printf '{"type":"result","usage":{"input_tokens":4000,"output_tokens":400,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+exit 0
+EOF
+chmod +x "$RBIN_SZ5/claude"
+RALPH_SZ5_CFG="$TMP/ralph-sized5-config.json"
+cat > "$RALPH_SZ5_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 5, "task": {"maxTokens": 1000}}}}}
+EOF
+RALPH_SZ5_LOGS="$TMP/ralph-sized5-logs"
+ralph_sz5_out=$(cd "$RALPH_SZ5" && PATH="$RBIN_SZ5:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ5" \
+  ADK_LOGS_DIR="$RALPH_SZ5_LOGS" ADK_CONFIG_FILE="$RALPH_SZ5_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-sized5-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-4: adk-ralph: (issue #133) множитель из конфига (5) — прогон штатный" 0 $?
+ralph_sz5_log="$RALPH_SZ5_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_sz5_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=983|result=ready|tokens=4500' \
+  'event=run_end|reason=очередь пуста')
+ralph_sz5_valid=$(jsonl_check "$ralph_sz5_log" 3 "$ralph_sz5_spec")
+assert_exit "AC-4: adk-ralph: (issue #133) журнал — #983 ready при расходе 4500 < 1000×5 (множитель прочитан из конфига)" \
+  1 "$ralph_sz5_valid"
+
+# невалидный множитель — предупреждение и дефолт 2 (та же дисциплина, что
+# у остальных бюджет-атрибутов): расход 1500 < 1000×2 — sized-задача проходит
+RALPH_SZ0="$TMP/ralph-sized0-proj"
+RBIN_SZ0="$TMP/ralph-sized0-bin"
+mkdir -p "$RALPH_SZ0" "$RBIN_SZ0"
+(cd "$RALPH_SZ0" && git_c init -q -b main)
+cat > "$RBIN_SZ0/issues-fixture.json" <<'EOF'
+[
+  {"number": 984, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_SZ0/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_SZ0" "$RBIN_SZ0/issues-fixture.json" "$RBIN_SZ0/prs-fixture.json"
+claude_stub_guard "$RBIN_SZ0"
+cat >> "$RBIN_SZ0/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9984, "isDraft": false, "headRefName": "issue-984-x"}]
+PRJSON
+printf '{"type":"result","usage":{"input_tokens":1200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+exit 0
+EOF
+chmod +x "$RBIN_SZ0/claude"
+RALPH_SZ0_CFG="$TMP/ralph-sized0-config.json"
+cat > "$RALPH_SZ0_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 0, "task": {"maxTokens": 1000}}}}}
+EOF
+RALPH_SZ0_LOGS="$TMP/ralph-sized0-logs"
+ralph_sz0_out=$(cd "$RALPH_SZ0" && PATH="$RBIN_SZ0:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ0" \
+  ADK_LOGS_DIR="$RALPH_SZ0_LOGS" ADK_CONFIG_FILE="$RALPH_SZ0_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-sized0-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "AC-4: adk-ralph: (issue #133) невалидный множитель — прогон штатный на дефолте" 0 $?
+assert_contains "AC-4: adk-ralph: (issue #133) невалидный sizeLargeMultiplier — предупреждение с дефолтом 2" \
+  "$ralph_sz0_out" "policies.autopilot.budget.sizeLargeMultiplier='0' — не положительное число, использован дефолт 2"
+ralph_sz0_log="$RALPH_SZ0_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_sz0_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=984|result=ready|tokens=1500' \
+  'event=run_end|reason=очередь пуста')
+ralph_sz0_valid=$(jsonl_check "$ralph_sz0_log" 3 "$ralph_sz0_spec")
+assert_exit "AC-4: adk-ralph: (issue #133) журнал — #984 ready: применён дефолтный множитель 2 (1500 < 2000)" \
+  1 "$ralph_sz0_valid"
+
+# документация: config.md, планировщик ставит label (plan.md + skills/decompose)
+sz_config_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+assert_contains "AC-4: docs/config.md документирует дефолт policies.autopilot.budget.sizeLargeMultiplier = 2" \
+  "$sz_config_doc" '| `policies.autopilot.budget.sizeLargeMultiplier` | число (положительное) | `2` |'
+check_ac_doc AC-4 "commands/plan.md: планировщик помечает заметно крупные задачи label size:large" \
+  "$KIT/commands/plan.md" "size:large"
+check_ac_doc AC-4 "skills/decompose: правило label size:large для заметно более крупной задачи" \
+  "$KIT/skills/decompose/SKILL.md" "size:large"
+
 # ── issue #131, ADR-017 §1 (важное №3 круга 4 ревью PR #193): обработчик
 # сигнала самому ralph (`ralph_signal_cleanup`, INT/TERM) писал
 # `event=run_end done=0` БЕЗУСЛОВНО — после интеграции issue #129 (merge
