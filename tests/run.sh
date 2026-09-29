@@ -5373,6 +5373,52 @@ rb_share_boundary_call_count=$(cat "$RBIN_RB_SHARE_BOUNDARY/claude-calls.log" 2>
 assert_exit "AC-5: adk-ralph: (issue #134) доля на пороге — headless-процесс вызван на #765 тоже (три вызова)" \
   3 "$rb_share_boundary_call_count"
 
+# ── issue #213: maxSkippedShare="nan" молча выключал breaker — float("nan")
+# проходил валидацию (nan < 0 даёт False), а share > nan всегда False. Тот
+# же класс, что PR #193 чинил isfinite'ом для бюджетов. Репро: #781 stuck
+# (draft), #782-784 skipped (blocked by #781) — доля 3/4 = 0.75 выше
+# дефолта 0.5: с валидным nan-отказом (предупреждение + дефолт) breaker
+# обязан сработать; с багом прогон молча доигрывал до пустой очереди ───────
+RALPH_RB_NAN="$TMP/ralph-rb-nan-proj"
+RBIN_RB_NAN="$TMP/ralph-rb-nan-bin"
+mkdir -p "$RALPH_RB_NAN" "$RBIN_RB_NAN"
+(cd "$RALPH_RB_NAN" && git_c init -q -b main)
+cat > "$RBIN_RB_NAN/issues-fixture.json" <<'EOF'
+[
+  {"number": 781, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 782, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"},
+  {"number": 783, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"},
+  {"number": 784, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"}
+]
+EOF
+cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_NAN" "$RBIN_RB_NAN/issues-fixture.json" "$RBIN_RB_NAN/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_NAN"
+cat >> "$RBIN_RB_NAN/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9781, "isDraft": true, "headRefName": "issue-781-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_RB_NAN/claude"
+RALPH_RB_NAN_CFG="$TMP/ralph-rb-nan-config.json"
+cat > "$RALPH_RB_NAN_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxSkippedShare": "nan"}}}}
+EOF
+ralph_rb_nan_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-nan-logs" ADK_CONFIG_FILE="$RALPH_RB_NAN_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-nan-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #213: adk-ralph: maxSkippedShare=\"nan\" — breaker жив, прогон остановлен (exit != 0)" \
+  1 $?
+assert_contains "issue #213: adk-ralph: nan отвергнут валидатором с предупреждением и дефолтом 0.5" \
+  "$ralph_rb_nan_out" "maxSkippedShare='nan' — не число, использован дефолт 0.5"
+assert_contains "issue #213: adk-ralph: с дефолтом 0.5 доля 0.75 срабатывает breaker доли пропущенных" \
+  "$ralph_rb_nan_out" "breaker: доля пропущенных за прогон"
+
 # ── issue #130, SPEC-003 AC-2: стоп-файл .adk/stop — единственный способ
 # вмешаться в ночной прогон без живой сессии. Стаб claude создаёт файл ВО
 # ВРЕМЯ первой итерации (пока сама итерация ещё не завершена) — итерация

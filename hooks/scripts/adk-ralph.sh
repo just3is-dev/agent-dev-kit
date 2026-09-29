@@ -283,11 +283,15 @@ run_breaker_check_skipped_share() {
   raw=$(adk_config_get "policies.autopilot.breaker.maxSkippedShare" "0.5")
   total=$((ready_count + merged_count + stuck_count + skipped_count))
   python3 -c '
-import sys
+import math, sys
 raw, skipped, total, min_denominator = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 try:
     threshold = float(raw)
-    if threshold < 0:
+    # not isfinite: float("nan") проходит проверку знака (nan < 0 даёт
+    # False), а share > nan всегда False — breaker молча выключался без
+    # предупреждения (issue #213, тот же класс, что isfinite бюджетов в
+    # PR #193); inf сюда же — «порог» обязан быть конечным числом
+    if threshold < 0 or not math.isfinite(threshold):
         raise ValueError
 except (TypeError, ValueError):
     sys.stderr.write(
