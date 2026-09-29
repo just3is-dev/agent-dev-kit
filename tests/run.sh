@@ -745,19 +745,41 @@ assert_contains "AC-6: adk-stats: (issue #136) битая строка прог�
 assert_contains "AC-6: adk-stats: (issue #136) расход валидной строки считан несмотря на битую" \
   "$stats_broken_out" "минуты (n=1)"
 
-# упавший основной агрегатор не маскируется хвостом расхода (круг 5
-# ревью PR #199 — блокер «проглоченный код возврата»): нечитаемый
-# issue-файл роняет агрегатор — exit скрипта обязан быть ненулевым
+# отказ любого из двух агрегаторов не маскируется успешным соседом:
+# сломанный агрегат с exit 0 лгал бы потребителям /stats и /consolidate
 STATS_RC="$TMP/stats-rc"
 mkdir -p "$STATS_RC"
 cp "$STATS_USAGE/issue-40.jsonl" "$STATS_RC/issue-40.jsonl"
 cp "$STATS_USAGE/autopilot-2026-09-29.jsonl" "$STATS_RC/autopilot-2026-09-29.jsonl"
 chmod 000 "$STATS_RC/issue-40.jsonl"
-ADK_LOGS_DIR="$STATS_RC" "$HOOKS/adk-stats.sh" >/dev/null 2>&1
+stats_rc_out=$(ADK_LOGS_DIR="$STATS_RC" "$HOOKS/adk-stats.sh" 2>/dev/null)
 stats_rc_st=$?
 chmod 644 "$STATS_RC/issue-40.jsonl"
 [ "$stats_rc_st" -ne 0 ]
-assert_exit "AC-6: adk-stats: (issue #136) падение основного агрегатора не маскируется разделом расхода — exit ненулевой" \
+assert_exit "AC-6: adk-stats: (issue #136) падение основного агрегатора — exit ненулевой" \
+  0 $?
+assert_contains "AC-6: adk-stats: (issue #136) раздел расхода печатается и при упавшем основном агрегаторе (наблюдаемость)" \
+  "$stats_rc_out" "Расход задач прогонов"
+
+# нечитаемый autopilot-файл: путь с issue-файлами
+chmod 000 "$STATS_RC/autopilot-2026-09-29.jsonl"
+ADK_LOGS_DIR="$STATS_RC" "$HOOKS/adk-stats.sh" >/dev/null 2>&1
+stats_urc_st=$?
+chmod 644 "$STATS_RC/autopilot-2026-09-29.jsonl"
+[ "$stats_urc_st" -ne 0 ]
+assert_exit "AC-6: adk-stats: (issue #136) падение агрегатора расхода не маскируется успешным основным — exit ненулевой" \
+  0 $?
+
+# нечитаемый autopilot-файл: путь «только прогоны» (announce)
+STATS_RC_AP="$TMP/stats-rc-ap"
+mkdir -p "$STATS_RC_AP"
+cp "$STATS_USAGE/autopilot-2026-09-29.jsonl" "$STATS_RC_AP/autopilot-2026-09-29.jsonl"
+chmod 000 "$STATS_RC_AP/autopilot-2026-09-29.jsonl"
+ADK_LOGS_DIR="$STATS_RC_AP" "$HOOKS/adk-stats.sh" >/dev/null 2>&1
+stats_aprc_st=$?
+chmod 644 "$STATS_RC_AP/autopilot-2026-09-29.jsonl"
+[ "$stats_aprc_st" -ne 0 ]
+assert_exit "AC-6: adk-stats: (issue #136) падение агрегатора расхода на пути «только прогоны» — exit ненулевой" \
   0 $?
 
 
