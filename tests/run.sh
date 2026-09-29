@@ -7071,7 +7071,8 @@ mkdir -p "$RALPH_SZ" "$RBIN_SZ"
 cat > "$RBIN_SZ/issues-fixture.json" <<'EOF'
 [
   {"number": 981, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"},
-  {"number": 982, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+  {"number": 982, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 985, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
 ]
 EOF
 cat > "$RBIN_SZ/prs-fixture.json" <<'EOF'
@@ -7097,13 +7098,21 @@ PRJSON
 PRJSON
     printf '{"type":"result","usage":{"input_tokens":1200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
     ;;
+  985)
+    # верхняя граница множителя (круг 1 ревью PR #198): 2500 > 1000×2 —
+    # sized-задача тоже застревает, «у size:large нет бюджета» не пройдёт
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9985, "isDraft": false, "headRefName": "issue-985-x"}]
+PRJSON
+    printf '{"type":"result","usage":{"input_tokens":2200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    ;;
 esac
 exit 0
 EOF
 chmod +x "$RBIN_SZ/claude"
 RALPH_SZ_CFG="$TMP/ralph-sized-config.json"
 cat > "$RALPH_SZ_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0.05, "maxTokens": 1000}}}}}
+{"policies": {"autopilot": {"canMerge": false, "breaker": {"maxStuckPerRun": 5}, "budget": {"task": {"maxMinutes": 0.05, "maxTokens": 1000}}}}}
 EOF
 RALPH_SZ_LOGS="$TMP/ralph-sized-logs"
 ralph_sz_out=$(cd "$RALPH_SZ" && PATH="$RBIN_SZ:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ" \
@@ -7112,19 +7121,22 @@ ralph_sz_out=$(cd "$RALPH_SZ" && PATH="$RBIN_SZ:$PATH" CLAUDE_PROJECT_DIR="$RALP
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-4: adk-ralph: (issue #133) прогон с sized-задачей завершается штатно" 0 $?
 ralph_sz_log="$RALPH_SZ_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
-ralph_sz_spec=$(printf '%s\n%s\n%s\n%s' \
+ralph_sz_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=981|result=ready|tokens=1500' \
   'event=task|issue=982|result=stuck|reason=бюджет задачи по токенам|tokens=1500' \
+  'event=task|issue=985|result=stuck|reason=бюджет задачи по токенам|tokens=2500' \
   'event=run_end|reason=очередь пуста')
-ralph_sz_valid=$(jsonl_check "$ralph_sz_log" 4 "$ralph_sz_spec")
-assert_exit "AC-4: adk-ralph: (issue #133) журнал — #981 (size:large) ready при расходе между базой и базой×2 и сне дольше базового времени; #982 без label с тем же расходом застрял" \
+ralph_sz_valid=$(jsonl_check "$ralph_sz_log" 5 "$ralph_sz_spec")
+assert_exit "AC-4: adk-ralph: (issue #133) журнал — #981 (size:large) ready в коридоре база..база×2; #982 без label застрял; #985 (size:large) с расходом выше базы×2 тоже застрял — множитель не отключает бюджет" \
   1 "$ralph_sz_valid"
 sz_edit_log=$(cat "$RBIN_SZ/issue-edit.log" 2>/dev/null)
 assert_not_contains "AC-4: adk-ralph: (issue #133) sized-задача НЕ помечена needs-human (бюджет с множителем не превышен)" \
   "$sz_edit_log" "issue edit 981"
 assert_contains "AC-4: adk-ralph: (issue #133) задача без label помечена needs-human на том же расходе" \
   "$sz_edit_log" "issue edit 982 --add-label needs-human"
+assert_contains "AC-4: adk-ralph: (issue #133) sized-задача с расходом выше базы×множитель помечена needs-human (верхняя граница)" \
+  "$sz_edit_log" "issue edit 985 --add-label needs-human"
 
 # множитель читается из конфига (не зашит): sizeLargeMultiplier=5, расход
 # 4500 между базой (1000) и базой×5 — sized-задача проходит
@@ -7178,7 +7190,8 @@ mkdir -p "$RALPH_SZ0" "$RBIN_SZ0"
 (cd "$RALPH_SZ0" && git_c init -q -b main)
 cat > "$RBIN_SZ0/issues-fixture.json" <<'EOF'
 [
-  {"number": 984, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
+  {"number": 984, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"},
+  {"number": 986, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
 ]
 EOF
 cat > "$RBIN_SZ0/prs-fixture.json" <<'EOF'
@@ -7188,10 +7201,23 @@ gh_ralph_stub "$RBIN_SZ0" "$RBIN_SZ0/issues-fixture.json" "$RBIN_SZ0/prs-fixture
 claude_stub_guard "$RBIN_SZ0"
 cat >> "$RBIN_SZ0/claude" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+case "$issue_num" in
+  984)
+    cat > "$d/prs-fixture.json" <<'PRJSON'
 [{"number": 9984, "isDraft": false, "headRefName": "issue-984-x"}]
 PRJSON
-printf '{"type":"result","usage":{"input_tokens":1200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    printf '{"type":"result","usage":{"input_tokens":1200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    ;;
+  986)
+    # 2500 > 1000×2 (дефолт) — вместе с ready #984 (1500 < 2000) зажимает
+    # фактический дефолтный множитель в коридоре [1.5, 2.5]
+    cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9986, "isDraft": false, "headRefName": "issue-986-x"}]
+PRJSON
+    printf '{"type":"result","usage":{"input_tokens":2200,"output_tokens":200,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$RBIN_SZ0/claude"
@@ -7206,14 +7232,15 @@ ralph_sz0_out=$(cd "$RALPH_SZ0" && PATH="$RBIN_SZ0:$PATH" CLAUDE_PROJECT_DIR="$R
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-4: adk-ralph: (issue #133) невалидный множитель — прогон штатный на дефолте" 0 $?
 assert_contains "AC-4: adk-ralph: (issue #133) невалидный sizeLargeMultiplier — предупреждение с дефолтом 2" \
-  "$ralph_sz0_out" "policies.autopilot.budget.sizeLargeMultiplier='0' — не положительное число, использован дефолт 2"
+  "$ralph_sz0_out" "policies.autopilot.budget.sizeLargeMultiplier='0' — не число >= 1, использован дефолт 2"
 ralph_sz0_log="$RALPH_SZ0_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
-ralph_sz0_spec=$(printf '%s\n%s\n%s' \
+ralph_sz0_spec=$(printf '%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=984|result=ready|tokens=1500' \
+  'event=task|issue=986|result=stuck|reason=бюджет задачи по токенам|tokens=2500' \
   'event=run_end|reason=очередь пуста')
-ralph_sz0_valid=$(jsonl_check "$ralph_sz0_log" 3 "$ralph_sz0_spec")
-assert_exit "AC-4: adk-ralph: (issue #133) журнал — #984 ready: применён дефолтный множитель 2 (1500 < 2000)" \
+ralph_sz0_valid=$(jsonl_check "$ralph_sz0_log" 4 "$ralph_sz0_spec")
+assert_exit "AC-4: adk-ralph: (issue #133) журнал — дефолтный множитель зажат коридором: #984 ready (1500<2000), #986 stuck (2500>2000)" \
   1 "$ralph_sz0_valid"
 
 # документация: config.md, планировщик ставит label (plan.md + skills/decompose)

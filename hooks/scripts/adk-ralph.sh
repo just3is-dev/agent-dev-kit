@@ -1141,11 +1141,11 @@ import math, sys
 path, raw, default = sys.argv[1:4]
 try:
     m = float(raw)
-    if not math.isfinite(m) or m <= 0:
+    if not math.isfinite(m) or m < 1:
         raise ValueError
 except (TypeError, ValueError):
     sys.stderr.write(
-        "adk-ralph: %s=%r — не положительное число, использован дефолт %s\n"
+        "adk-ralph: %s=%r — не число >= 1, использован дефолт %s\n"
         % (path, raw, default)
     )
     m = float(default)
@@ -1308,10 +1308,24 @@ while [ "$exit_code" -eq 0 ]; do
   effective_task_budget_seconds="$task_budget_seconds"
   effective_task_token_budget="$task_token_budget"
   if [ "${issue_sized:-}" = "large" ]; then
-    effective_task_budget_seconds=$(python3 -c 'import sys; print(max(1, int(round(float(sys.argv[1]) * float(sys.argv[2])))))' \
-      "$task_budget_seconds" "$size_multiplier")
-    effective_task_token_budget=$(python3 -c 'import sys; print(max(1, int(round(float(sys.argv[1]) * float(sys.argv[2])))))' \
-      "$task_token_budget" "$size_multiplier")
+    # Один вызов на оба значения; умножение внутри try с OverflowError и
+    # клампами теми же порогами, что у базовых хелперов (10**9 сек /
+    # 10**15 токенов) — иначе валидный по isfinite множитель вида 1e308
+    # давал бы пустой stdout и молча выключенные бюджеты: тот же класс,
+    # что чинился в adk_budget_seconds (issue #131, круг 2 ревью PR #193;
+    # здесь — круг 1 ревью PR #198).
+    effective_budgets=$(python3 -c '
+import sys
+sec, tok, m = sys.argv[1:4]
+try:
+    esec = min(max(1, int(round(float(sec) * float(m)))), 10**9)
+    etok = min(max(1, int(round(float(tok) * float(m)))), 10**15)
+except OverflowError:
+    esec, etok = 10**9, 10**15
+print(esec, etok)
+' "$task_budget_seconds" "$task_token_budget" "$size_multiplier")
+    effective_task_budget_seconds="${effective_budgets%% *}"
+    effective_task_token_budget="${effective_budgets##* }"
   fi
 
   # ── Предстартовая проверка PR (ADR-014, issue #147) ──────────────────────
