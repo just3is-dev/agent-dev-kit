@@ -6,11 +6,9 @@
 # result/reason/type/timestamp) — docs/adr/001-journal-event-schema.md; её же
 # обязаны писать /work, /review и /autopilot.
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
-# агрегатов. Расход прогонов (issue #136, SPEC-003 AC-6): отдельный раздел
-# по event=task в autopilot-*.jsonl (минуты и токены: медиана, p90,
-# максимум; поля duration/tokens — ADR-001 «Расширения схемы», пишет
-# adk-ralph.sh); строки без полей расхода в раздел не входят, при полном
-# отсутствии расхода раздел не печатается — прежний вывод не меняется. Битые строки (невалидный JSON, JSON не-объект, оборванная
+# агрегатов. Расход прогонов — отдельный раздел по autopilot-*.jsonl
+# (issue #136, поля — ADR-001 «Расширения схемы»; описание раздела —
+# commands/stats.md); без записей расхода раздел не печатается. Битые строки (невалидный JSON, JSON не-объект, оборванная
 # multibyte UTF-8 последовательность) пропускаются с предупреждением в
 # stderr, не роняют скрипт.
 set -u
@@ -68,12 +66,16 @@ for path in sys.argv[2:]:
             tok = ev.get("tokens")
             if isinstance(dur, str) and dur.endswith("s"):
                 try:
-                    durations_min.append(int(dur[:-1]) / 60)
+                    sec = int(dur[:-1])
+                    if sec >= 0:
+                        durations_min.append(sec / 60)
                 except ValueError:
                     pass
             if tok is not None:
                 try:
-                    tokens.append(int(tok))
+                    tok_n = int(tok)
+                    if tok_n >= 0:
+                        tokens.append(tok_n)
                 except (TypeError, ValueError):
                     pass
 
@@ -82,22 +84,27 @@ def p90(vals):
     s = sorted(vals)
     return s[max(0, math.ceil(0.9 * len(s)) - 1)]
 
-count = max(len(durations_min), len(tokens))
-if count == 0:
+if not durations_min and not tokens:
     if empty_mode == "announce":
         print("Расход в записях прогонов не записан (полей duration/tokens нет).")
     sys.exit(0)
 
-print(f"Расход задач прогонов (autopilot-*.jsonl, задач с расходом: {count}):")
+# n у каждой строки своё: выборки различаются законно (tokens не пишется
+# у прерванных по бюджету времени задач — ADR-001), общий счётчик в
+# заголовке врал бы про обе (круг 1 ревью PR #199). Токены — целые без
+# экспоненты: с ~1e6 формат :g терял точность калибровочной метрики.
+print("Расход задач прогонов (autopilot-*.jsonl):")
 if durations_min:
     print(
-        f"  - минуты: медиана {statistics.median(durations_min):.1f}, "
+        f"  - минуты (n={len(durations_min)}): "
+        f"медиана {statistics.median(durations_min):.1f}, "
         f"p90 {p90(durations_min):.1f}, максимум {max(durations_min):.1f}"
     )
 if tokens:
     print(
-        f"  - токены: медиана {statistics.median(tokens):g}, "
-        f"p90 {p90(tokens):g}, максимум {max(tokens):g}"
+        f"  - токены (n={len(tokens)}): "
+        f"медиана {statistics.median(tokens):.0f}, "
+        f"p90 {p90(tokens)}, максимум {max(tokens)}"
     )
 PYUSAGE
 }

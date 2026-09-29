@@ -685,18 +685,19 @@ cat > "$STATS_USAGE/autopilot-2026-09-29.jsonl" <<'EOF'
 {"event":"task","issue":"42","type":"task","result":"merged","duration":"120s","tokens":"3500","timestamp":"2026-09-29T08:20:00Z"}
 {"event":"task","issue":"43","type":"task","result":"stuck","reason":"x","duration":"600s","tokens":"20000","timestamp":"2026-09-29T08:40:00Z"}
 {"event":"task","issue":"44","type":"task","result":"skipped","timestamp":"2026-09-29T08:41:00Z"}
+{"event":"task","issue":"45","type":"task","result":"ready","tokens":"1234567","timestamp":"2026-09-29T08:41:30Z"}
+{"event":"task","issue":"46","type":"task","result":"ready","duration":"мусорs","tokens":"abc","timestamp":"2026-09-29T08:41:40Z"}
+{"event":"task","issue":"47","type":"task","result":"ready","duration":"-60s","tokens":"-5","timestamp":"2026-09-29T08:41:50Z"}
 {"event":"run_end","done":"1","ready":"1","stuck":"1","skipped":"1","tokens":"24500","reason":"очередь пуста","timestamp":"2026-09-29T08:42:00Z"}
 EOF
 stats_out=$(ADK_LOGS_DIR="$STATS_USAGE" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-6: adk-stats: (issue #136) журнал с расходом — exit 0" 0 $?
 assert_contains "AC-6: adk-stats: (issue #136) агрегаты задач нетронуты (только issue-*.jsonl)" \
   "$stats_out" "Всего задач: 1"
-assert_contains "AC-6: adk-stats: (issue #136) раздел расхода назван и считает только задачи с полями (3 из 4)" \
-  "$stats_out" "задач с расходом: 3"
-assert_contains "AC-6: adk-stats: (issue #136) минуты — медиана/p90/максимум" \
-  "$stats_out" "минуты: медиана 2.0, p90 10.0, максимум 10.0"
-assert_contains "AC-6: adk-stats: (issue #136) токены — медиана/p90/максимум" \
-  "$stats_out" "токены: медиана 3500, p90 20000, максимум 20000"
+assert_contains "AC-6: adk-stats: (issue #136) минуты — своё n и медиана/p90/максимум (мусор и отрицательные отброшены)" \
+  "$stats_out" "минуты (n=3): медиана 2.0, p90 10.0, максимум 10.0"
+assert_contains "AC-6: adk-stats: (issue #136) токены — своё n (шире минут: запись только с tokens), целые без экспоненты на >=1e6" \
+  "$stats_out" "токены (n=4): медиана 11750, p90 1234567, максимум 1234567"
 
 # записи прогонов без полей расхода — прежний вывод не меняется ни на строку
 STATS_NOUSAGE="$TMP/stats-nousage"
@@ -713,6 +714,16 @@ assert_not_contains "AC-6: adk-stats: (issue #136) без записей рас�
   "$stats_nousage_out" "Расход задач прогонов"
 assert_contains "AC-6: adk-stats: (issue #136) агрегаты задач без изменений" \
   "$stats_nousage_out" "Всего задач: 1"
+# «ни на строку»: полный stdout с autopilot-файлом без расхода байт-в-байт
+# равен stdout без autopilot-файла вовсе (круг 1 ревью PR #199)
+STATS_NOAP="$TMP/stats-noap"
+mkdir -p "$STATS_NOAP"
+cp "$STATS_NOUSAGE/issue-40.jsonl" "$STATS_NOAP/issue-40.jsonl"
+stats_noap_out=$(ADK_LOGS_DIR="$STATS_NOAP" "$HOOKS/adk-stats.sh" 2>/dev/null)
+stats_nousage_stdout=$(ADK_LOGS_DIR="$STATS_NOUSAGE" "$HOOKS/adk-stats.sh" 2>/dev/null)
+[ "$stats_noap_out" = "$stats_nousage_stdout" ]
+assert_exit "AC-6: adk-stats: (issue #136) прогоны без расхода не меняют stdout ни на строку (побайтное сравнение с журналом без autopilot-файлов)" \
+  0 $?
 
 # битая строка в autopilot-файле — предупреждение, расход остальных считан
 STATS_USAGE_BROKEN="$TMP/stats-usage-broken"
@@ -727,7 +738,7 @@ assert_exit "AC-6: adk-stats: (issue #136) битая строка прогон�
 assert_contains "AC-6: adk-stats: (issue #136) битая строка прогона — предупреждение" \
   "$stats_broken_out" "битая строка пропущена"
 assert_contains "AC-6: adk-stats: (issue #136) расход валидной строки считан несмотря на битую" \
-  "$stats_broken_out" "задач с расходом: 1"
+  "$stats_broken_out" "минуты (n=1)"
 
 # каталог содержит только незавершённую задачу (event=start/review, без
 # outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
