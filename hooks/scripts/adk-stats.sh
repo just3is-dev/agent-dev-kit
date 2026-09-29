@@ -6,9 +6,12 @@
 # result/reason/type/timestamp) — docs/adr/001-journal-event-schema.md; её же
 # обязаны писать /work, /review и /autopilot.
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
-# агрегатов. Битые строки (невалидный JSON, JSON не-объект, оборванная
-# multibyte UTF-8 последовательность) пропускаются с предупреждением в
-# stderr, не роняют скрипт.
+# агрегатов. Расход прогонов — отдельный раздел по autopilot-*.jsonl
+# (issue #136, поля — ADR-001 «Расширения схемы»; описание раздела —
+# commands/stats.md); без записей расхода раздел не печатается.
+# Битые строки (невалидный JSON, JSON не-объект, оборванная multibyte
+# UTF-8 последовательность) пропускаются с предупреждением в stderr,
+# не роняют скрипт.
 set -u
 
 . "$(cd "$(dirname "$0")" && pwd)/lib/paths.sh"
@@ -17,7 +20,90 @@ logs_dir=$(adk_logs_dir "$root")
 
 shopt -s nullglob
 issue_files=("$logs_dir"/issue-*.jsonl)
+autopilot_files=("$logs_dir"/autopilot-*.jsonl)
 shopt -u nullglob
+
+# Раздел расхода прогонов (issue #136). $1 — режим пустоты: "announce"
+# печатает явное «не записан» (путь «в журнале только прогоны», где молчание
+# вернуло бы старое враньё «агрегировать нечего»), "silent" не печатает
+# ничего (обычный путь: прежние агрегаты не меняются ни на строку).
+print_usage_section() {
+  local empty_mode="$1"
+  # список autopilot-файлов может быть пуст — python отработает и без
+  # аргументов-файлов, announce-путь один (нет дубля строки в bash)
+  python3 - "$empty_mode" ${autopilot_files[@]+"${autopilot_files[@]}"} <<'PYUSAGE'
+import json
+import math
+import os
+import re
+import statistics
+import sys
+
+empty_mode = sys.argv[1]
+durations_min = []
+tokens = []
+for path in sys.argv[2:]:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+                if not isinstance(ev, dict):
+                    raise ValueError
+            except Exception:
+                print(
+                    f"adk-stats: {os.path.basename(path)}:{lineno}: "
+                    "битая строка пропущена (не JSON-объект)",
+                    file=sys.stderr,
+                )
+                continue
+            if ev.get("event") != "task":
+                continue
+            dur = ev.get("duration")
+            tok = ev.get("tokens")
+            # adk-log пишет оба поля строками ("60s", "3500") — читаем
+            # ровно эту форму: ASCII-цифры длиной до 15 знаков (потолок
+            # писателя: adk_budget_tokens клампит бюджеты 10**15, значения
+            # такой длины < 2**53 — int(), деление и медиана точны и не
+            # упираются в лимиты). Unicode-цифры, bool, float, "1_000",
+            # отрицательные, сверхдлинные строки — не расход,
+            # отбрасываются молча.
+            if isinstance(dur, str) and re.fullmatch(r"[0-9]{1,15}s", dur):
+                durations_min.append(int(dur[:-1]) / 60)
+            if isinstance(tok, str) and re.fullmatch(r"[0-9]{1,15}", tok):
+                tokens.append(int(tok))
+
+def p90(vals):
+    # nearest-rank: элемент на позиции ceil(0.9 * n)
+    s = sorted(vals)
+    return s[max(0, math.ceil(0.9 * len(s)) - 1)]
+
+if not durations_min and not tokens:
+    if empty_mode == "announce":
+        print("Расход в записях прогонов не записан (полей duration/tokens нет).")
+    sys.exit(0)
+
+# n у каждой метрики своё: выборки законно различаются (tokens не
+# пишется у прерванных по бюджету времени задач — ADR-001), общий
+# счётчик вводил бы в заблуждение. Токены — целые: экспонента теряла бы
+# точность калибровочной метрики.
+print("Расход задач прогонов (autopilot-*.jsonl):")
+if durations_min:
+    print(
+        f"  - минуты (n={len(durations_min)}): "
+        f"медиана {statistics.median(durations_min):.1f}, "
+        f"p90 {p90(durations_min):.1f}, максимум {max(durations_min):.1f}"
+    )
+if tokens:
+    print(
+        f"  - токены (n={len(tokens)}): "
+        f"медиана {statistics.median(tokens):.0f}, "
+        f"p90 {p90(tokens)}, максимум {max(tokens)}"
+    )
+PYUSAGE
+}
 
 if [ ! -d "$logs_dir" ]; then
   echo "Журнал пуст: каталог $logs_dir не найден, записей ещё нет."
@@ -25,14 +111,13 @@ if [ ! -d "$logs_dir" ]; then
 fi
 
 if [ "${#issue_files[@]}" -eq 0 ]; then
-  shopt -s nullglob
-  autopilot_files=("$logs_dir"/autopilot-*.jsonl)
-  shopt -u nullglob
   if [ "${#autopilot_files[@]}" -eq 0 ]; then
     echo "Журнал пуст: в $logs_dir нет ни одной записи."
   else
     echo "В журнале нет ни одной задачи (issue-*.jsonl) — только записи" \
-      "прогонов autopilot (autopilot-*.jsonl), которые /stats пока не агрегирует."
+      "прогонов autopilot (autopilot-*.jsonl); агрегаты задач считаются" \
+      "только по issue-файлам, расход прогонов — ниже (issue #136)."
+    print_usage_section announce || exit $?
   fi
   exit 0
 fi
@@ -192,3 +277,16 @@ for week in sorted(weekly):
     avg_week_rounds = d["rounds"] / d["tasks"] if d["tasks"] else 0
     print(f"  - {week}: задач {d['tasks']}, среднее кругов {avg_week_rounds:.1f}")
 PYEOF
+main_rc=$?
+
+# Раздел расхода печатается и при упавшем основном агрегаторе
+# (наблюдаемость), но код возврата скрипта — первый ненулевой из двух
+# агрегаторов: падение любого не должно маскироваться успешным соседом
+# (exit 0 при сломанных агрегатах лгал бы потребителям /stats и
+# /consolidate — выжимка вехи молча потеряла бы раздел).
+print_usage_section silent
+usage_rc=$?
+if [ "$main_rc" -ne 0 ]; then
+  exit "$main_rc"
+fi
+exit "$usage_rc"
