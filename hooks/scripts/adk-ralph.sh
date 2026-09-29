@@ -1385,6 +1385,27 @@ while [ "$exit_code" -eq 0 ]; do
     claude_pid=""
     task_duration_s=$((SECONDS - task_iter_start))
 
+    if [ "$task_budget_hit" -eq 0 ]; then
+      # Финальный ответ headless-процесса — обратно в консоль прогона
+      # (круги 1–2 ревью PR #197): stdout теперь уходит в файл, а текст
+      # .result объясняет человеку исход задачи. Печать ДО проверки
+      # claude_rc: на аварийном пути (rc≠0 останавливает прогон целиком)
+      # диагностика из .result нужнее всего — лимит, авторизация, credit.
+      # Печатается только непустая строка (не литералы None/""); отказ
+      # разбора — молча, его честно обработает ветка «usage не прочитан»
+      # ниже. При прерывании по бюджету времени файл оборван — не читаем.
+      python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        r = json.load(f).get("result")
+    if isinstance(r, str) and r:
+        print(r)
+except Exception:
+    pass
+' "$work_dir/claude-out.json"
+    fi
+
     if [ "$task_budget_hit" -eq 0 ] && [ "$claude_rc" -ne 0 ]; then
       # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
       # разово споткнулся) — до find_pr_state дела не дошло, значит нет и
@@ -1444,20 +1465,6 @@ while [ "$exit_code" -eq 0 ]; do
       fi
       pr_state="budget-exceeded"
     else
-      # Финальный ответ headless-процесса — обратно в консоль прогона
-      # (круг 1 ревью PR #197): stdout теперь уходит в файл, а текст
-      # .result объясняет человеку исход задачи (почему PR не создан,
-      # чем кончилось ревью) — без печати он терялся бы вместе с
-      # trap-очисткой work_dir. Отказ разбора — молча: ниже его честно
-      # обработает ветка «usage не прочитан».
-      python3 -c '
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        print(json.load(f).get("result", ""))
-except Exception:
-    pass
-' "$work_dir/claude-out.json"
       # Снятие usage (issue #132) — только после сам-завершившегося
       # процесса: после kill по бюджету времени файл может быть пустым или
       # оборванным, там расход не читается (минуты пишутся, токены нет).

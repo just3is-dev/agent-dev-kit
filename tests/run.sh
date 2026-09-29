@@ -6857,7 +6857,7 @@ case "$issue_num" in
 [{"number": 9971, "isDraft": false, "headRefName": "issue-971-x"}]
 PRJSON
     # cache_read гигантский нарочно: он НЕ входит в счётчик (issue #132)
-    printf '{"type":"result","usage":{"input_tokens":1000,"output_tokens":2000,"cache_creation_input_tokens":500,"cache_read_input_tokens":99999}}\n'
+    printf '{"type":"result","result":"итог задачи 971 от headless-процесса","usage":{"input_tokens":1000,"output_tokens":2000,"cache_creation_input_tokens":500,"cache_read_input_tokens":99999}}\n'
     ;;
   976)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -6895,6 +6895,8 @@ assert_contains "AC-6: adk-ralph: (issue #132) сводка показывает
   "$ralph_tok_out" "/3500 ток."
 assert_contains "AC-6: adk-ralph: (issue #132) сводка содержит раздел расхода" \
   "$ralph_tok_out" "Расход"
+assert_contains "AC-6: adk-ralph: (issue #132, круг 2 ревью PR #197) финальный .result headless-процесса печатается в консоль прогона" \
+  "$ralph_tok_out" "итог задачи 971 от headless-процесса"
 
 # токеновый бюджет задачи: превышение → needs-human + result=stuck про
 # токены, цикл продолжается (вторая задача исполняется); merge не вызывается
