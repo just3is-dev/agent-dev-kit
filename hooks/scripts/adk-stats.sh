@@ -6,7 +6,11 @@
 # result/reason/type/timestamp) — docs/adr/001-journal-event-schema.md; её же
 # обязаны писать /work, /review и /autopilot.
 # Пустой или отсутствующий каталог журнала — exit 0 с сообщением, без
-# агрегатов. Битые строки (невалидный JSON, JSON не-объект, оборванная
+# агрегатов. Расход прогонов (issue #136, SPEC-003 AC-6): отдельный раздел
+# по event=task в autopilot-*.jsonl (минуты и токены: медиана, p90,
+# максимум; поля duration/tokens — ADR-001 «Расширения схемы», пишет
+# adk-ralph.sh); строки без полей расхода в раздел не входят, при полном
+# отсутствии расхода раздел не печатается — прежний вывод не меняется. Битые строки (невалидный JSON, JSON не-объект, оборванная
 # multibyte UTF-8 последовательность) пропускаются с предупреждением в
 # stderr, не роняют скрипт.
 set -u
@@ -17,7 +21,86 @@ logs_dir=$(adk_logs_dir "$root")
 
 shopt -s nullglob
 issue_files=("$logs_dir"/issue-*.jsonl)
+autopilot_files=("$logs_dir"/autopilot-*.jsonl)
 shopt -u nullglob
+
+# Раздел расхода прогонов (issue #136). $1 — режим пустоты: "announce"
+# печатает явное «не записан» (путь «в журнале только прогоны», где молчание
+# вернуло бы старое враньё «агрегировать нечего»), "silent" не печатает
+# ничего (обычный путь: прежние агрегаты не меняются ни на строку).
+print_usage_section() {
+  local empty_mode="$1"
+  if [ "${#autopilot_files[@]}" -eq 0 ]; then
+    [ "$empty_mode" = "announce" ] && \
+      echo "Расход в записях прогонов не записан (полей duration/tokens нет)."
+    return 0
+  fi
+  python3 - "$empty_mode" "${autopilot_files[@]}" <<'PYUSAGE'
+import json
+import math
+import os
+import statistics
+import sys
+
+empty_mode = sys.argv[1]
+durations_min = []
+tokens = []
+for path in sys.argv[2:]:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+                if not isinstance(ev, dict):
+                    raise ValueError
+            except Exception:
+                print(
+                    f"adk-stats: {os.path.basename(path)}:{lineno}: "
+                    "битая строка пропущена (не JSON-объект)",
+                    file=sys.stderr,
+                )
+                continue
+            if ev.get("event") != "task":
+                continue
+            dur = ev.get("duration")
+            tok = ev.get("tokens")
+            if isinstance(dur, str) and dur.endswith("s"):
+                try:
+                    durations_min.append(int(dur[:-1]) / 60)
+                except ValueError:
+                    pass
+            if tok is not None:
+                try:
+                    tokens.append(int(tok))
+                except (TypeError, ValueError):
+                    pass
+
+def p90(vals):
+    # nearest-rank: элемент на позиции ceil(0.9 * n)
+    s = sorted(vals)
+    return s[max(0, math.ceil(0.9 * len(s)) - 1)]
+
+count = max(len(durations_min), len(tokens))
+if count == 0:
+    if empty_mode == "announce":
+        print("Расход в записях прогонов не записан (полей duration/tokens нет).")
+    sys.exit(0)
+
+print(f"Расход задач прогонов (autopilot-*.jsonl, задач с расходом: {count}):")
+if durations_min:
+    print(
+        f"  - минуты: медиана {statistics.median(durations_min):.1f}, "
+        f"p90 {p90(durations_min):.1f}, максимум {max(durations_min):.1f}"
+    )
+if tokens:
+    print(
+        f"  - токены: медиана {statistics.median(tokens):g}, "
+        f"p90 {p90(tokens):g}, максимум {max(tokens):g}"
+    )
+PYUSAGE
+}
 
 if [ ! -d "$logs_dir" ]; then
   echo "Журнал пуст: каталог $logs_dir не найден, записей ещё нет."
@@ -25,14 +108,13 @@ if [ ! -d "$logs_dir" ]; then
 fi
 
 if [ "${#issue_files[@]}" -eq 0 ]; then
-  shopt -s nullglob
-  autopilot_files=("$logs_dir"/autopilot-*.jsonl)
-  shopt -u nullglob
   if [ "${#autopilot_files[@]}" -eq 0 ]; then
     echo "Журнал пуст: в $logs_dir нет ни одной записи."
   else
     echo "В журнале нет ни одной задачи (issue-*.jsonl) — только записи" \
-      "прогонов autopilot (autopilot-*.jsonl), которые /stats пока не агрегирует."
+      "прогонов autopilot (autopilot-*.jsonl); агрегаты задач считаются" \
+      "только по issue-файлам, расход прогонов — ниже (issue #136)."
+    print_usage_section announce
   fi
   exit 0
 fi
@@ -192,3 +274,5 @@ for week in sorted(weekly):
     avg_week_rounds = d["rounds"] / d["tasks"] if d["tasks"] else 0
     print(f"  - {week}: задач {d['tasks']}, среднее кругов {avg_week_rounds:.1f}")
 PYEOF
+
+print_usage_section silent

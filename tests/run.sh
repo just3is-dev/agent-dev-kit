@@ -666,6 +666,68 @@ assert_exit "AC-3: adk-stats: каталог только с autopilot-файл�
 assert_not_contains "AC-3: adk-stats: каталог только с autopilot-файлом — без агрегатов по задачам" "$stats_out" "Всего задач"
 assert_contains "AC-3: adk-stats: сообщение честно отличает 'нет issue-записей' от 'журнал пуст'" "$stats_out" "нет ни одной задачи"
 assert_contains "AC-3: adk-stats: сообщение про каталог только с autopilot-файлом называет autopilot" "$stats_out" "autopilot"
+assert_not_contains "AC-6: adk-stats: (issue #136) сообщение больше не говорит «пока не агрегирует»" "$stats_out" "не агрегирует"
+assert_contains "AC-6: adk-stats: (issue #136) каталог только с прогонами без расхода — отсутствие расхода названо явно" "$stats_out" "не записан"
+
+# ── issue #136, AC-6: /stats показывает распределение расхода прогонов ──────
+# (минуты и токены: медиана, p90, максимум) по event=task в autopilot-*.jsonl;
+# инвариант ADR-001 нетронут: «Всего задач» и остальные агрегаты — только по
+# issue-*.jsonl. Строки без полей расхода не участвуют; битые — предупреждение.
+STATS_USAGE="$TMP/stats-usage"
+mkdir -p "$STATS_USAGE"
+cat > "$STATS_USAGE/issue-40.jsonl" <<'EOF'
+{"event":"start","issue":"40","type":"task","timestamp":"2026-09-29T09:00:00Z"}
+{"event":"outcome","issue":"40","type":"task","result":"merged","timestamp":"2026-09-29T10:00:00Z"}
+EOF
+cat > "$STATS_USAGE/autopilot-2026-09-29.jsonl" <<'EOF'
+{"event":"run_start","timestamp":"2026-09-29T08:00:00Z"}
+{"event":"task","issue":"41","type":"task","result":"ready","duration":"60s","tokens":"1000","timestamp":"2026-09-29T08:10:00Z"}
+{"event":"task","issue":"42","type":"task","result":"merged","duration":"120s","tokens":"3500","timestamp":"2026-09-29T08:20:00Z"}
+{"event":"task","issue":"43","type":"task","result":"stuck","reason":"x","duration":"600s","tokens":"20000","timestamp":"2026-09-29T08:40:00Z"}
+{"event":"task","issue":"44","type":"task","result":"skipped","timestamp":"2026-09-29T08:41:00Z"}
+{"event":"run_end","done":"1","ready":"1","stuck":"1","skipped":"1","tokens":"24500","reason":"очередь пуста","timestamp":"2026-09-29T08:42:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_USAGE" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-6: adk-stats: (issue #136) журнал с расходом — exit 0" 0 $?
+assert_contains "AC-6: adk-stats: (issue #136) агрегаты задач нетронуты (только issue-*.jsonl)" \
+  "$stats_out" "Всего задач: 1"
+assert_contains "AC-6: adk-stats: (issue #136) раздел расхода назван и считает только задачи с полями (3 из 4)" \
+  "$stats_out" "задач с расходом: 3"
+assert_contains "AC-6: adk-stats: (issue #136) минуты — медиана/p90/максимум" \
+  "$stats_out" "минуты: медиана 2.0, p90 10.0, максимум 10.0"
+assert_contains "AC-6: adk-stats: (issue #136) токены — медиана/p90/максимум" \
+  "$stats_out" "токены: медиана 3500, p90 20000, максимум 20000"
+
+# записи прогонов без полей расхода — прежний вывод не меняется ни на строку
+STATS_NOUSAGE="$TMP/stats-nousage"
+mkdir -p "$STATS_NOUSAGE"
+cp "$STATS_USAGE/issue-40.jsonl" "$STATS_NOUSAGE/issue-40.jsonl"
+cat > "$STATS_NOUSAGE/autopilot-2026-09-28.jsonl" <<'EOF'
+{"event":"run_start","timestamp":"2026-09-28T08:00:00Z"}
+{"event":"task","issue":"45","type":"task","result":"ready","timestamp":"2026-09-28T08:10:00Z"}
+{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","reason":"очередь пуста","timestamp":"2026-09-28T08:11:00Z"}
+EOF
+stats_nousage_out=$(ADK_LOGS_DIR="$STATS_NOUSAGE" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-6: adk-stats: (issue #136) прогоны без расхода — exit 0" 0 $?
+assert_not_contains "AC-6: adk-stats: (issue #136) без записей расхода раздел не печатается (прежний вывод не изменён)" \
+  "$stats_nousage_out" "Расход задач прогонов"
+assert_contains "AC-6: adk-stats: (issue #136) агрегаты задач без изменений" \
+  "$stats_nousage_out" "Всего задач: 1"
+
+# битая строка в autopilot-файле — предупреждение, расход остальных считан
+STATS_USAGE_BROKEN="$TMP/stats-usage-broken"
+mkdir -p "$STATS_USAGE_BROKEN"
+cp "$STATS_USAGE/issue-40.jsonl" "$STATS_USAGE_BROKEN/issue-40.jsonl"
+cat > "$STATS_USAGE_BROKEN/autopilot-2026-09-29.jsonl" <<'EOF'
+{"event":"task","issue":"46","type":"task","result":"ready","duration":"60s","tokens":"1000","timestamp":"2026-09-29T08:10:00Z"}
+{оборванный мусор
+EOF
+stats_broken_out=$(ADK_LOGS_DIR="$STATS_USAGE_BROKEN" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-6: adk-stats: (issue #136) битая строка прогона не роняет скрипт" 0 $?
+assert_contains "AC-6: adk-stats: (issue #136) битая строка прогона — предупреждение" \
+  "$stats_broken_out" "битая строка пропущена"
+assert_contains "AC-6: adk-stats: (issue #136) расход валидной строки считан несмотря на битую" \
+  "$stats_broken_out" "задач с расходом: 1"
 
 # каталог содержит только незавершённую задачу (event=start/review, без
 # outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
