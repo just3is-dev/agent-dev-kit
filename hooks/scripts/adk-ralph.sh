@@ -12,7 +12,10 @@
 # уровня прогона — issue #134, ADR-016: накопленные застревания и доля
 # пропущенных из-за зависимостей за прогон. Оба уровня breaker'а
 # реализованы в этой версии. Стоп-файл `.adk/stop` — issue #130, SPEC-003
-# AC-2, приоритет при коллизии причин остановки — ADR-018. Merge ready-PR
+# AC-2, приоритет при коллизии причин остановки — ADR-018. Расход задач
+# (duration/tokens в event=task, usage из --output-format json, состав
+# счётчика и токеновые бюджеты задачи/прогона) — issue #132, ADR-001
+# «Расширения схемы». Merge ready-PR
 # по policies.merge/canMerge — issue #129, ADR-019: fail-closed на
 # неизвестное значение конфига (никогда не мержит), human-only/
 # human-review-required-без-approve — «ждут человека» (result=ready, как
@@ -155,6 +158,7 @@ ralph_signal_cleanup() {
     kill -0 "$claude_pid" 2>/dev/null && kill -KILL -- "-$claude_pid" 2>/dev/null
   fi
   "$logger" "$run_unit" event=run_end done="${merged_count:-0}" ready="${ready_count:-0}" \
+    tokens="${run_tokens_used:-0}" \
     stuck="${stuck_count:-0}" skipped="${skipped_count:-0}" \
     blocked_on_ready="${blocked_on_ready_count:-0}" reason="прерван сигналом $sig" || true
   exit "$sig_exit"
@@ -191,6 +195,7 @@ blocked_on_ready_count=0  # задачи, заблокированные ready-�
                           # блокером этого прогона (ADR-014, issue #147)
 ready_list=""
 merged_list=""
+usage_summary=""  # строки «#N: 12s/3456 ток.» по клод-исполненным задачам (issue #132)
 stuck_summary=""
 skipped_summary=""
 blocked_on_ready_summary=""
@@ -855,7 +860,7 @@ finish_ready_outcome() {
       merged_nums=$(csv_add "$merged_nums" "$issue_num")
       merged_count=$((merged_count + 1))
       merged_list="$merged_list #$issue_num"
-      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=merged; then
+      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=merged $task_extra; then
         journal_break
         return 1
       fi
@@ -869,7 +874,7 @@ finish_ready_outcome() {
           journal_break
           return 1
         fi
-      elif ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready; then
+      elif ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=ready $task_extra; then
         journal_break
         return 1
       fi
@@ -888,7 +893,7 @@ finish_ready_outcome() {
       stuck=$(csv_add "$stuck" "$issue_num")
       stuck_count=$((stuck_count + 1))
       stuck_summary="$stuck_summary #$issue_num ($reason)"
-      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason"; then
+      if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" $task_extra; then
         journal_break
         return 1
       fi
@@ -1073,11 +1078,61 @@ print(min(seconds, 10**9))
 ' "$path" "$raw" "$default_minutes"
 }
 
+# adk_parse_tokens <файл stdout claude -p --output-format json> — сумма
+# input + output + cache_creation, БЕЗ cache_read (issue #132, состав —
+# ADR-001 «Расширения схемы»: cache_read на порядок больше и отражает
+# кэш-политику, не объём работы). Нет файла / не JSON / нет usage —
+# ненулевой exit: поле tokens не пишется, токеновый бюджет задачи не
+# энфорсится, прогон продолжается (переходное состояние спеки).
+adk_parse_tokens() {
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    u = data["usage"]
+    total = int(u.get("input_tokens", 0)) + int(u.get("output_tokens", 0)) \
+        + int(u.get("cache_creation_input_tokens", 0))
+except Exception:
+    sys.exit(1)
+print(total)
+' "$1"
+}
+
+# adk_budget_tokens <путь> <дефолт> — валидированный токеновый бюджет
+# (issue #132): положительное целое; иначе предупреждение в stderr и
+# дефолт — та же дисциплина, что adk_budget_seconds выше: бюджеты жёсткие
+# по спеке, «без лимита» ими не выражается. Дефолты — ставка (фактики по
+# токенам до этой задачи не существовало), калибруются по /stats.
+adk_budget_tokens() {
+  local path="$1" default_tokens="$2" raw
+  raw=$(adk_config_get "$path" "$default_tokens")
+  python3 -c '
+import sys
+path, raw, default_tokens = sys.argv[1:4]
+try:
+    tokens = int(raw)
+    if tokens <= 0:
+        raise ValueError
+except (TypeError, ValueError):
+    sys.stderr.write(
+        "adk-ralph: %s=%r — не положительное целое токенов, использован дефолт %s\n"
+        % (path, raw, default_tokens)
+    )
+    tokens = int(default_tokens)
+print(min(tokens, 10**15))
+' "$path" "$raw" "$default_tokens"
+}
+
 task_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.task.maxMinutes" "45")
 run_budget_seconds=$(adk_budget_seconds "policies.autopilot.budget.run.maxMinutes" "240")
 # Снимок $SECONDS перед стартом цикла — элапсед прогона везде далее считается
 # относительно этой точки, не относительно старта самого интерпретатора bash.
 run_start_seconds=$SECONDS
+task_token_budget=$(adk_budget_tokens "policies.autopilot.budget.task.maxTokens" "300000")
+run_token_budget=$(adk_budget_tokens "policies.autopilot.budget.run.maxTokens" "2000000")
+run_tokens_used=0  # сумма расхода прогона (issue #132) — токеновая половина
+                   # бюджета прогона и поле tokens= в event=run_end
 
 # ── Цикл ──────────────────────────────────────────────────────────────────
 # exit_code уже != 0 здесь, если gh issue list выше не удался или отказала
@@ -1124,6 +1179,16 @@ while [ "$exit_code" -eq 0 ]; do
   # выбора тоже останавливает цикл.
   if [ $((SECONDS - run_start_seconds)) -ge "$run_budget_seconds" ]; then
     stop_reason="бюджет прогона по времени"
+    exit_code=1
+    break
+  fi
+
+  # Токеновый бюджет прогона (issue #132) — та же граница и семантика, что
+  # у временного выше: чистая остановка, текущая задача уже доведена до
+  # вердикта предыдущей итерацией, следующая не берётся; >= — исчерпание
+  # ровно на границе тоже останавливает.
+  if [ "$run_tokens_used" -ge "$run_token_budget" ]; then
+    stop_reason="бюджет прогона по токенам"
     exit_code=1
     break
   fi
@@ -1241,6 +1306,12 @@ while [ "$exit_code" -eq 0 ]; do
   # проход цикла, как до issue #129.
   reused_flag="false"
   budget_dirty_tree=""
+  # Расход задачи (issue #132): оба поля пишутся только для задач, где
+  # claude -p реально запускался этой итерацией; reused/skip/blocked-on-
+  # ready остаются без них (ADR-001: поля опциональны).
+  task_duration_s=""
+  task_tokens=""
+  task_extra=""
   if [ "$pre_pr_state" = "ready" ]; then
     reused_flag="true"
     pr_state="ready"
@@ -1276,7 +1347,11 @@ while [ "$exit_code" -eq 0 ]; do
     # stdin, который bash даёт background job'ам только при выключенном job
     # control.
     set -m
-    (cd "$root" || exit 1; exec claude -p "$prompt") </dev/null &
+    # --output-format json + stdout в файл (issue #132): финальный result-
+    # JSON несёт usage; живого текстового вывода у -p в этом формате нет,
+    # человек читает журнал и сводку. stderr не редиректится — прогресс и
+    # ошибки клода остаются в консоли прогона.
+    (cd "$root" || exit 1; exec claude -p --output-format json "$prompt") </dev/null >"$work_dir/claude-out.json" &
     claude_pid=$!
     set +m
     task_budget_hit=0
@@ -1308,6 +1383,7 @@ while [ "$exit_code" -eq 0 ]; do
     # claude_pid пуст вне окна жизни фонового claude -p — обработчик сигнала
     # (ralph_signal_cleanup выше) не должен пытаться добить уже собранный job.
     claude_pid=""
+    task_duration_s=$((SECONDS - task_iter_start))
 
     if [ "$task_budget_hit" -eq 0 ] && [ "$claude_rc" -ne 0 ]; then
       # Сбой самого headless-процесса (не установлен/не авторизован/лимит,
@@ -1368,6 +1444,27 @@ while [ "$exit_code" -eq 0 ]; do
       fi
       pr_state="budget-exceeded"
     else
+      # Снятие usage (issue #132) — только после сам-завершившегося
+      # процесса: после kill по бюджету времени файл может быть пустым или
+      # оборванным, там расход не читается (минуты пишутся, токены нет).
+      if task_tokens=$(adk_parse_tokens "$work_dir/claude-out.json"); then
+        run_tokens_used=$((run_tokens_used + task_tokens))
+      else
+        task_tokens=""
+        echo "adk-ralph: usage headless-процесса не прочитан (issue" \
+          "#$issue_num) — токены не записаны, токеновый бюджет задачи не" \
+          "применён." >&2
+      fi
+      if [ -n "$task_tokens" ] && [ "$task_tokens" -gt "$task_token_budget" ]; then
+        # Токеновая половина жёсткого бюджета задачи (issue #132): usage
+        # известен только по завершении процесса, поэтому проверка
+        # post-hoc — застревание фиксируется независимо от состояния PR
+        # (find_pr_state не вызывается, как и при бюджете времени): даже
+        # готовый PR превысившей задачи не мержится этим прогоном.
+        echo "adk-ralph: расход задачи ($task_tokens токенов) превысил" \
+          "бюджет задачи ($task_token_budget) при issue #$issue_num." >&2
+        pr_state="token-budget-exceeded"
+      else
       pr_state=$(find_pr_state "$issue_num")
 
       if [ "$pr_state" = "error" ]; then
@@ -1383,7 +1480,18 @@ while [ "$exit_code" -eq 0 ]; do
         return_to_default_branch || true
         break
       fi
+      fi
     fi
+  fi
+
+  # Строка расхода для журнала и сводки (issue #132) — после всех путей,
+  # выставивших duration/tokens; unquoted-подстановка безопасна: значения
+  # без пробелов.
+  task_extra=""
+  [ -n "$task_duration_s" ] && task_extra="duration=${task_duration_s}s"
+  [ -n "$task_tokens" ] && task_extra="$task_extra tokens=$task_tokens"
+  if [ -n "$task_duration_s" ]; then
+    usage_summary="$usage_summary #$issue_num: ${task_duration_s}s/${task_tokens:-?} ток."
   fi
 
   handled=$(csv_add "$handled" "$issue_num")
@@ -1400,6 +1508,8 @@ while [ "$exit_code" -eq 0 ]; do
   else
     if [ "$pr_state" = "budget-exceeded" ]; then
       reason="бюджет задачи по времени"
+    elif [ "$pr_state" = "token-budget-exceeded" ]; then
+      reason="бюджет задачи по токенам"
     elif [ "$pr_state" = "draft" ]; then
       reason="PR остался черновиком"
     else
@@ -1424,7 +1534,7 @@ while [ "$exit_code" -eq 0 ]; do
     stuck=$(csv_add "$stuck" "$issue_num")
     stuck_count=$((stuck_count + 1))
     stuck_summary="$stuck_summary #$issue_num ($reason)"
-    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason"; then
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=stuck reason="$reason" $task_extra; then
       journal_break
       # На грязном дереве после прерывания по бюджету задачи (ADR-017 §4)
       # инвариант «не трогать дерево» действует и здесь — отказ записи
@@ -1511,7 +1621,8 @@ done
 # писал в него литеральный 0, потому что merge не был реализован (issue
 # #129, ADR-019 — merged_count теперь отражает факт).
 "$logger" "$run_unit" event=run_end done="$merged_count" ready="$ready_count" stuck="$stuck_count" \
-  skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" reason="$stop_reason" || true
+  skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" \
+  tokens="$run_tokens_used" reason="$stop_reason" || true
 
 summary="=== Ralph: итог прогона ===
 Смержено: ${merged_list:-нет}
@@ -1520,6 +1631,8 @@ Ready (ждут человека): ${ready_list:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
 Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
+Расход по задачам (сек/токены):${usage_summary:- нет}
+Расход прогона: $run_tokens_used ток.
 Причина остановки: $stop_reason"
 
 echo "$summary"
