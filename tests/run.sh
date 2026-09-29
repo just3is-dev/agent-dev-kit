@@ -5373,6 +5373,75 @@ rb_share_boundary_call_count=$(cat "$RBIN_RB_SHARE_BOUNDARY/claude-calls.log" 2>
 assert_exit "AC-5: adk-ralph: (issue #134) доля на пороге — headless-процесс вызван на #765 тоже (три вызова)" \
   3 "$rb_share_boundary_call_count"
 
+# ── issue #213: maxSkippedShare="nan" молча выключал breaker — float("nan")
+# проходил валидацию (nan < 0 даёт False), а share > nan всегда False. Тот
+# же класс, что PR #193 чинил isfinite'ом для бюджетов. Репро: #781 stuck
+# (draft), #782-784 skipped (blocked by #781) — доля 3/4 = 0.75 выше
+# дефолта 0.5: с валидным nan-отказом (предупреждение + дефолт) breaker
+# обязан сработать; с багом прогон молча доигрывал до пустой очереди ───────
+RALPH_RB_NAN="$TMP/ralph-rb-nan-proj"
+RBIN_RB_NAN="$TMP/ralph-rb-nan-bin"
+mkdir -p "$RALPH_RB_NAN" "$RBIN_RB_NAN"
+(cd "$RALPH_RB_NAN" && git_c init -q -b main)
+cat > "$RBIN_RB_NAN/issues-fixture.json" <<'EOF'
+[
+  {"number": 781, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 782, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"},
+  {"number": 783, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"},
+  {"number": 784, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"}
+]
+EOF
+cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
+[]
+EOF
+gh_ralph_stub "$RBIN_RB_NAN" "$RBIN_RB_NAN/issues-fixture.json" "$RBIN_RB_NAN/prs-fixture.json"
+claude_stub_guard "$RBIN_RB_NAN"
+cat >> "$RBIN_RB_NAN/claude" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9781, "isDraft": true, "headRefName": "issue-781-x"}]
+PRJSON
+exit 0
+EOF
+chmod +x "$RBIN_RB_NAN/claude"
+RALPH_RB_NAN_CFG="$TMP/ralph-rb-nan-config.json"
+cat > "$RALPH_RB_NAN_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxSkippedShare": "nan"}}}}
+EOF
+ralph_rb_nan_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-nan-logs" ADK_CONFIG_FILE="$RALPH_RB_NAN_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-nan-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #213: adk-ralph: maxSkippedShare=\"nan\" — breaker жив, прогон остановлен (exit != 0)" \
+  1 $?
+assert_contains "issue #213: adk-ralph: nan отвергнут валидатором с предупреждением и дефолтом 0.5" \
+  "$ralph_rb_nan_out" "maxSkippedShare='nan' — не число, использован дефолт 0.5"
+assert_contains "issue #213: adk-ralph: с дефолтом 0.5 доля 0.75 срабатывает breaker доли пропущенных" \
+  "$ralph_rb_nan_out" "breaker: доля пропущенных за прогон"
+rb_nan_call_count=$(cat "$RBIN_RB_NAN/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "issue #213: adk-ralph: nan — headless-процесс вызван ровно один раз (#781): breaker остановил прогон до следующей задачи" \
+  1 "$rb_nan_call_count"
+
+# inf — тот же класс, что nan (isfinite, не isnan: мутация isnan оставила
+# бы inf молча выключающим breaker — круг 1 ревью PR #226). Переиспользуем
+# фикстуру: чистые лог вызовов, prs и журнал, другой конфиг
+: > "$RBIN_RB_NAN/claude-calls.log"
+cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
+[]
+EOF
+RALPH_RB_INF_CFG="$TMP/ralph-rb-inf-config.json"
+cat > "$RALPH_RB_INF_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxSkippedShare": "inf"}}}}
+EOF
+ralph_rb_inf_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-inf-logs" ADK_CONFIG_FILE="$RALPH_RB_INF_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-inf-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+assert_exit "issue #213: adk-ralph: maxSkippedShare=\"inf\" — тоже отвергнут, breaker жив (exit != 0)" \
+  1 $?
+assert_contains "issue #213: adk-ralph: inf отвергнут с предупреждением и дефолтом (порог обязан быть конечным)" \
+  "$ralph_rb_inf_out" "maxSkippedShare='inf' — не число, использован дефолт 0.5"
+
 # ── issue #130, SPEC-003 AC-2: стоп-файл .adk/stop — единственный способ
 # вмешаться в ночной прогон без живой сессии. Стаб claude создаёт файл ВО
 # ВРЕМЯ первой итерации (пока сама итерация ещё не завершена) — итерация
@@ -7460,7 +7529,7 @@ assert_contains "AC-8: дефолт sizeLargeMultiplier в docs/config.md — 2"
 assert_contains "AC-8: дефолт breaker.maxStuckPerRun в коде — 2" "$ralph_src" '"policies.autopilot.breaker.maxStuckPerRun" "2"'
 assert_contains "AC-8: дефолт breaker.maxStuckPerRun в docs/config.md — 2" "$config_doc" '| `policies.autopilot.breaker.maxStuckPerRun` | число (целое ≥0) | `2` |'
 assert_contains "AC-8: дефолт breaker.maxSkippedShare в коде — 0.5" "$ralph_src" '"policies.autopilot.breaker.maxSkippedShare" "0.5"'
-assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md — 0.5" "$config_doc" '| `policies.autopilot.breaker.maxSkippedShare` | число ≥0 (доля `skipped/(ready+merged+stuck+skipped)` не превышает 1, поэтому порог >1 фактически выключает breaker) | `0.5` |'
+assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md — 0.5" "$config_doc" '| `policies.autopilot.breaker.maxSkippedShare` | конечное число ≥0 (доля `skipped/(ready+merged+stuck+skipped)` не превышает 1, поэтому порог >1 фактически выключает breaker) | `0.5` |'
 # fallback-дефолты при невалидном значении и минимальный знаменатель доли —
 # тот же контракт «дефолт из таблицы», но зашитый в другие места кода:
 # расхождение с таблицей не поймала бы сверка основных дефолтов выше
