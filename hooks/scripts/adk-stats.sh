@@ -29,12 +29,9 @@ shopt -u nullglob
 # ничего (обычный путь: прежние агрегаты не меняются ни на строку).
 print_usage_section() {
   local empty_mode="$1"
-  if [ "${#autopilot_files[@]}" -eq 0 ]; then
-    [ "$empty_mode" = "announce" ] && \
-      echo "Расход в записях прогонов не записан (полей duration/tokens нет)."
-    return 0
-  fi
-  python3 - "$empty_mode" "${autopilot_files[@]}" <<'PYUSAGE'
+  # список autopilot-файлов может быть пуст — python отработает и без
+  # аргументов-файлов, announce-путь один (нет дубля строки в bash)
+  python3 - "$empty_mode" ${autopilot_files[@]+"${autopilot_files[@]}"} <<'PYUSAGE'
 import json
 import math
 import os
@@ -67,14 +64,15 @@ for path in sys.argv[2:]:
             dur = ev.get("duration")
             tok = ev.get("tokens")
             # adk-log пишет оба поля строками ("60s", "3500") — читаем
-            # ровно эту форму: строка ASCII-цифр (isdigit() истинен и для
-            # Unicode-цифр вроде "²", которые int() не принимает, — без
-            # ASCII-проверки валидная JSON-строка роняла бы скрипт). Всё
-            # остальное (bool, float, "1_000", отрицательные, не-ASCII,
-            # мусор) — не расход, отбрасывается.
-            if isinstance(dur, str) and re.fullmatch(r"[0-9]+s", dur):
+            # ровно эту форму: ASCII-цифры длиной до 15 знаков (потолок
+            # писателя: adk_budget_tokens клампит бюджеты 10**15, значения
+            # такой длины < 2**53 — int(), деление и медиана точны и не
+            # упираются в лимиты). Unicode-цифры, bool, float, "1_000",
+            # отрицательные, сверхдлинные строки — не расход,
+            # отбрасываются молча.
+            if isinstance(dur, str) and re.fullmatch(r"[0-9]{1,15}s", dur):
                 durations_min.append(int(dur[:-1]) / 60)
-            if isinstance(tok, str) and re.fullmatch(r"[0-9]+", tok):
+            if isinstance(tok, str) and re.fullmatch(r"[0-9]{1,15}", tok):
                 tokens.append(int(tok))
 
 def p90(vals):
