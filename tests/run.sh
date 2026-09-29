@@ -5442,6 +5442,34 @@ assert_exit "issue #213: adk-ralph: maxSkippedShare=\"inf\" — тоже отв�
 assert_contains "issue #213: adk-ralph: inf отвергнут с предупреждением и дефолтом (порог обязан быть конечным)" \
   "$ralph_rb_inf_out" "maxSkippedShare='inf' — не число, использован дефолт 0.5"
 
+# issue #210 (блокер круга 1 PR #227): целый порог больше 2**63-1 валиден
+# для валидатора, но сравнение делает bash — без клампа nonneg_int каждый
+# stuck давал бы посторонний stderr «integer expression expected». Реюз
+# той же фикстуры: гигантский maxStuckPerRun принят без предупреждения
+# (клампится молча), stuck-breaker недостижим, прогон останавливает
+# share-breaker (доля 0.75 > дефолта 0.5)
+: > "$RBIN_RB_NAN/claude-calls.log"
+cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
+[]
+EOF
+RALPH_RB_BIGINT_CFG="$TMP/ralph-rb-bigint-config.json"
+cat > "$RALPH_RB_BIGINT_CFG" <<'EOF'
+{"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 999999999999999999999999}}}}
+EOF
+ralph_rb_bigint_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
+  ADK_LOGS_DIR="$TMP/ralph-rb-bigint-logs" ADK_CONFIG_FILE="$RALPH_RB_BIGINT_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rb-bigint-notify.log" \
+  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_bigint_st=$?
+assert_not_contains "issue #210: adk-ralph: гигантский maxStuckPerRun не ломает bash-сравнение (нет «integer expression expected»)" \
+  "$ralph_rb_bigint_out" "integer expression expected"
+assert_not_contains "issue #210: adk-ralph: гигантское целое — валидное значение, предупреждения нет (кламп молчалив)" \
+  "$ralph_rb_bigint_out" "maxStuckPerRun"
+assert_exit "issue #210: adk-ralph: stuck-breaker с гигантским порогом недостижим — прогон остановил share-breaker (exit != 0)" \
+  1 "$ralph_rb_bigint_st"
+assert_contains "issue #210: adk-ralph: причина остановки — доля пропущенных, не застревания" \
+  "$ralph_rb_bigint_out" "breaker: доля пропущенных за прогон"
+
 # ── issue #130, SPEC-003 AC-2: стоп-файл .adk/stop — единственный способ
 # вмешаться в ночной прогон без живой сессии. Стаб claude создаёт файл ВО
 # ВРЕМЯ первой итерации (пока сама итерация ещё не завершена) — итерация
@@ -7537,7 +7565,7 @@ assert_contains "AC-8: дефолт breaker.maxSkippedShare в docs/config.md �
 # дефолтов держат пины пар «путь + дефолт» выше, здесь — стражи самой
 # конструкции
 assert_contains "AC-8: fallback любого атрибута — парсинг дефолта из вызова (issue #210: дубль констант устранён)" "$ralph_src" '    result = parse(default)'
-assert_contains "AC-8: дефолт sizeLargeMultiplier в вызове валидатора — 2" "$ralph_src" '"policies.autopilot.budget.sizeLargeMultiplier" "2" multiplier_ge1'
+assert_contains "AC-8: потолок токеновых бюджетов — 10**15, единственный источник (код)" "$ralph_src" 'clamp_budget_tokens=1000000000000000'
 assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (код)" "$ralph_src" 'run_breaker_min_denominator=4'
 assert_contains "AC-8: минимальный знаменатель доли skipped — 4 (docs/config.md)" "$config_doc" 'минимум 4'
 

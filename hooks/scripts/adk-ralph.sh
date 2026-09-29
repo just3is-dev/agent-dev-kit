@@ -1073,7 +1073,11 @@ def parse(text):
         value = int(text)
         if value < 0:
             raise ValueError
-        return value
+        # кламп до 10**18 (< 2**63-1): сравнение порога делает bash
+        # ([ -ge ]), большее целое ломало бы его «integer expression
+        # expected» с rc=2 (блокер круга 1 ревью PR #227); счётчики
+        # прогона до таких значений не дорастают — наблюдаемо эквивалентно
+        return min(value, 10**18)
     if mode == "positive_tokens":
         value = int(text)
         if value <= 0:
