@@ -3799,6 +3799,72 @@ blk_valid=$(jsonl_check "$(ralph_journal "$RALPH_BLK_LOGS")" 8 "$blk_spec")
 assert_exit "issue #146: adk-ralph: журнал — #700/#701/#702 ready(reused), #500/#501/#502 blocked-on-ready каждый сразу за своим блокером, run_end без stuck/skipped, blocked_on_ready=3" \
   1 "$blk_valid"
 
+# ── issue #215: «Blocked by» без номера на своей строке не должен читать
+# номер со следующей строки как блокер. До фикса `Blocked by\s+` — `\s+`
+# захватывает перевод строки, capture-группа `[^\n]*` берёт всю следующую
+# непустую строку целиком, и если в ней случайно встречается «#N» как
+# обычная ссылка (не намеренная зависимость), issue ложно блокируется этим
+# номером. #530 заканчивает строку голым «Blocked by» (без номера на ней),
+# следующая строка — обычный текст со ссылкой «#531», не зависимость;
+# #531 — независимый issue без собственных блокеров. До фикса: candidate-цикл
+# (adk-ralph.sh, blockers(530) & open_numbers) ложно исключает #530 —
+# headless-процесс вызывается сперва для #531, а #530 на следующей итерации
+# уходит в result=skipped (ложно «зависит от застрявшего #531»). После фикса
+# ([ \t]+ вместо \s+ сразу после «Blocked by»): голое «Blocked by» перед
+# переводом строки не матчится вовсе (нет [ \t] перед \n) — у #530 нет
+# блокеров, он меньше по номеру и обрабатывается первым. Оба issue заведомо
+# без PR (claude-стаб не создаёт PR) — оба result=stuck, поэтому конфиг
+# поднимает breaker.maxStuckPerRun (дефолт 2 остановил бы прогон раньше
+# «очереди пусто» — issue #134/ADR-016, не о том, что проверяет этот блок,
+# сравни с фикстурой issue #134 tests/run.sh:6792) ──────────────────────────
+RALPH_215="$TMP/ralph-215-proj"
+RBIN_215="$TMP/ralph-215-bin"
+RALPH_215_CFG="$TMP/ralph-215-config.json"
+cat > "$RALPH_215_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "breaker": {"maxStuckPerRun": 5}}}}
+EOF
+ralph_init "$RALPH_215" "$RBIN_215"
+cat > "$RBIN_215/issues-fixture.json" <<'EOF'
+[
+  {"number": 530, "labels": [{"name":"type:task"}], "body": "Ссылка на предыдущее обсуждение.\nBlocked by\nСм. также #531 для контекста, это не зависимость."},
+  {"number": 531, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+gh_ralph_stub "$RBIN_215" "$RBIN_215/issues-fixture.json" "$RBIN_215/prs-fixture.json"
+claude_stub "$RBIN_215" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+exit 0
+EOF
+RALPH_215_LOGS="$TMP/ralph-215-logs"
+
+ralph_215_out=$(run_ralph "$RALPH_215" "$RBIN_215" "$RALPH_215_LOGS" "$TMP/ralph-215-notify.log" "$RALPH_215_CFG")
+assert_exit "issue #215: adk-ralph: голое «Blocked by» на конце строки — прогон завершается штатно" 0 $?
+
+# Каждый вызов claude -p логирует в claude-calls.log свой полный
+# многострочный prompt (содержимое work.md целиком) — head -1 взял бы
+# только его первую строку («-p --output-format json ---»), не маркер
+# «для задачи issue #N.» из хвоста. Вместо этого — та же выборка номера,
+# что claude_stub_guard делает внутри самого стаба (issue #207): первое
+# совпадение «для задачи issue #N» по всему логу называет issue первого
+# вызова.
+first_215_issue=$(grep -oE 'для задачи issue #[0-9]+' "$RBIN_215/claude-calls.log" 2>/dev/null \
+  | head -1 | grep -oE '[0-9]+')
+assert_exit "issue #215: adk-ralph: headless-процесс сперва вызван для #530 (не ложно заблокирован #531 из обычного текста на следующей строке)" \
+  530 "${first_215_issue:-0}"
+
+ralph_215_stuck_line=$(printf '%s' "$ralph_215_out" | grep '^Застряло:')
+assert_contains "issue #215: adk-ralph: #530 обработан этим прогоном (не ушёл в «Пропущено» как ложно заблокированный #531)" \
+  "$ralph_215_stuck_line" "#530"
+
+ralph_215_spec=$(printf '%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=530|type=task|result=stuck|reason=PR не создан' \
+  'event=task|issue=531|type=task|result=stuck|reason=PR не создан' \
+  'event=run_end|done=0|ready=0|stuck=2|skipped=0')
+ralph_215_valid=$(jsonl_check "$(ralph_journal "$RALPH_215_LOGS")" 4 "$ralph_215_spec")
+assert_exit "issue #215: adk-ralph: журнал — #530 обработан раньше #531, оба result=stuck reason=«PR не создан» (ни один не result=skipped из-за ложной блокировки текстом)" \
+  1 "$ralph_215_valid"
+
 # ── gh pr list --limit 200: предупреждение об усечении, симметрично gh
 # issue list --limit 100 (мелочь круга 3 ревью PR #141) — здесь усечение
 # дороже: пропущенный в выборке PR читается как «PR не создан». Три
