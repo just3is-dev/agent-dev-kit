@@ -3830,19 +3830,14 @@ assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-пр
 # прогона — issue #300 (без блокеров) закрыт человеком МЕЖДУ снимком и
 # моментом, когда ralph фактически берёт его в работу (симулируется gh-стабом
 # "issue view", возвращающим CLOSED только для #300). #301 — независимый
-# issue без блокеров. #302 объявляет "Blocked by #300" — круг 1 ревью PR #245
-# поймал здесь реальный дефект первой версии фикса: закрытие #300 клалось в
-# тот же CSV, что SKIP-каскад по зависимостям, из-за чего #302 каскадно
-# пропускался под чужой причиной («Пропущено (зависимость от застрявшей
-# задачи)», хотя блокер не застрял — его закрыли), и наоборот, если бы #300
-# был закрыт ДО снимка очереди (просто отсутствовал бы в issues_file), #302
-# стал бы обычным NEXT-кандидатом без единого SKIP — одно и то же событие
-# (issue закрыт человеком) не должно давать противоположный исход только от
-# момента, когда это случилось. Ожидание: ralph не запускает claude -p на
-# #300, журнал отмечает его result=skipped с явной причиной, сводка называет
-# его отдельной строкой (не как обычный SKIP-по-зависимости, не увеличивая
-# skipped=), и #301/#302 оба доигрываются до ready как обычные независимые
-# кандидаты (#302 — без единой строки SKIP на своём пути) ──────────────────
+# issue без блокеров. #302 объявляет "Blocked by #300" — проверяет, что
+# закрытие #300 не каскадно пропускает зависимые задачи (ADR-019 доп.:
+# #302 обязан стать обычным NEXT-кандидатом, а не SKIP под чужой причиной).
+# Ожидание: ralph не запускает claude -p на #300, журнал отмечает его
+# result=closed-externally с явной причиной, сводка называет его отдельной
+# строкой (не как обычный SKIP-по-зависимости, не увеличивая skipped=), и
+# #301/#302 оба доигрываются до ready как обычные независимые кандидаты
+# (#302 — без единой строки SKIP на своём пути) ────────────────────────────
 RALPH_CLOSED="$TMP/ralph-closed-proj"
 RBIN_CLOSED="$TMP/ralph-closed-bin"
 RALPH_CLOSED_LOGS="$TMP/ralph-closed-logs"
@@ -3901,17 +3896,19 @@ RALPH_CLOSED_LOGS_FILE="$(ralph_journal "$RALPH_CLOSED_LOGS")"
 closed_log=$(cat "$RALPH_CLOSED_LOGS_FILE" 2>/dev/null)
 closed_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
-  'event=task|issue=300|type=task|result=skipped' \
+  'event=task|issue=300|type=task|result=closed-externally' \
   'event=task|issue=301|type=bug|result=ready' \
   'event=task|issue=302|type=task|result=ready' \
-  'event=run_end|done=0|ready=2|stuck=0|skipped=0|reason=очередь пуста')
+  'event=run_end|done=0|ready=2|stuck=0|skipped=0|closed_externally=1|reason=очередь пуста')
 closed_valid=$(jsonl_check "$RALPH_CLOSED_LOGS_FILE" 5 "$closed_spec")
-assert_exit "issue #220 п.1: adk-ralph: журнал — #300 result=skipped, #301/#302 result=ready, run_end skipped=0 (закрытие человеком не считается пропуском breaker'а)" \
+assert_exit "issue #220 п.1: adk-ralph: журнал — #300 result=closed-externally, #301/#302 result=ready, run_end skipped=0 closed_externally=1 (не считается пропуском breaker'а)" \
   1 "$closed_valid"
-assert_contains "issue #220 п.1: adk-ralph: журнал объясняет причину skip — issue закрыт вне прогона" \
+assert_contains "issue #220 п.1: adk-ralph: журнал объясняет причину — issue закрыт вне прогона" \
   "$closed_log" '"reason": "issue closed outside this run"'
 assert_not_contains "issue #220 п.1: adk-ralph: журнал не содержит SKIP-запись по #302 (не каскадный пропуск)" \
   "$closed_log" '"issue": "302", "type": "task", "result": "skipped"'
+assert_not_contains "issue #220 п.1: adk-ralph: журнал не кодирует закрытие человеком значением result=skipped" \
+  "$closed_log" '"issue": "300", "type": "task", "result": "skipped"'
 
 # ── issue #146: разбор «Blocked by #N» устойчив к любому текстовому
 # разделителю между номерами, не только запятой/пробелу. #500 объявляет

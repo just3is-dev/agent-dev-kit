@@ -177,16 +177,10 @@ merged_nums=""  # issue-номера, смерженные этим прогон
                 # не-смерженный блокер).
 closed_externally_nums=""  # issue-номера, закрытые человеком (или другим
                 # процессом) ДО того, как ralph успел их исполнить этим
-                # прогоном (issue #220 п.1, ADR-019 доп.) — подмножество
-                # handled, отдельно от merged_nums и от skipped: это не
-                # смерженная этим прогоном задача (PR не было) и не
-                # SKIP-каскад по зависимости (блокер не застрял, он снят).
-                # select_next вычитает эти номера из open_numbers тем же
-                # способом, что и merged_now, — иначе их зависимые либо
-                # каскадно пропускались бы под чужой причиной («зависимость
-                # от застрявшей задачи»), либо инфлировали бы
-                # maxSkippedShare (ADR-016 §1 явно исключает из этой доли
-                # всё, что не является неудачей прогона).
+                # прогоном (issue #220 п.1, рационале — ADR-019 доп.) —
+                # подмножество handled, отдельно и от merged_nums, и от
+                # skipped. select_next вычитает эти номера из open_numbers
+                # тем же способом, что и merged_now.
 blocked_on_ready_nums=""  # issue-номера, отнесённые к blocked-on-ready в этом
                           # прогоне (подмножество handled), переживает
                           # итерации внешнего цикла — см. ADR-014 п.2
@@ -198,6 +192,8 @@ stuck_count=0
 skipped_count=0
 blocked_on_ready_count=0  # задачи, заблокированные ready-но-не-смерженным
                           # блокером этого прогона (ADR-014, issue #147)
+closed_externally_count=0  # issue-номера, закрытые человеком до старта
+                            # задачи этим прогоном (issue #220 п.1)
 ready_list=""
 merged_list=""
 usage_summary=""  # строки «#N: 12s/3456 ток.» по клод-исполненным задачам (issue #132)
@@ -1333,18 +1329,13 @@ while [ "$exit_code" -eq 0 ]; do
   next_issue_state=$(cd "$root" && gh issue view "$issue_num" --json state -q .state 2>/dev/null)
   if [ "$next_issue_state" = "CLOSED" ]; then
     handled=$(csv_add "$handled" "$issue_num")
-    # closed_externally_nums — НЕ skipped/skipped_count (круг 1 ревью PR #245):
-    # этот issue не «пропущен по зависимости» и не вошёл в maxSkippedShare
-    # (ADR-016 §1 явно исключает из этой доли всё, что не неудача прогона —
-    # закрытие человеком посреди прогона такая же легитимная причина, как
-    # owner:human/blocked-on-ready). select_next вычитает closed_externally_nums
-    # из open_numbers тем же способом, что и merged_now, — зависимые issues
-    # становятся обычным NEXT-кандидатом, а не каскадным SKIP под чужой
-    # причиной («зависимость от застрявшей задачи» подписана бы неверно:
-    # блокер не застрял, он закрыт).
     closed_externally_nums=$(csv_add "$closed_externally_nums" "$issue_num")
+    closed_externally_count=$((closed_externally_count + 1))
     closed_before_start_summary="$closed_before_start_summary #$issue_num"
-    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=skipped reason="issue closed outside this run"; then
+    # result=closed-externally — новое значение схемы ADR-001 (аналогично
+    # blocked-on-ready), не result=skipped: сознательно не участвует в
+    # skipped_count/maxSkippedShare (обоснование — ADR-019 доп.).
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=closed-externally reason="issue closed outside this run"; then
       journal_break
       break
     fi
@@ -1724,6 +1715,7 @@ done
 # #129, ADR-019 — merged_count теперь отражает факт).
 "$logger" "$run_unit" event=run_end done="$merged_count" ready="$ready_count" stuck="$stuck_count" \
   skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" \
+  closed_externally="$closed_externally_count" \
   tokens="$run_tokens_used" reason="$stop_reason" || true
 
 summary="=== Ralph: итог прогона ===
