@@ -167,6 +167,7 @@ for path in paths:
             if event == "review":
                 try:
                     round_value = int(ev.get("round", 0))
+                    float(round_value)
                 except (TypeError, ValueError, OverflowError):
                     print(
                         f"adk-stats: {os.path.basename(path)}:{lineno}: "
