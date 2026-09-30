@@ -33,7 +33,9 @@ truncate_actual() { # truncate_actual <текст> — усечённое (~200 
 }
 
 assert_contains() { # assert_contains <описание> <текст> <подстрока>
-  if printf '%s' "$2" | grep -q -- "$3"; then
+  # 2>/dev/null у printf: grep -q выходит на первом совпадении и рвёт
+  # пайп — на больших текстах printf шумел «write error: Broken pipe»
+  if printf '%s' "$2" 2>/dev/null | grep -q -- "$3"; then
     echo "PASS: $1"
   else
     echo "FAIL: $1 (не найдено: $3; вернулось: '$(truncate_actual "$2")')"
@@ -42,7 +44,7 @@ assert_contains() { # assert_contains <описание> <текст> <подс�
 }
 
 assert_not_contains() { # assert_not_contains <описание> <текст> <подстрока>
-  if printf '%s' "$2" | grep -q -- "$3"; then
+  if printf '%s' "$2" 2>/dev/null | grep -q -- "$3"; then
     echo "FAIL: $1 (неожиданно найдено: $3; вернулось: '$(truncate_actual "$2")')"
     fails=$((fails + 1))
   else
@@ -774,6 +776,17 @@ chmod 644 "$STATS_RC/autopilot-2026-09-29.jsonl"
 assert_exit "AC-6: adk-stats: (issue #136) падение агрегатора расхода не маскируется успешным основным — exit ненулевой" \
   0 $?
 
+# упали ОБА агрегатора (оба файла нечитаемы): порядок кодов — exit берёт
+# код основного агрегатора, падение расхода его не перетирает (issue #212,
+# хвост круга 7 PR #199: порядок main_rc/usage_rc не был закреплён)
+chmod 000 "$STATS_RC/issue-40.jsonl" "$STATS_RC/autopilot-2026-09-29.jsonl"
+ADK_LOGS_DIR="$STATS_RC" "$HOOKS/adk-stats.sh" >/dev/null 2>&1
+stats_both_st=$?
+chmod 644 "$STATS_RC/issue-40.jsonl" "$STATS_RC/autopilot-2026-09-29.jsonl"
+[ "$stats_both_st" -eq "$stats_rc_st" ]
+assert_exit "issue #212: adk-stats: упали оба агрегатора — exit равен коду основного (тот же, что при падении только его)" \
+  0 $?
+
 # нечитаемый autopilot-файл: путь «только прогоны» (announce)
 STATS_RC_AP="$TMP/stats-rc-ap"
 mkdir -p "$STATS_RC_AP"
@@ -1454,20 +1467,20 @@ PLANMD="$KIT/commands/plan.md"
 # issue #172 сдвинул нумерацию шагов /plan на один (новый шаг 1 —
 # определение режима «ветка спеки» / «спека уже в main»): создание issues
 # и label — теперь шаг 4, был шаг 3.
-plan_step3=$(md_section "$PLANMD" '^4\. \*\*' '^5\. \*\*')
+plan_step4=$(md_section "$PLANMD" '^4\. \*\*' '^5\. \*\*')
 
 assert_contains "AC-4: plan.md шаг 4 читает имя label типа task из конфига через adk-config.sh (дефолт type:task)" \
-  "$plan_step3" 'adk-config\.sh types\.task\.label type:task'
+  "$plan_step4" 'adk-config\.sh types\.task\.label type:task'
 assert_contains "AC-4: plan.md шаг 4 перехватывает stderr gh label create, чтобы разобрать исход (не глушит его 2>/dev/null)" \
-  "$plan_step3" 'gh label create.*2>&1'
+  "$plan_step4" 'gh label create.*2>&1'
 assert_contains "AC-4: plan.md шаг 4 считает успехом идемпотентный случай «label уже есть» (already exists)" \
-  "$plan_step3" 'already exists'
+  "$plan_step4" 'already exists'
 assert_contains "K18 (issue #99): plan.md шаг 4 не глушит прочие ошибки gh label create — говорит явно, что label не создан" \
-  "$plan_step3" 'label не создан'
+  "$plan_step4" 'label не создан'
 assert_contains "AC-4: plan.md шаг 4 создаёт label до создания issues" \
-  "$plan_step3" 'gh label create.*gh issue create'
+  "$plan_step4" 'gh label create.*gh issue create'
 assert_contains "AC-4: plan.md шаг 4 проставляет label создаваемым issues (--label в gh issue create)" \
-  "$plan_step3" 'gh issue create.*--label'
+  "$plan_step4" 'gh issue create.*--label'
 check_ac_doc AC-4 "plan.md: label — единственный источник типа, из текста issue тип не выводится" \
   "$PLANMD" "из текста issue не выводится"
 check_ac_doc AC-4 "plan.md: перепланирование не переклеивает labels на закрытых issues" \
@@ -1571,9 +1584,6 @@ echo '{}' | CLAUDE_PROJECT_DIR="$M" "$HOOKS/stop-test.sh" >/dev/null 2>&1
 assert_exit "монорепа stop-test: корневой контракт, всё зелёное" 0 $?
 
 # ── AC-трассируемость (ac-check.sh) ──────────────────────────────────────────
-ACP="$TMP/acproj"
-mkdir -p "$ACP/docs/specs" "$ACP/tests"
-
 write_ac_spec() { # write_ac_spec <файл> <статус> <тело критериев>
   cat > "$1" <<EOF
 # SPEC
@@ -1585,6 +1595,9 @@ write_ac_spec() { # write_ac_spec <файл> <статус> <тело крите
 $3
 EOF
 }
+
+ACP="$TMP/acproj"
+mkdir -p "$ACP/docs/specs" "$ACP/tests"
 
 write_ac_spec "$ACP/docs/specs/001-x.md" "approved" "- [ ] AC-101: первый критерий
 - [ ] AC-102: второй критерий"
@@ -1690,15 +1703,8 @@ assert_exit "AC-4: ac-check: AC-токен вне секции «Критери�
 # исключены из тестового корпуса
 SELFM="$TMP/ac-selfmatch-proj"
 mkdir -p "$SELFM/docs/specs"
-cat > "$SELFM/docs/specs/001-feature.spec.md" <<'EOF'
-# SPEC
-
-Статус: approved
-
-## Критерии приёмки
-
-- [ ] AC-101: критерий без отдельного теста
-EOF
+write_ac_spec "$SELFM/docs/specs/001-feature.spec.md" "approved" \
+  "- [ ] AC-101: критерий без отдельного теста"
 ac_out=$("$HOOKS/ac-check.sh" "$SELFM" 2>&1)
 ac_st=$?
 assert_exit "AC-4: ac-check: спека не засчитывает сама себя как тест (docs/specs исключён)" 1 "$ac_st"
@@ -2228,7 +2234,7 @@ check_ac_doc AC-5 "spec-template: критерий приёмки — прону
 check_ac_doc AC-5 "spec-template: пример второго критерия пронумерован" \
   "$KIT/templates/process/spec-template.md" "- [ ] AC-{{NNN}}-2:"
 check_ac_doc "issue #171" "spec-template: номер спеки в токене не даёт коллизии между спеками" \
-  "$KIT/templates/process/spec-template.md" "issue #171"
+  "$KIT/templates/process/spec-template.md" "засчитать чужое покрытие (issue #171"
 
 check_ac_doc AC-5 "/spec: правило нумерации критериев AC-{{NNN}}-1, AC-{{NNN}}-2, …" \
   "$KIT/commands/spec.md" "AC-{{NNN}}-1, AC-{{NNN}}-2"
@@ -2425,7 +2431,9 @@ check_ac_doc "issue #120" "README: чек-лист reviewer упоминает �
 # следующее расширение чек-листа не повторило разрыв (issue #120).
 reviewer_checklist_items=$(grep -cE '^[0-9]+\. \*\*' "$KIT/agents/reviewer.md")
 readme_reviewer_row=$(sed -n '/^| `reviewer`/p' "$KIT/README.md")
-readme_checklist_items=$(( $(printf '%s' "$readme_reviewer_row" | grep -o '→' | wc -l | tr -d ' ') + 1 ))
+# стрелки считаются только в части до «Вердикт» — стрелка в пояснении
+# после чек-листа не должна давать ложный красный (issue #212)
+readme_checklist_items=$(( $(printf '%s' "${readme_reviewer_row%%Вердикт*}" | grep -o '→' | wc -l | tr -d ' ') + 1 ))
 assert_exit "issue #120: README перечисляет столько же пунктов чек-листа reviewer, сколько их в agents/reviewer.md" \
   "$reviewer_checklist_items" "$readme_checklist_items"
 
@@ -2873,7 +2881,7 @@ check_ac_doc "issue #122" "contract.md: признак устаревшей ко
 check_ac_doc "issue #122" "contract.md: явно назвал ограниченность прежнего grep-признака — слеп к правкам хелпера вне аннотации" \
   "$KIT/docs/contract.md" "слеп к остальным правкам хелпера"
 check_ac_doc "issue #122" "contract.md: команда обновления сама проверяет пустой find и не запускает cp вслепую" \
-  "$KIT/docs/contract.md" "-z \"\$AC_CHECK_SRC\""
+  "$KIT/docs/contract.md" "if [ -z \"\$AC_CHECK_SRC\" ]; then"
 check_ac_doc "issue #122" "contract.md: пустой find даёт понятное сообщение об ошибке вместо голого cp: : No such file or directory" \
   "$KIT/docs/contract.md" "agent-dev-kit не установлен по ожидаемому пути"
 check_ac_doc "issue #122" "contract.md: назван конкретный симптом, который правка устраняет (голый cp: : No such file or directory)" \
@@ -3973,7 +3981,7 @@ fi
 exit 0
 EOF
 
-ralph_checkoutfail_out=$(run_ralph "$RALPH_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL" "$TMP/ralph-checkoutfail-logs" "$TMP/ralph-checkoutfail-notify.log" "$RALPH_NOMERGE_CFG")
+ralph_checkoutfail_out=$(LC_ALL=C run_ralph "$RALPH_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL" "$TMP/ralph-checkoutfail-logs" "$TMP/ralph-checkoutfail-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: git checkout main отказывает (дерево грязное) — прогон останавливается с честной причиной (exit != 0), не тихо" \
   1 $?
 assert_contains "issue #144: git checkout main отказывает — громкое предупреждение в stderr называет причину" \
@@ -3997,7 +4005,7 @@ assert_not_contains "issue #144: git checkout main отказывает — issu
 # claude -p пропускал его целиком. Фикстура: issue #601 отрабатывает
 # штатно (claude -p реально вызывается и создаёт PR — prs-fixture.json
 # стартует пустым, тот же приём, что уже применён в других ralph-фикстурах
-# после согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186, иначе
+# после согласования с ADR-014 (история — PR #186), иначе
 # статичный PR закоротил бы #601 на предстартовой проверке find_pr_state
 # ещё до вызова claude, и «штатно» было бы неправдой), дерево возвращается
 # на main. issue #602 запускает claude -p, который переключается на свою
@@ -4041,6 +4049,9 @@ assert_exit "issue #144: adk-ralph: claude -p падает не на перво�
 assert_contains "issue #144: claude -p падает не на первом issue — стоп-причина называет именно issue #602" \
   "$ralph_cfail_mid_out" "claude -p завершился с ошибкой (exit 1) при issue #602"
 
+cfail_mid_claude_calls=$(cat "$RBIN_CFAIL_MID/claude-calls.log" 2>/dev/null)
+assert_contains "issue #144: claude -p падает на #602 — первый issue #601 успел отработать (call 601 в логе)" \
+  "$cfail_mid_claude_calls" "call 601"
 cfail_mid_final_branch=$(git -C "$RALPH_CFAIL_MID" rev-parse --abbrev-ref HEAD)
 [ "$cfail_mid_final_branch" = "main" ]
 assert_exit "issue #144: claude -p падает на НЕ первом issue — дерево возвращено на main перед остановкой прогона (не осталось на issue-602-x)" \
@@ -4050,7 +4061,7 @@ assert_exit "issue #144: claude -p падает на НЕ первом issue —
 # прогона — тот же пробел, что и для claude -p выше, но для другого
 # break-пути (find_pr_state). prs-fixture.json стартует пустым (тот же
 # приём, что уже применён в checkout-fail/default-branch фикстурах после
-# согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186): статичный
+# согласования с ADR-014, история — PR #186): статичный
 # PR для issue-611-x с начала прогона закорачивал бы #611 на предстартовой
 # проверке find_pr_state ещё до первого реального сбоя, и `claude` не
 # вызывался бы вовсе. Стаб claude сам дописывает PR для #611 после checkout
@@ -5221,6 +5232,9 @@ assert_exit "issue #213: adk-ralph: maxSkippedShare=\"inf\" — тоже отв�
   1 $?
 assert_contains "issue #213: adk-ralph: inf отвергнут с предупреждением и дефолтом (порог обязан быть конечным)" \
   "$ralph_rb_inf_out" "maxSkippedShare='inf' — не число, использован дефолт 0.5"
+rb_inf_calls=$(grep -c "Инструкция ралфа" "$RBIN_RB_NAN/claude-calls.log")
+assert_exit "issue #212: inf-прогон вызвал claude ровно один раз — сброс prs-fixture между прогонами наблюдаем (унаследованный draft закоротил бы предстарт)" \
+  1 "$rb_inf_calls"
 
 # issue #210 (блокер круга 1 PR #227): целый порог больше 2**63-1 валиден
 # для валидатора, но сравнение делает bash — без клампа nonneg_int каждый
@@ -5244,6 +5258,21 @@ assert_exit "issue #210: adk-ralph: stuck-breaker с гигантским пор
   1 "$ralph_rb_bigint_st"
 assert_contains "issue #210: adk-ralph: причина остановки — доля пропущенных, не застревания" \
   "$ralph_rb_bigint_out" "breaker: доля пропущенных за прогон"
+rb_bigint_calls=$(grep -c "Инструкция ралфа" "$RBIN_RB_NAN/claude-calls.log")
+assert_exit "issue #212: bigint-прогон вызвал claude ровно один раз — сброс prs-fixture наблюдаем и здесь" \
+  1 "$rb_bigint_calls"
+
+# issue #212: multiplier nan — валидатор size_multiplier читается на старте
+# любого прогона; nan отвергается общей дисциплиной (isfinite, #210/#213)
+: > "$RBIN_RB_NAN/claude-calls.log"
+printf '[]\n' > "$RBIN_RB_NAN/prs-fixture.json"
+RALPH_RB_MULNAN_CFG="$TMP/ralph-rb-mulnan-config.json"
+cat > "$RALPH_RB_MULNAN_CFG" <<'EOF'
+{"policies": {"autopilot": {"budget": {"sizeLargeMultiplier": "nan"}}}}
+EOF
+ralph_rb_mulnan_out=$(run_ralph "$RALPH_RB_NAN" "$RBIN_RB_NAN" "$TMP/ralph-rb-mulnan-logs" "$TMP/ralph-rb-mulnan-notify.log" "$RALPH_RB_MULNAN_CFG")
+assert_contains "issue #212: sizeLargeMultiplier=\"nan\" отвергнут с предупреждением и дефолтом 2 (isfinite общего валидатора)" \
+  "$ralph_rb_mulnan_out" "sizeLargeMultiplier='nan' — не число >= 1, использован дефолт 2"
 
 # ── issue #130, SPEC-003 AC-2: стоп-файл .adk/stop — единственный способ
 # вмешаться в ночной прогон без живой сессии. Стаб claude создаёт файл ВО
@@ -5342,6 +5371,36 @@ assert_exit "AC-2: adk-ralph: единственный доступный issue 
 [ ! -e "$RALPH_STOP_PRE/.adk/stop" ]
 assert_exit "AC-2: adk-ralph: стоп-файл, лежавший до старта, больше не существует после удаления на старте" \
   0 $?
+
+# ── issue #212 (хвост круга ревью PR #194): rm -f на старте НЕ удаляет
+# .adk/stop-КАТАЛОГ — путь громкого предупреждения не был покрыт ни одной
+# фикстурой. Ожидание: предупреждение в stderr, прогон стартует и честно
+# останавливается первой же проверкой границы с причиной «стоп-файл» ─────
+RALPH_STOP_DIR="$TMP/ralph-stop-dir-proj"
+RBIN_STOP_DIR="$TMP/ralph-stop-dir-bin"
+ralph_init "$RALPH_STOP_DIR" "$RBIN_STOP_DIR"
+mkdir -p "$RALPH_STOP_DIR/.adk/stop"
+cat > "$RBIN_STOP_DIR/issues-fixture.json" <<'EOF'
+[
+  {"number": 1320, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+gh_ralph_stub "$RBIN_STOP_DIR" "$RBIN_STOP_DIR/issues-fixture.json" "$RBIN_STOP_DIR/prs-fixture.json"
+claude_stub "$RBIN_STOP_DIR" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+exit 0
+EOF
+ralph_stop_dir_out=$(run_ralph "$RALPH_STOP_DIR" "$RBIN_STOP_DIR" "$TMP/ralph-stop-dir-logs" "$TMP/ralph-stop-dir-notify.log" "$RALPH_NOMERGE_CFG")
+ralph_stop_dir_st=$?
+assert_contains "issue #212: adk-ralph: .adk/stop-каталог — громкое предупреждение о неудалённом стоп-файле" \
+  "$ralph_stop_dir_out" "не удалось удалить"
+assert_exit "issue #212: adk-ralph: .adk/stop-каталог — прогон остановлен (exit != 0)" \
+  1 "$ralph_stop_dir_st"
+assert_contains "issue #212: adk-ralph: причина остановки — «стоп-файл» (первая проверка границы)" \
+  "$ralph_stop_dir_out" "стоп-файл"
+stop_dir_calls=$(cat "$RBIN_STOP_DIR/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
+assert_exit "issue #212: adk-ralph: .adk/stop-каталог — ни один issue не начат" \
+  0 "$stop_dir_calls"
 
 # ── issue #130, ADR-018: стоп-файл появляется во время обработки
 # ЕДИНСТВЕННОГО (последнего) доступного issue — следующий (несостоявшийся)
@@ -6183,7 +6242,7 @@ claude_stub "$RBIN_BUDGET_RUN" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 case "$issue_num" in
   921)
-    # 2s реальной работы — дольше дефолтного бюджета прогона ниже (1s), но
+    # 2s реальной работы — дольше бюджета прогона из конфига фикстуры (1s), но
     # на порядки быстрее дефолтного бюджета задачи (45 минут): задача
     # обязана доиграть до ready, не быть прерванной по budget задачи.
     sleep 2
@@ -6374,6 +6433,47 @@ dirty_valid=$(jsonl_check "$dirty_log_file" 3 "$dirty_spec")
 assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — журнал: #961 залогирован обычным event=task result=stuck (не пропущен), run_end с причиной грязного дерева" \
   1 "$dirty_valid"
 
+# ── issue #212 (хвост круга 5 ревью PR #193): отказ записи журнала на
+# пути с грязным деревом — инвариант «дерево не трогается» действует и
+# здесь (journal_break БЕЗ return_to_default_branch). Стаб сам ломает
+# каталог логов ПОСЛЕ записи run_start, затем грязнит дерево и виснет
+# дольше бюджета: event=task result=stuck упирается в сломанный журнал ──
+RALPH_DIRTYLOG="$TMP/ralph-dirtylog-proj"
+RBIN_DIRTYLOG="$TMP/ralph-dirtylog-bin"
+mkdir -p "$RALPH_DIRTYLOG" "$RBIN_DIRTYLOG"
+(cd "$RALPH_DIRTYLOG" && git_c init -q -b main && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+printf '[]\n' > "$RBIN_DIRTYLOG/prs-fixture.json"
+cat > "$RBIN_DIRTYLOG/issues-fixture.json" <<'EOF'
+[
+  {"number": 971, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+gh_ralph_stub "$RBIN_DIRTYLOG" "$RBIN_DIRTYLOG/issues-fixture.json" "$RBIN_DIRTYLOG/prs-fixture.json"
+RALPH_DIRTYLOG_LOGS="$TMP/ralph-dirtylog-logs"
+claude_stub "$RBIN_DIRTYLOG" <<EOF
+echo "\$*" >> "\$d/claude-calls.log"
+git checkout -q -b issue-971-x
+echo half-done >> seed.txt
+chmod 000 "$RALPH_DIRTYLOG_LOGS"
+exec sleep 30
+EOF
+ralph_dirtylog_out=$(run_ralph "$RALPH_DIRTYLOG" "$RBIN_DIRTYLOG" "$RALPH_DIRTYLOG_LOGS" "$TMP/ralph-dirtylog-notify.log" "$RALPH_BUDGET_DIRTY_CFG")
+ralph_dirtylog_st=$?
+chmod 755 "$RALPH_DIRTYLOG_LOGS" 2>/dev/null
+assert_exit "issue #212: adk-ralph: отказ журнала на грязном дереве — прогон остановлен (exit != 0)" \
+  1 "$ralph_dirtylog_st"
+assert_contains "issue #212: adk-ralph: причина — отказ записи журнала (journal_break)" \
+  "$ralph_dirtylog_out" "отказ записи журнала"
+dirtylog_branch=$(git -C "$RALPH_DIRTYLOG" symbolic-ref --short HEAD)
+[ "$dirtylog_branch" = "issue-971-x" ]
+assert_exit "issue #212: adk-ralph: дерево НЕ возвращено на main — инвариант грязного дерева соблюдён и на отказе журнала (осталось на issue-971-x)" \
+  0 $?
+dirtylog_status=$(cd "$RALPH_DIRTYLOG" && git status --porcelain)
+[ -n "$dirtylog_status" ]
+assert_exit "issue #212: adk-ralph: незакоммиченные правки прерванного процесса нетронуты" \
+  0 $?
+
 # ── issue #132, AC-3/AC-6: расход токенов — снятие usage headless-процесса,
 # запись в event=task (duration + tokens: input+output+cache_creation, БЕЗ
 # cache_read), токеновая половина жёстких бюджетов (задача → stuck, прогон →
@@ -6421,6 +6521,37 @@ ralph_tok_spec=$(printf '%s\n%s\n%s\n%s' \
 ralph_tok_valid=$(jsonl_check "$ralph_tok_log" 4 "$ralph_tok_spec")
 assert_exit "AC-6: adk-ralph: (issue #132) журнал — #971 c tokens=3500 (input+output+cache_creation, без cache_read) и duration, #976 без tokens, run_end с суммой прогона" \
   1 "$ralph_tok_valid"
+
+# ── issue #212: кламп positive_tokens (10**15) не был закреплён ни одним
+# тестом. Конфиг task.maxTokens = 10**16 валиден (>0), но клампится до
+# 10**15; стаб отдаёт usage на 2*10**15 — превышение ловится ТОЛЬКО если
+# кламп сработал (без него 2e15 < 1e16 и задача прошла бы как ready) ──────
+RALPH_TOKCLAMP="$TMP/ralph-tokclamp-proj"
+RBIN_TOKCLAMP="$TMP/ralph-tokclamp-bin"
+ralph_init "$RALPH_TOKCLAMP" "$RBIN_TOKCLAMP"
+cat > "$RBIN_TOKCLAMP/issues-fixture.json" <<'EOF'
+[
+  {"number": 981, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+gh_ralph_stub "$RBIN_TOKCLAMP" "$RBIN_TOKCLAMP/issues-fixture.json" "$RBIN_TOKCLAMP/prs-fixture.json"
+claude_stub "$RBIN_TOKCLAMP" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9981, "isDraft": false, "headRefName": "issue-981-x"}]
+PRJSON
+printf '{"type":"result","usage":{"input_tokens":2000000000000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}\n'
+exit 0
+EOF
+RALPH_TOKCLAMP_CFG="$TMP/ralph-tokclamp-config.json"
+cat > "$RALPH_TOKCLAMP_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxTokens": 10000000000000000}}}}}
+EOF
+ralph_tokclamp_out=$(run_ralph "$RALPH_TOKCLAMP" "$RBIN_TOKCLAMP" "$TMP/ralph-tokclamp-logs" "$TMP/ralph-tokclamp-notify.log" "$RALPH_TOKCLAMP_CFG")
+assert_contains "issue #212: adk-ralph: maxTokens=10**16 клампится до 10**15 — расход 2*10**15 превышает клампнутый бюджет" \
+  "$ralph_tokclamp_out" "превысил бюджет задачи (1000000000000000) при issue #981"
+assert_not_contains "issue #212: adk-ralph: валидное большое значение — предупреждения о невалидности нет (кламп молчалив)" \
+  "$ralph_tokclamp_out" "не положительное целое токенов"
 ralph_tok_976=$(grep '"issue": "976"' "$ralph_tok_log" 2>/dev/null)
 assert_not_contains "AC-6: adk-ralph: (issue #132) у задачи без usage поля tokens нет вовсе (не 0 и не мусор)" \
   "$ralph_tok_976" '"tokens"'
@@ -7258,6 +7389,8 @@ check_ac_doc AC-4 "README: команда обновления оговарив�
   "$KIT/README.md" 'дефолтный scope команды'
 check_ac_doc AC-4 "README: пример settings.json уточняет путь (.claude/settings.json проектный vs ~/.claude/settings.json пользовательский)" \
   "$KIT/README.md" '~/.claude/settings.json'
+[ -f "$KIT/docs/specs/004-plugin-versioning.md" ]
+assert_exit "AC-4: spec 004 существует (страж ниже не должен пройти молча на \$(cat) от исчезнувшего файла)" 0 $?
 assert_not_contains "AC-4: spec 004 не несёт аннотацию (ждёт #153) на AC-4 — тест уже покрывает критерий" \
   "$(cat "$KIT/docs/specs/004-plugin-versioning.md")" 'AC-4 (ждёт #153)'
 

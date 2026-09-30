@@ -4,8 +4,9 @@
 # продублирован построчно в adk-log.sh и adk-stats.sh.
 #
 # Правило корня (adk_project_root): $CLAUDE_PROJECT_DIR, иначе git-фолбэк
-# (git rev-parse --show-toplevel), иначе $PWD. Используют только
-# adk-log.sh/adk-stats.sh — у stop-test.sh/notification.sh своё, более
+# (git rev-parse --show-toplevel), иначе $PWD. Используют adk-log.sh,
+# adk-stats.sh и lib/config.sh (через него — adk-ralph.sh, bash-guard.sh,
+# pr-title-check.sh) — у stop-test.sh/notification.sh своё, более
 # простое правило (${CLAUDE_PROJECT_DIR:-$PWD}, без git-фолбэка) и оно
 # сознательно оставлено как есть: унификация изменила бы их наблюдаемое
 # поведение при отсутствии CLAUDE_PROJECT_DIR (см. docs/adr/002-shared-hook-lib-paths.md).

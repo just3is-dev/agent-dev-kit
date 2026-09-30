@@ -274,7 +274,7 @@ for typ in sorted(by_type):
 print("Динамика по неделям (задач / средние круги ревью):")
 for week in sorted(weekly):
     d = weekly[week]
-    avg_week_rounds = d["rounds"] / d["tasks"] if d["tasks"] else 0
+    avg_week_rounds = d["rounds"] / d["tasks"]
     print(f"  - {week}: задач {d['tasks']}, среднее кругов {avg_week_rounds:.1f}")
 PYEOF
 main_rc=$?
