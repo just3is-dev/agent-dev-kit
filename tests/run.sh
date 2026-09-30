@@ -3024,8 +3024,10 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
 # 3-4 строки окружения). Код возврата прогона — код возврата функции.
 # Когда config не передан, ADK_CONFIG_FILE не выставляется ВОВСЕ (две
 # явные ветки, не `${cfg:+NAME=…}` — результат подстановки bash парсит
-# командой, а не префикс-присваиванием): пустое значение сломало бы
-# фикстуры «конфига нет».
+# командой, а не префикс-присваиванием). Сейчас все вызовы передают
+# конфиг (фикстуры «конфига нет» дают заведомо несуществующий файл ЯВНО
+# — защита от конфига из окружения разработчика, блок NC issue #138),
+# ветка без cfg — задел сигнатуры issue #206 на будущие фикстуры.
 run_ralph() {
   local proj="$1" bin="$2" logs="$3" notify="$4" cfg="${5:-}"
   if [ -n "$cfg" ]; then
@@ -5243,8 +5245,8 @@ chmod +x "$RBIN_RB_SHARECFG/claude"
 
 RALPH_RB_SHARECFG_CFG="$TMP/ralph-rb-sharecfg-config.json"
 # canMerge:false — эта фикстура (в отличие от RALPH_RB_STUCKCFG/RALPH_RB_ZERO
-# рядом) реализует ready-исход (#762) и задаёт свой ADK_CONFIG_FILE, поэтому
-# не подхватывает общий RALPH_NOMERGE_CFG выше (issue #129): без этого
+# рядом) реализует ready-исход (#762) со своим конфигом вместо общего
+# $RALPH_NOMERGE_CFG (issue #129): без явного
 # ключа #762 попал бы в merge-ветку без стаба gh на pr view/pr merge и
 # сломал бы расчёт доли (denominator ready+merged+stuck+skipped, ADR-019 §9),
 # который проверяет именно этот тест.
@@ -5684,9 +5686,9 @@ assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вы�
 
 # ── issue #129 (SPEC-003 AC-1, ADR-019): merge ready-PR по policies.merge/
 # canMerge в adk-ralph.sh. Фикстуры отсюда проверяют merge: общий
-# $RALPH_NOMERGE_CFG им не передаётся, каждая задаёт свой конфиг явно,
-# там, где нужны значения не по умолчанию (canMerge=true,
-# policies.merge=agent-after-approve) ────────────────────────────────────────
+# $RALPH_NOMERGE_CFG им не передаётся; дефолты (canMerge=true,
+# policies.merge=agent-after-approve) действуют сами, свой конфиг
+# передаётся только там, где нужны другие значения ──────────────────────────
 
 # (a) DoD-фикстура 1: canMerge=true, актуальная ветка, ready-PR → стаб
 # получает команду merge с флагом из --merge-method (дефолт squash-merge →
@@ -6538,7 +6540,7 @@ assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит з�
 # под тем же бюджетом задачи, запас нужен, чтобы его быстрое, но не
 # мгновенное, завершение не задело порог под нагрузкой CI (круг 1 ревью
 # PR #193). Этот и следующие два блока (budget-run, budget-zero) задают
-# СВОЙ ADK_CONFIG_FILE на вызове adk-ralph.sh (не общий $RALPH_NOMERGE_CFG):
+# СВОЙ конфиг пятым аргументом run_ralph (не общий $RALPH_NOMERGE_CFG):
 # без явного `canMerge: false` в их собственном
 # конфиге ready-исход (#912/#921/#931) шёл бы через реальную merge-ветку
 # (resolve_ready_pr → `gh pr view`), а общий `gh_ralph_stub` эту команду
