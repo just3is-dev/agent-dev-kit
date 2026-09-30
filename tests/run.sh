@@ -8022,7 +8022,7 @@ assert_contains "issue #220 п.3: README label owner:human перехватыв�
 assert_contains "issue #220 п.3: README label owner:human считает успехом идемпотентный случай «label уже есть» (already exists)" \
   "$readme_full" 'already exists'
 assert_contains "issue #220 п.3: README label owner:human не глушит прочие ошибки — показывает их явно" \
-  "$readme_full" 'failed'
+  "$readme_full" 'gh label create owner:human failed'
 assert_contains "issue #220 п.3: README label owner:human ссылается на тот же паттерн, что commands/plan.md" \
   "$readme_full" 'commands/plan\.md'
 assert_not_contains "issue #220 п.3: README label owner:human больше не глушит gh label create слепым 2>/dev/null" \
