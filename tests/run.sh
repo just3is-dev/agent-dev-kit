@@ -619,7 +619,6 @@ last_ts=$(tail -n1 "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys
 assert_not_contains "AC-1: adk-log: служебный timestamp не подменяется переданным полем" "$last_ts" '^bogus$'
 
 CUSTOM="$TMP/customlogs"
-rm -rf "$CUSTOM"
 ADK_LOGS_DIR="$CUSTOM" CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" autopilot-2026-08-07 event=run_start >/dev/null 2>&1
 [ -f "$CUSTOM/autopilot-2026-08-07.jsonl" ]
 assert_exit "AC-1: adk-log: ADK_LOGS_DIR переопределяет путь — файл создан в нём" 0 $?
@@ -786,7 +785,6 @@ chmod 644 "$STATS_RC_AP/autopilot-2026-09-29.jsonl"
 [ "$stats_aprc_st" -ne 0 ]
 assert_exit "AC-6: adk-stats: (issue #136) падение агрегатора расхода на пути «только прогоны» — exit ненулевой" \
   0 $?
-
 
 # каталог содержит только незавершённую задачу (event=start/review, без
 # outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
@@ -3185,13 +3183,12 @@ EOF
 
 RALPH="$TMP/ralph-proj"
 RBIN="$TMP/ralph-bin"
-mkdir -p "$RALPH" "$RBIN"
-(cd "$RALPH" && git_c init -q -b main)
+ralph_init "$RALPH" "$RBIN"
 
 # Фикстура: issue #1 (без блокеров) получит черновик PR → застрянет;
 # issue #2 (Blocked by #1) должен быть пропущен каскадом, не исполняясь
 # вовсе; issue #3 (без блокеров, независимый) получит ready-PR.
-# prs-fixture.json стартует пустым (issue #147: adk-ralph теперь проверяет
+# prs-fixture.json стартует пустым (его создаёт ralph_init) (issue #147: adk-ralph теперь проверяет
 # find_pr_state ДО запуска claude -p — статичная «уже готовая» фикстура
 # PR молча закоротила бы вызов claude ещё на предстартовой проверке, не
 # проверяя как раз то, что проверяет этот блок, — поэтому claude-стаб сам
@@ -3203,9 +3200,6 @@ cat > "$RBIN/issues-fixture.json" <<'EOF'
   {"number": 2, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #1"},
   {"number": 3, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN" "$RBIN/issues-fixture.json" "$RBIN/prs-fixture.json"
 claude_stub "$RBIN" <<'EOF'
@@ -3339,7 +3333,7 @@ cat > "$RBIN_ROOTENV/issues-fixture.json" <<'EOF'
   {"number": 91, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — иначе предстартовая проверка
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — иначе предстартовая проверка
 # find_pr_state (issue #147) закоротила бы issue #91 до единого вызова
 # claude, и этот блок перестал бы проверять то, ради чего заведён (проброс
 # CLAUDE_PLUGIN_ROOT дочернему headless-процессу).
@@ -3432,8 +3426,7 @@ assert_contains "AC-1: adk-ralph: run_end фиксирует причину сб
 # сценарий DoD: «три доступных issue — три итерации, ready-PR у всех») ──────
 RALPH3="$TMP/ralph-three-proj"
 RBIN3="$TMP/ralph-three-bin"
-mkdir -p "$RALPH3" "$RBIN3"
-(cd "$RALPH3" && git_c init -q -b main)
+ralph_init "$RALPH3" "$RBIN3"
 cat > "$RBIN3/issues-fixture.json" <<'EOF'
 [
   {"number": 21, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -3441,14 +3434,11 @@ cat > "$RBIN3/issues-fixture.json" <<'EOF'
   {"number": 23, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — как в фикстуре issue #139 выше, ready-PR
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — как в фикстуре issue #139 выше, ready-PR
 # каждого issue появляется в фикстуре только в результате запуска claude-стаба
 # (issue #147: предстартовая проверка find_pr_state иначе закоротила бы все
 # три issue до единого вызова claude, не тестируя обработку «клод реально
 # отработал и создал ready-PR»).
-cat > "$RBIN3/prs-fixture.json" <<'EOF'
-[]
-EOF
 gh_ralph_stub "$RBIN3" "$RBIN3/issues-fixture.json" "$RBIN3/prs-fixture.json"
 claude_stub "$RBIN3" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
@@ -3670,7 +3660,7 @@ cat > "$RBIN_OH/issues-fixture.json" <<'EOF'
   {"number": 91, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — то же самое, что у фикстур issue #139/
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — то же самое, что у фикстур issue #139/
 # RALPH3 выше: с предстартовой проверкой find_pr_state (issue #147) заранее
 # заполненный ready-PR закоротил бы вызов claude ещё до проверки резерва
 # owner:human, а именно её (и последующий запуск claude на #91) проверяет
@@ -3895,7 +3885,7 @@ cat > "$RBIN_GITSTATE/issues-fixture.json" <<'EOF'
   {"number": 202, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — иначе предстартовая проверка
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — иначе предстартовая проверка
 # find_pr_state (issue #147) закоротила бы обе задачи до единого запуска
 # claude, и эта фикстура перестала бы проверять то, ради чего заведена
 # (возврат дерева на main между итерациями). claude-стаб дописывает свою
@@ -4058,7 +4048,7 @@ assert_exit "issue #144: claude -p падает на НЕ первом issue —
 
 # ── issue #144 (п.2): break-путь сбоя `gh pr list` НЕ на первом issue
 # прогона — тот же пробел, что и для claude -p выше, но для другого
-# break-пути (find_pr_state). prs-fixture.json стартует пустым (тот же
+# break-пути (find_pr_state). prs-fixture.json стартует пустым (его создаёт ralph_init) (тот же
 # приём, что уже применён в checkout-fail/default-branch фикстурах после
 # согласования с ADR-014, коммит 8255cea, круг 4 ревью PR #186): статичный
 # PR для issue-611-x с начала прогона закорачивал бы #611 на предстартовой
@@ -5327,17 +5317,14 @@ assert_exit "AC-2: adk-ralph: стоп-файл остаётся на диске
 # прогон идёт штатно до пустой очереди ──────────────────────────────────────
 RALPH_STOP_PRE="$TMP/ralph-stop-pre-proj"
 RBIN_STOP_PRE="$TMP/ralph-stop-pre-bin"
-mkdir -p "$RALPH_STOP_PRE/.adk" "$RBIN_STOP_PRE"
-(cd "$RALPH_STOP_PRE" && git_c init -q -b main)
+ralph_init "$RALPH_STOP_PRE" "$RBIN_STOP_PRE"
+mkdir -p "$RALPH_STOP_PRE/.adk"
 touch "$RALPH_STOP_PRE/.adk/stop"
 
 cat > "$RBIN_STOP_PRE/issues-fixture.json" <<'EOF'
 [
   {"number": 1310, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_STOP_PRE/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_STOP_PRE" "$RBIN_STOP_PRE/issues-fixture.json" "$RBIN_STOP_PRE/prs-fixture.json"
 claude_stub_one_pr "$RBIN_STOP_PRE" args '9910' false 'issue-1310-x'
@@ -5521,7 +5508,6 @@ gh_ralph_stub "$RBIN_MERGE" "$RBIN_MERGE/issues-fixture.json" "$RBIN_MERGE/prs-f
   '  "pr view") echo "MERGEABLE null issue-2001-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
-
 ralph_merge_out=$(run_ralph "$RALPH_MERGE" "$RBIN_MERGE" "$TMP/ralph-merge-logs" "$TMP/ralph-merge-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) canMerge=true, актуальная ветка, ready-PR — прогон завершается штатно" \
   0 $?
@@ -5702,7 +5688,6 @@ IFS= read -r -d '' behind_gh_extra <<EXTRA || true
 EXTRA
 gh_ralph_stub "$RBIN_BEHIND" "$RBIN_BEHIND/issues-fixture.json" "$RBIN_BEHIND/prs-fixture.json" log "${behind_gh_extra}"
 
-
 ralph_behind_out=$(run_ralph "$RALPH_BEHIND" "$RBIN_BEHIND" "$TMP/ralph-behind-logs" "$TMP/ralph-behind-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) отставшая ветка + красные гейты после актуализации — прогон завершается штатно (задача застревает, не прогон)" \
   0 $?
@@ -5805,7 +5790,6 @@ gh_ralph_stub "$RBIN_UNK" "$RBIN_UNK/issues-fixture.json" "$RBIN_UNK/prs-fixture
     exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
-
 ralph_unk_out=$(run_ralph "$RALPH_UNK" "$RBIN_UNK" "$TMP/ralph-unk-logs" "$TMP/ralph-unk-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на первой попытке — прогон завершается штатно" 0 $?
 pr_view_calls_unk=$(cat "$RBIN_UNK/pr-view-calls" 2>/dev/null || echo 0)
@@ -5833,7 +5817,6 @@ gh_ralph_stub "$RBIN_UNK2" "$RBIN_UNK2/issues-fixture.json" "$RBIN_UNK2/prs-fixt
     echo "$n" > "$d/pr-view-calls"
     echo "UNKNOWN null issue-2050-x"
     exit 0 ;;'
-
 
 ralph_unk2_out=$(run_ralph "$RALPH_UNK2" "$RBIN_UNK2" "$TMP/ralph-unk-exhausted-logs" "$TMP/ralph-unk-exhausted-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на всех попытках — прогон завершается штатно (задача застревает, не бесконечный ретрай)" \
@@ -5887,7 +5870,6 @@ IFS= read -r -d '' trunk_gh_extra <<EXTRA || true
 EXTRA
 gh_ralph_stub "$RBIN_TRUNK" "$RBIN_TRUNK/issues-fixture.json" "$RBIN_TRUNK/prs-fixture.json" log "${trunk_gh_extra}"
 
-
 ralph_trunk_out=$(run_ralph "$RALPH_TRUNK" "$RBIN_TRUNK" "$TMP/ralph-trunk-logs" "$TMP/ralph-trunk-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) default branch trunk, отставшая ветка — актуализация на origin/trunk, не origin/main, потом merge" \
   0 $?
@@ -5926,7 +5908,6 @@ claude_stub_one_pr "$RBIN_CONFPR" args '5090' false 'issue-2090-x'
 gh_ralph_stub "$RBIN_CONFPR" "$RBIN_CONFPR/issues-fixture.json" "$RBIN_CONFPR/prs-fixture.json" log \
   '  "pr view") echo "CONFLICTING null issue-2090-x"; exit 0 ;;'
 
-
 ralph_confpr_out=$(run_ralph "$RALPH_CONFPR" "$RBIN_CONFPR" "$TMP/ralph-confpr-logs" "$TMP/ralph-confpr-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — прогон завершается штатно (задача застревает)" 0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — застревание с причиной «конфликт с main»" \
@@ -5962,7 +5943,6 @@ IFS= read -r -d '' actconflict_gh_extra <<EXTRA || true
   "pr checkout") (cd "$RALPH_ACTCONFLICT" && git checkout -B issue-2070-x origin/issue-2070-x) >/dev/null 2>&1; exit \$? ;;
 EXTRA
 gh_ralph_stub "$RBIN_ACTCONFLICT" "$RBIN_ACTCONFLICT/issues-fixture.json" "$RBIN_ACTCONFLICT/prs-fixture.json" log "${actconflict_gh_extra}"
-
 
 ralph_actconflict_out=$(run_ralph "$RALPH_ACTCONFLICT" "$RBIN_ACTCONFLICT" "$TMP/ralph-actconflict-logs" "$TMP/ralph-actconflict-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) конфликт при rebase-актуализации — прогон завершается штатно" 0 $?
@@ -6016,7 +5996,6 @@ EOF
 gh_ralph_stub "$RBIN_MB" "$RBIN_MB/issues-fixture.json" "$RBIN_MB/prs-fixture.json" log \
   '  "pr view") echo "MERGEABLE null issue-2080-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
-
 
 ralph_mb_out=$(run_ralph "$RALPH_MB" "$RBIN_MB" "$TMP/ralph-mb-logs" "$TMP/ralph-mb-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) смерженный блокер снимается с зависимой задачи — прогон завершается штатно" \
@@ -6395,7 +6374,6 @@ dirty_valid=$(jsonl_check "$dirty_log_file" 3 "$dirty_spec")
 assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — журнал: #961 залогирован обычным event=task result=stuck (не пропущен), run_end с причиной грязного дерева" \
   1 "$dirty_valid"
 
-
 # ── issue #132, AC-3/AC-6: расход токенов — снятие usage headless-процесса,
 # запись в event=task (duration + tokens: input+output+cache_creation, БЕЗ
 # cache_read), токеновая половина жёстких бюджетов (задача → stuck, прогон →
@@ -6575,7 +6553,6 @@ assert_contains "AC-6: ADR-001 фиксирует состав токен-счё
   "$adr001_text" "input + output + cache_creation"
 assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
   "$adr001_text" "БЕЗ cache_read"
-
 
 # ── issue #133, AC-4: множитель бюджета для задач с label size:large —
 # оба бюджета задачи (минуты и токены) умножаются на
@@ -6957,7 +6934,6 @@ EOF
 gh_ralph_stub "$RBIN_SIGNAL" "$RBIN_SIGNAL/issues-fixture.json" "$RBIN_SIGNAL/prs-fixture.json" log \
   '  "pr view") echo "MERGEABLE null issue-3001-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
-
 
 RALPH_SIGNAL_LOGS="$TMP/ralph-signal-logs"
 RALPH_SIGNAL_NOTIFY="$TMP/ralph-signal-notify.log"
