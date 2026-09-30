@@ -3887,6 +3887,58 @@ assert_exit "AC-1 (issue #158): adk-ralph: owner:human — headless-процес
 assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-процесс не вызывался с номером #90" \
   "$oh_claude_calls" "issue #90"
 
+# ── Спека вехи ещё не в main (issue #218, ADR-021): очередь из двух issues,
+# у первого (#90) тело ссылается на «Спека: docs/specs/900-missing.md» —
+# файла нет в origin/main — ralph пропускает его молча (не берёт в работу,
+# не мержит, не помечает needs-human, не логирует), симметрично owner:human
+# выше. Второй (#91) ссылается на «Спека: docs/specs/901-present.md» — файл
+# ЕСТЬ в origin/main (закоммичен напрямую в origin после ralph_clone, ralph
+# видит его через git fetch origin внутри select_next) — доигрывается до
+# ready как обычный кандидат, доказывая, что проверка не перекрывает issues
+# с уже смерженной спекой ─────────────────────────────────────────────────
+RALPH_SPEC_ORIGIN="$TMP/ralph-spec-origin"
+RALPH_SPEC="$TMP/ralph-spec-proj"
+ralph_clone "$RALPH_SPEC_ORIGIN" "$RALPH_SPEC"
+mkdir -p "$RALPH_SPEC_ORIGIN/docs/specs"
+echo '# SPEC-901' > "$RALPH_SPEC_ORIGIN/docs/specs/901-present.md"
+(cd "$RALPH_SPEC_ORIGIN" && git add docs/specs/901-present.md && git_c commit -qm "spec 901")
+
+RBIN_SPEC="$TMP/ralph-spec-bin"
+ralph_bin "$RBIN_SPEC"
+cat > "$RBIN_SPEC/issues-fixture.json" <<'EOF'
+[
+  {"number": 90, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: docs/specs/900-missing.md"},
+  {"number": 91, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: docs/specs/901-present.md"}
+]
+EOF
+gh_ralph_stub "$RBIN_SPEC" "$RBIN_SPEC/issues-fixture.json" "$RBIN_SPEC/prs-fixture.json"
+claude_stub_one_pr "$RBIN_SPEC" args '5901' false 'issue-91-z'
+
+RALPH_SPEC_LOGS="$TMP/ralph-spec-logs"
+ralph_spec_out=$(run_ralph "$RALPH_SPEC" "$RBIN_SPEC" "$RALPH_SPEC_LOGS" "$TMP/ralph-spec-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "issue #218: adk-ralph: спека #90 не в main — прогон завершается штатно" 0 $?
+assert_contains "issue #218: adk-ralph: спека #90 не в main — сводка перечисляет ready #91 (спека #91 уже в main)" \
+  "$ralph_spec_out" "#91"
+assert_not_contains "issue #218: adk-ralph: спека #90 не в main — сводка нигде не упоминает #90 (не застрял, не пропущен)" \
+  "$ralph_spec_out" "#90"
+
+ralph_spec_log=$(cat "$(ralph_journal "$RALPH_SPEC_LOGS")" 2>/dev/null)
+assert_not_contains "issue #218: adk-ralph: журнал не содержит ни одной записи по issue #90" \
+  "$ralph_spec_log" '"issue": "90"'
+assert_contains "issue #218: adk-ralph: журнал — issue #91 result=ready" \
+  "$ralph_spec_log" '"issue": "91"'
+
+edit_spec_log=$(cat "$RBIN_SPEC/issue-edit.log" 2>/dev/null)
+assert_exit "issue #218: adk-ralph: gh issue edit ни разу не вызван по #90 (needs-human не ставится на легальное ожидание)" \
+  0 "$([ -z "$edit_spec_log" ] && echo 0 || echo 1)"
+
+spec_claude_calls=$(cat "$RBIN_SPEC/claude-calls.log" 2>/dev/null)
+spec_claude_call_count=$(printf '%s' "$spec_claude_calls" | grep -c "Инструкция ралфа")
+assert_exit "issue #218: adk-ralph: headless-процесс запущен ровно один раз (issue #90 не исполнялся вовсе)" \
+  1 "$spec_claude_call_count"
+assert_not_contains "issue #218: adk-ralph: headless-процесс не вызывался с номером #90" \
+  "$spec_claude_calls" "issue #90"
+
 # ── issue #220 п.1: снимок очереди (issues_file) статичен на старте
 # прогона — issue #300 (без блокеров) закрыт человеком МЕЖДУ снимком и
 # моментом, когда ralph фактически берёт его в работу (симулируется gh-стабом
@@ -8319,17 +8371,19 @@ assert_contains "issue #218: work.md шаг 1 проверяет файл спе
   "$work_type_step1" 'git cat-file -e'
 assert_contains "issue #218: work.md шаг 1 проверяет именно origin/main, не локальный main" \
   "$work_type_step1" 'origin/main:docs/specs/NNN-<слаг>\.md'
-check_ac_doc "issue #218" "work.md шаг 1 трактует отсутствующий файл спеки как ту же категорию, что незакрытая Blocked by #N" \
-  "$WORKMD" "то же состояние, что и незакрытая «Blocked by #N»"
+check_ac_doc "issue #218" "work.md шаг 1 трактует отсутствующий файл спеки авто-выбора той же категорией, что незакрытая Blocked by #N" \
+  "$WORKMD" "то же правило, что для незакрытой «Blocked by #N»"
 assert_contains "issue #218: work.md шаг 1 — при авто-выборе такой issue пропускается, не берётся" \
   "$work_type_step1" 'авто-выборе.*пропусти'
 assert_contains "issue #218: work.md шаг 1 — номер задан явно, остановка с объяснением, а не тихий пропуск" \
   "$work_type_step1" 'номер задан явно — остановись'
 check_ac_doc "issue #218" "work.md шаг 1 — issue без ссылки на спеку проверке не подлежит" \
   "$WORKMD" "Issue без строки «Спека:»"
+check_ac_doc "issue #218" "work.md шаг 1 называет явное поведение при сбое git fetch origin (не додумывать состояние спеки)" \
+  "$WORKMD" "не додумывай состояние спеки"
 
-check_ac_doc "issue #218" "plan.md шаг 4 фиксирует литеральный формат строки со спекой в теле issue" \
-  "$PLANMD" 'литерально `Спека: docs/specs/NNN-<слаг>.md`'
+check_ac_doc "issue #218" "plan.md шаг 4 требует, чтобы путь спеки присутствовал буквальным текстом строки" \
+  "$PLANMD" "обязан присутствовать в строке буквальным текстом"
 check_ac_doc "issue #218" "plan.md шаг 4 объясняет, что формат не декоративный — по нему work.md механически проверяет main" \
   "$PLANMD" "Формат не декоративный"
 assert_contains "issue #218: plan.md шаг 4 ссылается на issue #218 у правила формата спеки" \
@@ -8342,19 +8396,36 @@ check_ac_doc "issue #218" "plan.md шаг 5 называет ожидание me
 assert_contains "issue #218: plan.md шаг 5 ссылается на issue #218 в объяснении ожидания" \
   "$plan_landing" 'issue #218'
 
-assert_contains "issue #218: autopilot.md шаг 1 требует файл спеки в main наравне с закрытыми Blocked by #N" \
-  "$autopilot_step1" 'все «Blocked by #N» закрыты и, если issue'
+check_ac_doc "issue #218" "autopilot.md шаг 1 проверяет файл спеки в main отдельным правилом от owner:human" \
+  "$KIT/commands/autopilot.md" "Отдельно: issue ссылается на спеку"
 assert_contains "issue #218: autopilot.md шаг 1 ссылается на канонический шаг 1 /work" \
   "$autopilot_step1" 'та же, что шаг 1 `/work`'
 check_ac_doc "issue #218" "autopilot.md шаг 1 объясняет, почему отдавать такой issue субагенту ошибочно (ложное застревание)" \
   "$KIT/commands/autopilot.md" "ошибочно прочтёт это как застревание"
+check_ac_doc "issue #218" "autopilot.md шаг 1 выводит такой issue из счётчиков сводки (maxSkippedShare его не видит)" \
+  "$KIT/commands/autopilot.md" "вне счётчиков сводки"
 
-# ADR-021 фиксирует решение и осознанно не трогает adk-ralph.sh в этой
-# задаче (объём отдельного фикса — вне атомарной задачи, см. ADR). Файла
-# нет — check_ac_doc красный на пустом doc_text, отдельная проверка
-# существования не нужна.
-check_ac_doc "issue #218" "ADR-021 объясняет, почему adk-ralph.sh не меняется в этой задаче" \
-  "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "не меняется в этой задаче"
+# adk-ralph.sh (круг 1 ревью PR #246): без этой проверки headless-прогон
+# отдал бы issue со спекой не в main субагенту, тот остановился бы без
+# ветки/PR по новому тексту work.md, а find_pr_state прочёл бы «PR нет»
+# как застревание — детерминированная ложная needs-human. Симметрично
+# owner:human (issue #158): новая функция spec_missing() в select_next.
+ralph_text=$(doc_text "$KIT/hooks/scripts/adk-ralph.sh")
+check_ac_doc "issue #218" "adk-ralph.sh header упоминает issue #218 в описании правила выбора" \
+  "$KIT/hooks/scripts/adk-ralph.sh" "issue #218, ADR-021"
+assert_contains "issue #218: adk-ralph.sh определяет spec_missing() по строке «Спека:» в теле issue" \
+  "$ralph_text" 'def spec_missing'
+assert_contains "issue #218: adk-ralph.sh spec_missing() проверяет путь против existing_specs (origin/main)" \
+  "$ralph_text" 'not in existing_specs'
+assert_contains "issue #218: adk-ralph.sh обновляет existing_specs через git fetch + git ls-tree перед каждым select_next" \
+  "$ralph_text" 'ls-tree -r --name-only origin/main'
+assert_contains "issue #218: adk-ralph.sh кандидатский цикл пропускает spec_missing() issue тем же способом, что owner:human" \
+  "$ralph_text" 'if spec_missing(it):'
+
+check_ac_doc "issue #218" "ADR-021 описывает spec_missing() в select_next как симметричную owner:human проверку" \
+  "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"
+check_ac_doc "issue #218" "ADR-021 фиксирует, что круг 1 ревью PR #246 отклонил план не трогать adk-ralph.sh" \
+  "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "Круг 1 ревью PR #246 отклонил"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"

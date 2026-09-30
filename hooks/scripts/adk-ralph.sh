@@ -38,6 +38,17 @@
 # зарезервированных не входит ни в ready/stuck/skipped журнала, только в
 # отдельную строку сводки прогона.
 #
+# Спека вехи ещё не в main (issue #218, ADR-021, симметрично шагу 1
+# commands/work.md и commands/autopilot.md): issue со строкой «Спека:
+# docs/specs/NNN-<слаг>.md» в теле, чей файл ещё не существует в
+# origin/main (PR спеки ready, но `policies.merge` не даёт агенту его
+# смержить), пропускается тем же молчаливым способом, что owner:human —
+# без needs-human, без записи в журнал, вне ready/stuck/skipped. Без этого
+# select_next отдал бы issue `claude -p` с текстом commands/work.md,
+# тот остановился бы без ветки и PR (шаг 1 /work, «номер задан явно —
+# остановись»), а find_pr_state прочёл бы «PR нет» как застревание —
+# ложная needs-human на легальном ожидании человека.
+#
 # Тесты: hooks/scripts/adk-ralph.sh стабами claude/gh на суженном PATH,
 # журнал — $ADK_LOGS_DIR, уведомления — $ADK_NOTIFY_FILE (notify-send.sh),
 # конфиг — $ADK_CONFIG_FILE (lib/config.sh) — все три уже поддержаны
@@ -362,14 +373,25 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # строку "NEXT <N> <type> <size>" (следующая задача к исполнению; <size> —
 # "large" при label size:large, иначе "-", issue #133) либо "NONE"
 # (доступных задач не осталось).
+#
+# Перед каждым вызовом освежаем список файлов docs/specs/*.md в
+# origin/main (issue #218, ADR-021) — дёшево (один fetch + один ls-tree)
+# и позволяет ralph заметить merge PR спеки человеком посреди прогона.
+# Fetch может упасть (сеть) — `|| true` намеренно: пустой/устаревший
+# список на этой итерации лишь оставляет issue со спекой вне кандидатов
+# (безопасное направление отказа, симметрично owner:human — не needs-human).
 select_next() {
+  git -C "$root" fetch origin >/dev/null 2>&1 || true
+  existing_specs=$(git -C "$root" ls-tree -r --name-only origin/main -- docs/specs 2>/dev/null | tr '\n' ',')
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
     "$blocked_on_ready_nums" "$merged_nums" "$closed_externally_nums" \
-    "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
+    "$task_label" "$bug_label" "$ff_label" "$consolidate_label" "$existing_specs" <<'PYEOF'
 import json, re, sys
 
 issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv, closed_csv = sys.argv[1:9]
 task_label, bug_label, ff_label, consolidate_label = sys.argv[9:13]
+existing_specs_csv = sys.argv[13]
+existing_specs = {p for p in existing_specs_csv.split(",") if p}
 
 
 def csv_ints(s):
@@ -437,6 +459,21 @@ def type_of(it):
     return "task"
 
 
+# issue #218, ADR-021: issue со строкой «Спека: docs/specs/NNN-<слаг>.md»
+# (так размечает /plan шаг 4 — формат может быть обёрнут в markdown-ссылку,
+# путь захватывается нежадно до первого «.md») чей файл ещё не в
+# origin/main — спека ждёт человека (policies.merge блокирует агенту
+# merge PR спеки, /plan шаг 5). Симметрично owner:human ниже: issue без
+# такой строки (не из /plan, или спека уже была в main — ADR-009)
+# проверке не подлежит.
+SPEC_REF_RE = re.compile(r"Спека:\s*\[?(docs/specs/\S+?\.md)\]?")
+
+
+def spec_missing(it):
+    m = SPEC_REF_RE.search(it.get("body") or "")
+    return bool(m) and m.group(1) not in existing_specs
+
+
 new_skips = []
 new_skip_numbers = set()
 already_needs_human = set()
@@ -485,6 +522,8 @@ while changed:
             continue
         if "owner:human" in labels_of(it):
             continue
+        if spec_missing(it):
+            continue
         open_blockers = blockers(it.get("body")) & open_numbers
         if open_blockers and open_blockers <= resolved_ready:
             blocked_on_ready_numbers.add(n)
@@ -502,6 +541,10 @@ for it in issues:
         # Зарезервирован человеком (issue #158) — не кандидат этого прогона,
         # но и не «застрял»/«пропущен»: остаётся открытым, дальше по циклу.
         # Дальнейшие исходы (needs-human/result=) на неё не действуют.
+        continue
+    if spec_missing(it):
+        # Спека вехи ждёт человека (issue #218, ADR-021) — тот же принцип:
+        # не кандидат, но и не «застрял»/«пропущен».
         continue
     if blockers(it.get("body")) & open_numbers:
         continue
