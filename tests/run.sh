@@ -918,6 +918,34 @@ stats_out=$(ADK_LOGS_DIR="$STATS_ROUND_HUGE" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "issue #203: adk-stats: round — 400-значная строка цифр не роняет скрипт делением на переполненный float" 0 $?
 assert_contains "issue #203: adk-stats: 400-значный round пропущен с предупреждением, как битая строка" "$stats_out" "битая строка пропущена"
 
+# issue #204: общий валидатор числовых полей журнала — round:""/round:null/
+# round:"abc" пропускаются как битые (боковые случаи, отмеченные вне рамок
+# ревью #203 как непокрытый фикстурами гэп на старом пути TypeError/ValueError);
+# round:1 (JSON-число без кавычек, не строка) тоже пропускается — контракт
+# ADR-001 «Расширения схемы» принимает только строку ASCII-цифр, adk-log.sh
+# никогда не пишет round иначе. Контрольная валидная строка — БЕЗ поля round
+# вовсе (как у фикстуры #203 выше), не round:"1": со строкой round:"1"
+# max_round=1 перекрыл бы счётчик rounds и замаскировал бы битые строки,
+# случайно засчитанные кругом, тем же способом, которого избегает комментарий
+# у STATS_ROUND_OVERFLOW выше (круг 1 ревью PR #238) — среднее осталось бы
+# 1.0 независимо от того, пропущены битые строки или ошибочно посчитаны.
+STATS_ROUND_GAP="$TMP/stats-round-gap"
+mkdir -p "$STATS_ROUND_GAP"
+cat > "$STATS_ROUND_GAP/issue-205.jsonl" <<'EOF'
+{"event":"start","issue":"205","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"205","round":"","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:05:00Z"}
+{"event":"review","issue":"205","round":null,"verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:10:00Z"}
+{"event":"review","issue":"205","round":"abc","verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:15:00Z"}
+{"event":"review","issue":"205","round":1,"verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:20:00Z"}
+{"event":"review","issue":"205","verdict":"APPROVE","timestamp":"2026-08-05T09:30:00Z"}
+{"event":"outcome","issue":"205","result":"merged","timestamp":"2026-08-05T09:35:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_ROUND_GAP" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "issue #204: adk-stats: round:\"\"/null/\"abc\"/1 (не строка) — общий валидатор, exit 0" 0 $?
+round_gap_bad_count=$(printf '%s' "$stats_out" | grep -c "невалидное поле round")
+assert_exit "issue #204: adk-stats: round:\"\"/null/\"abc\"/1 — четыре строки пропущены как битые (общий валидатор отклоняет всё, что не строка ASCII-цифр)" 4 "$round_gap_bad_count"
+assert_contains "issue #204: adk-stats: битые строки round не засчитаны кругом — только контрольная строка без round (фолбэк 0), среднее 1.0, не 5.0" "$stats_out" "Средние круги ревью: 1.0"
+
 # 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
 STATS_DIR="$TMP/stats-logs"
 mkdir -p "$STATS_DIR"

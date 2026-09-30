@@ -23,6 +23,26 @@ issue_files=("$logs_dir"/issue-*.jsonl)
 autopilot_files=("$logs_dir"/autopilot-*.jsonl)
 shopt -u nullglob
 
+# Общий валидатор числовых полей журнала (duration/tokens/round) — контракт
+# ADR-001 «Расширения схемы», issue #204. Потолок 15 цифр — не произвольный:
+# config_number (adk-config.sh) клампит числовые конфиги 10**15, это строго
+# меньше 2**53, int()/деление на них точны. Оба читателя ниже
+# (print_usage_section — duration/tokens; основной агрегатор — round) —
+# разные процессы python3, поэтому не импортируемый модуль, а общий текст
+# функции (единственный источник — эта переменная), первой частью стдина.
+journal_number_py=$(cat <<'PYLIB'
+import re
+
+
+def parse_number(value, suffix=""):
+    """Строка `[0-9]{1,15}` (+ suffix) -> int; иначе None ("не значение")."""
+    if not isinstance(value, str):
+        return None
+    m = re.fullmatch(r"([0-9]{1,15})" + re.escape(suffix), value)
+    return int(m.group(1)) if m else None
+PYLIB
+)
+
 # Раздел расхода прогонов (issue #136). $1 — режим пустоты: "announce"
 # печатает явное «не записан» (путь «в журнале только прогоны», где молчание
 # вернуло бы старое враньё «агрегировать нечего»), "silent" не печатает
@@ -30,12 +50,13 @@ shopt -u nullglob
 print_usage_section() {
   local empty_mode="$1"
   # список autopilot-файлов может быть пуст — python отработает и без
-  # аргументов-файлов, announce-путь один (нет дубля строки в bash)
-  python3 - "$empty_mode" ${autopilot_files[@]+"${autopilot_files[@]}"} <<'PYUSAGE'
+  # аргументов-файлов, announce-путь один (нет дубля строки в bash).
+  # journal_number_py подаётся первой частью стдина (см. её объявление выше) —
+  # $? пайпа без pipefail отражает код возврата последней команды (python3).
+  { printf '%s\n' "$journal_number_py"; cat <<'PYUSAGE'
 import json
 import math
 import os
-import re
 import statistics
 import sys
 
@@ -63,17 +84,16 @@ for path in sys.argv[2:]:
                 continue
             dur = ev.get("duration")
             tok = ev.get("tokens")
-            # adk-log пишет оба поля строками ("60s", "3500") — читаем
-            # ровно эту форму: ASCII-цифры длиной до 15 знаков (потолок
-            # писателя: config_number клампит токеновые бюджеты 10**15, значения
-            # такой длины < 2**53 — int(), деление и медиана точны и не
-            # упираются в лимиты). Unicode-цифры, bool, float, "1_000",
-            # отрицательные, сверхдлинные строки — не расход,
-            # отбрасываются молча.
-            if isinstance(dur, str) and re.fullmatch(r"[0-9]{1,15}s", dur):
-                durations_min.append(int(dur[:-1]) / 60)
-            if isinstance(tok, str) and re.fullmatch(r"[0-9]{1,15}", tok):
-                tokens.append(int(tok))
+            # общий валидатор parse_number (журнальный контракт — см.
+            # объявление journal_number_py выше, issue #204): Unicode-цифры,
+            # bool, float, "1_000", отрицательные, сверхдлинные строки — не
+            # расход, отбрасываются молча.
+            parsed_dur = parse_number(dur, suffix="s")
+            if parsed_dur is not None:
+                durations_min.append(parsed_dur / 60)
+            parsed_tok = parse_number(tok)
+            if parsed_tok is not None:
+                tokens.append(parsed_tok)
 
 def p90(vals):
     # nearest-rank: элемент на позиции ceil(0.9 * n)
@@ -103,6 +123,7 @@ if tokens:
         f"p90 {p90(tokens)}, максимум {max(tokens)}"
     )
 PYUSAGE
+  } | python3 - "$empty_mode" ${autopilot_files[@]+"${autopilot_files[@]}"}
 }
 
 if [ ! -d "$logs_dir" ]; then
@@ -122,7 +143,7 @@ if [ "${#issue_files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-python3 - "${issue_files[@]}" <<'PYEOF'
+{ printf '%s\n' "$journal_number_py"; cat <<'PYEOF'
 import json
 import sys
 import os
@@ -165,16 +186,22 @@ for path in paths:
                 continue
             event = ev.get("event")
             if event == "review":
-                try:
-                    round_value = int(ev.get("round", 0))
-                    float(round_value)
-                except (TypeError, ValueError, OverflowError):
-                    print(
-                        f"adk-stats: {os.path.basename(path)}:{lineno}: "
-                        "битая строка пропущена (невалидное поле round)",
-                        file=sys.stderr,
-                    )
-                    continue
+                # поле отсутствует — старая схема/ручной вызов без round
+                # (issue #28 K9): валидный круг, просто без значения — 0,
+                # фолбэк на число строк event=review ниже; поле есть, но не
+                # проходит общий валидатор (см. journal_number_py выше,
+                # issue #204) — строка битая целиком, не круг.
+                if "round" not in ev:
+                    round_value = 0
+                else:
+                    round_value = parse_number(ev.get("round"))
+                    if round_value is None:
+                        print(
+                            f"adk-stats: {os.path.basename(path)}:{lineno}: "
+                            "битая строка пропущена (невалидное поле round)",
+                            file=sys.stderr,
+                        )
+                        continue
                 rounds += 1
                 max_round = max(max_round, round_value)
             valid_any = True
@@ -284,6 +311,7 @@ for week in sorted(weekly):
     avg_week_rounds = d["rounds"] / d["tasks"]
     print(f"  - {week}: задач {d['tasks']}, среднее кругов {avg_week_rounds:.1f}")
 PYEOF
+} | python3 - "${issue_files[@]}"
 main_rc=$?
 
 # Раздел расхода печатается и при упавшем основном агрегаторе
