@@ -7465,6 +7465,8 @@ assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 рев�
   "$ralph_signal_log" '"done": "1"'
 assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) SIGTERM — event=run_end.reason называет причину сигналом (значение внесено в реестр ADR-007 §3 / ADR-001)" \
   "$ralph_signal_log" '"reason": "прерван сигналом TERM"'
+assert_contains "issue #220 п.1 (важное круга 3 ревью PR #245): SIGTERM — ralph_signal_cleanup тоже пишет closed_externally на event=run_end (тот же писатель, что и blocked_on_ready)" \
+  "$ralph_signal_log" '"closed_externally": "0"'
 
 # ── issue #131: docs/config.md фиксирует дефолты 45/240 — прямая проверка
 # самих значений (не только «дефолт не мешает быстрому тесту»), которую

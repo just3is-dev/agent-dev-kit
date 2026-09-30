@@ -153,7 +153,9 @@ ralph_signal_cleanup() {
   "$logger" "$run_unit" event=run_end done="${merged_count:-0}" ready="${ready_count:-0}" \
     tokens="${run_tokens_used:-0}" \
     stuck="${stuck_count:-0}" skipped="${skipped_count:-0}" \
-    blocked_on_ready="${blocked_on_ready_count:-0}" reason="прерван сигналом $sig" || true
+    blocked_on_ready="${blocked_on_ready_count:-0}" \
+    closed_externally="${closed_externally_count:-0}" \
+    reason="прерван сигналом $sig" || true
   exit "$sig_exit"
 }
 trap 'ralph_signal_cleanup INT' INT
@@ -199,10 +201,7 @@ merged_list=""
 usage_summary=""  # строки «#N: 12s/3456 ток.» по клод-исполненным задачам (issue #132)
 stuck_summary=""
 skipped_summary=""
-# closed_before_start_summary — issue-номера, закрытые человеком до того,
-# как ralph успел их исполнить (issue #220 п.1, рационале — у точки
-# использования ниже, в цикле).
-closed_before_start_summary=""
+closed_externally_summary=""
 blocked_on_ready_summary=""
 stop_reason=""
 exit_code=0
@@ -1331,7 +1330,7 @@ while [ "$exit_code" -eq 0 ]; do
     handled=$(csv_add "$handled" "$issue_num")
     closed_externally_nums=$(csv_add "$closed_externally_nums" "$issue_num")
     closed_externally_count=$((closed_externally_count + 1))
-    closed_before_start_summary="$closed_before_start_summary #$issue_num"
+    closed_externally_summary="$closed_externally_summary #$issue_num"
     # result=closed-externally — новое значение схемы ADR-001 (аналогично
     # blocked-on-ready), не result=skipped: сознательно не участвует в
     # skipped_count/maxSkippedShare (обоснование — ADR-019 доп.).
@@ -1723,7 +1722,7 @@ summary="=== Ralph: итог прогона ===
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
-Закрыто человеком до старта задачи: ${closed_before_start_summary:-нет}
+Закрыто человеком до старта задачи: ${closed_externally_summary:-нет}
 Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
 Расход по задачам (сек/токены):${usage_summary:- нет}
@@ -1733,10 +1732,11 @@ Ready (ждут человека): ${ready_list:-нет}
 echo "$summary"
 # Сводка дублируется локальным уведомлением (SPEC-003 «Сводка прогона и
 # HITL»; DoD issue #139: «event=run_end и уведомление») — не только
-# терминал и журнал. merged=$merged_count дописан В КОНЕЦ строки (issue
-# #129), а не сразу после "завершён:", чтобы не сдвинуть существующие
-# assert_contains на буквальный префикс "ready=... stuck=... skipped=..."
-# у фикстур, предшествующих merge (issue #139/#134/#135/#147/#130).
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count. Причина: $stop_reason" || true
+# терминал и журнал. merged=$merged_count и closed_externally=$closed_externally_count
+# дописаны В КОНЕЦ строки (issue #129, issue #220 п.1), а не сразу после
+# "завершён:", чтобы не сдвинуть существующие assert_contains на буквальный
+# префикс "ready=... stuck=... skipped=..." у фикстур, предшествующих этим
+# полям (issue #139/#134/#135/#147/#130).
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count closed_externally=$closed_externally_count. Причина: $stop_reason" || true
 
 exit "$exit_code"
