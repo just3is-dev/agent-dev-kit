@@ -23,26 +23,13 @@ issue_files=("$logs_dir"/issue-*.jsonl)
 autopilot_files=("$logs_dir"/autopilot-*.jsonl)
 shopt -u nullglob
 
-# Общий валидатор числовых полей журнала (duration/tokens/round — issue #204,
-# ADR-001 «Расширения схемы»): значение обязано быть строкой ASCII-цифр
-# [0-9]{1,15}, опционально с фиксированным суффиксом ("s" у длительностей);
-# всё прочее (JSON-число/bool/null/объект, Unicode-цифры, пустая строка,
-# отрицательные, длиннее 15 знаков) — не значение поля. adk-log.sh собирает
-# событие из пар key=value (все значения — str), поэтому нестроковый
-# JSON-литерал в числовом поле получается только из повреждённого журнала.
-# Потолок 15 цифр — не произвольный: config_number (adk-config.sh) клампит
-# числовые конфиги 10**15, значения такой длины строго меньше 2**53, поэтому
-# int()/деление на них точны и не переполняются.
-# Обе точки разбора ниже (print_usage_section — duration/tokens; основной
-# агрегатор — round) внедряют этот код первой строкой своего python3-стдина —
-# два разных процесса python3, поэтому не общий импортируемый модуль, а общий
-# текст функции (единственный источник — эта переменная), без нового файла
-# в hooks/scripts/lib/ (там bash-check гейта bash -n по каждому файлу, issue
-# #204 — не расширение гейта под новый стек ради одной внутренней функции).
-# Ретроспектива PR #199/issue #203: шесть кругов ревью ловили один класс
-# «валидная с виду строка роняет/искажает агрегат» по одному новому входу за
-# круг из-за разбора ad-hoc в каждом месте (duration/tokens — regex, round —
-# try/except вокруг int()/float()).
+# Общий валидатор числовых полей журнала (duration/tokens/round) — контракт
+# ADR-001 «Расширения схемы», issue #204. Потолок 15 цифр — не произвольный:
+# config_number (adk-config.sh) клампит числовые конфиги 10**15, это строго
+# меньше 2**53, int()/деление на них точны. Оба читателя ниже
+# (print_usage_section — duration/tokens; основной агрегатор — round) —
+# разные процессы python3, поэтому не импортируемый модуль, а общий текст
+# функции (единственный источник — эта переменная), первой частью стдина.
 journal_number_py=$(cat <<'PYLIB'
 import re
 
@@ -51,10 +38,8 @@ def parse_number(value, suffix=""):
     """Строка `[0-9]{1,15}` (+ suffix) -> int; иначе None ("не значение")."""
     if not isinstance(value, str):
         return None
-    if not re.fullmatch(r"[0-9]{1,15}" + re.escape(suffix), value):
-        return None
-    digits = value[: len(value) - len(suffix)] if suffix else value
-    return int(digits)
+    m = re.fullmatch(r"([0-9]{1,15})" + re.escape(suffix), value)
+    return int(m.group(1)) if m else None
 PYLIB
 )
 
