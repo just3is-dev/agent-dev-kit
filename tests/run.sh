@@ -3607,6 +3607,17 @@ assert_contains "AC-1: adk-ralph: gh issue edit needs-human падает — п�
   "$ralph_editfail_out" "не удалось пометить issue #51 меткой needs-human"
 assert_contains "AC-1: adk-ralph: предупреждение о сбое needs-human содержит диагностику gh (HTTP 403)" \
   "$ralph_editfail_out" "HTTP 403"
+# issue #216: предупреждение в stderr — не единственный канал; уведомление
+# и сводка прогона (второй и третий каналы) не должны звучать так, будто
+# issue #51 штатно помечен needs-human и выведен из очереди — иначе
+# следующий прогон молча отберёт его заново («застрял → выбран → застрял»).
+ralph_editfail_notify=$(cat "$TMP/ralph-editfail-notify.log" 2>/dev/null)
+assert_contains "AC-1 (issue #216): adk-ralph: gh issue edit needs-human падает — уведомление честно говорит, что метка НЕ поставлена" \
+  "$ralph_editfail_notify" "needs-human НЕ поставлена"
+assert_contains "AC-1 (issue #216): adk-ralph: gh issue edit needs-human падает — уведомление предупреждает о повторном выборе issue" \
+  "$ralph_editfail_notify" "будет выбран повторно"
+assert_contains "AC-1 (issue #216): adk-ralph: gh issue edit needs-human падает — сводка прогона тоже честно отражает несостоявшуюся метку" \
+  "$ralph_editfail_out" "needs-human НЕ поставлена"
 
 # ── Каскад пропуска зависимостей исключает issues уже с меткой needs-human
 # из result=skipped — такая задача не была «в очереди» этого прогона
