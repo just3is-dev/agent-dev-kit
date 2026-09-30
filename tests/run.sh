@@ -3829,11 +3829,20 @@ assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-пр
 # ── issue #220 п.1: снимок очереди (issues_file) статичен на старте
 # прогона — issue #300 (без блокеров) закрыт человеком МЕЖДУ снимком и
 # моментом, когда ralph фактически берёт его в работу (симулируется gh-стабом
-# "issue view", возвращающим CLOSED только для #300). Ожидание: ralph не
-# запускает claude -p на #300, журнал отмечает его result=skipped с явной
-# причиной, сводка называет его отдельной строкой (не как обычный
-# SKIP-по-зависимости), и прогон продолжает со следующим независимым
-# issue #301 ──────────────────────────────────────────────────────────────
+# "issue view", возвращающим CLOSED только для #300). #301 — независимый
+# issue без блокеров. #302 объявляет "Blocked by #300" — круг 1 ревью PR #245
+# поймал здесь реальный дефект первой версии фикса: закрытие #300 клалось в
+# тот же CSV, что SKIP-каскад по зависимостям, из-за чего #302 каскадно
+# пропускался под чужой причиной («Пропущено (зависимость от застрявшей
+# задачи)», хотя блокер не застрял — его закрыли), и наоборот, если бы #300
+# был закрыт ДО снимка очереди (просто отсутствовал бы в issues_file), #302
+# стал бы обычным NEXT-кандидатом без единого SKIP — одно и то же событие
+# (issue закрыт человеком) не должно давать противоположный исход только от
+# момента, когда это случилось. Ожидание: ralph не запускает claude -p на
+# #300, журнал отмечает его result=skipped с явной причиной, сводка называет
+# его отдельной строкой (не как обычный SKIP-по-зависимости, не увеличивая
+# skipped=), и #301/#302 оба доигрываются до ready как обычные независимые
+# кандидаты (#302 — без единой строки SKIP на своём пути) ──────────────────
 RALPH_CLOSED="$TMP/ralph-closed-proj"
 RBIN_CLOSED="$TMP/ralph-closed-bin"
 RALPH_CLOSED_LOGS="$TMP/ralph-closed-logs"
@@ -3841,7 +3850,8 @@ ralph_init "$RALPH_CLOSED" "$RBIN_CLOSED"
 cat > "$RBIN_CLOSED/issues-fixture.json" <<'EOF'
 [
   {"number": 300, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
-  {"number": 301, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
+  {"number": 301, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"},
+  {"number": 302, "labels": [{"name":"type:task"}], "body": "Blocked by #300"}
 ]
 EOF
 IFS= read -r -d '' closed_gh_extra <<'EXTRA' || true
@@ -3854,37 +3864,54 @@ IFS= read -r -d '' closed_gh_extra <<'EXTRA' || true
     ;;
 EXTRA
 gh_ralph_stub "$RBIN_CLOSED" "$RBIN_CLOSED/issues-fixture.json" "$RBIN_CLOSED/prs-fixture.json" log "$closed_gh_extra"
-claude_stub_one_pr "$RBIN_CLOSED" args '450' false 'issue-301-z'
+claude_stub "$RBIN_CLOSED" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+case "$issue_num" in
+  301) pr=451; head=issue-301-z ;;
+  302) pr=452; head=issue-302-z ;;
+esac
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": $pr, "isDraft": false, "headRefName": "$head"}]
+PRJSON
+exit 0
+EOF
 
 ralph_closed_out=$(run_ralph "$RALPH_CLOSED" "$RBIN_CLOSED" "$RALPH_CLOSED_LOGS" "$TMP/ralph-closed-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #220 п.1: adk-ralph: issue закрыт человеком между снимком очереди и стартом задачи — прогон завершается штатно" \
   0 $?
-assert_contains "issue #220 п.1: adk-ralph: закрытый #300 не занимает слот — сводка перечисляет ready #301 (следующий взят)" \
+assert_contains "issue #220 п.1: adk-ralph: закрытый #300 не занимает слот — сводка перечисляет ready #301 и #302" \
   "$ralph_closed_out" "#301"
+assert_contains "issue #220 п.1: adk-ralph: зависимый #302 доигран до ready, не застрял на закрытом блокере" \
+  "$ralph_closed_out" "#302"
 assert_contains "issue #220 п.1: adk-ralph: сводка называет #300 отдельной строкой «закрыто человеком до старта»" \
   "$ralph_closed_out" "Закрыто человеком до старта задачи:  #300"
 assert_not_contains "issue #220 п.1: adk-ralph: #300 не попадает в строку «Пропущено (зависимость от застрявшей задачи)» — причина другая" \
   "$ralph_closed_out" "Пропущено (зависимость от застрявшей задачи):  #300"
+assert_contains "issue #220 п.1: adk-ralph: строка «Пропущено (зависимость от застрявшей задачи)» пуста — #302 не каскадно пропущен" \
+  "$ralph_closed_out" "Пропущено (зависимость от застрявшей задачи): нет"
 
 closed_claude_calls=$(cat "$RBIN_CLOSED/claude-calls.log" 2>/dev/null)
 closed_claude_call_count=$(printf '%s' "$closed_claude_calls" | grep -c "Инструкция ралфа")
-assert_exit "issue #220 п.1: adk-ralph: headless-процесс запущен ровно один раз (issue #300 не исполнялся вовсе)" \
-  1 "$closed_claude_call_count"
+assert_exit "issue #220 п.1: adk-ralph: headless-процесс запущен ровно два раза (#301, #302 — #300 не исполнялся вовсе)" \
+  2 "$closed_claude_call_count"
 assert_not_contains "issue #220 п.1: adk-ralph: headless-процесс не вызывался с номером #300" \
   "$closed_claude_calls" "issue #300"
 
 RALPH_CLOSED_LOGS_FILE="$(ralph_journal "$RALPH_CLOSED_LOGS")"
 closed_log=$(cat "$RALPH_CLOSED_LOGS_FILE" 2>/dev/null)
-closed_spec=$(printf '%s\n%s\n%s\n%s' \
+closed_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=300|type=task|result=skipped' \
   'event=task|issue=301|type=bug|result=ready' \
-  'event=run_end|done=0|ready=1|stuck=0|skipped=1|reason=очередь пуста')
-closed_valid=$(jsonl_check "$RALPH_CLOSED_LOGS_FILE" 4 "$closed_spec")
-assert_exit "issue #220 п.1: adk-ralph: журнал — run_start + issue #300 result=skipped + issue #301 result=ready + run_end (ready=1 skipped=1)" \
+  'event=task|issue=302|type=task|result=ready' \
+  'event=run_end|done=0|ready=2|stuck=0|skipped=0|reason=очередь пуста')
+closed_valid=$(jsonl_check "$RALPH_CLOSED_LOGS_FILE" 5 "$closed_spec")
+assert_exit "issue #220 п.1: adk-ralph: журнал — #300 result=skipped, #301/#302 result=ready, run_end skipped=0 (закрытие человеком не считается пропуском breaker'а)" \
   1 "$closed_valid"
 assert_contains "issue #220 п.1: adk-ralph: журнал объясняет причину skip — issue закрыт вне прогона" \
   "$closed_log" '"reason": "issue closed outside this run"'
+assert_not_contains "issue #220 п.1: adk-ralph: журнал не содержит SKIP-запись по #302 (не каскадный пропуск)" \
+  "$closed_log" '"issue": "302", "type": "task", "result": "skipped"'
 
 # ── issue #146: разбор «Blocked by #N» устойчив к любому текстовому
 # разделителю между номерами, не только запятой/пробелу. #500 объявляет

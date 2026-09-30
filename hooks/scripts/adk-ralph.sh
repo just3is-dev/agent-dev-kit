@@ -175,6 +175,18 @@ merged_nums=""  # issue-номера, смерженные этим прогон
                 # мердж уже не ждёт человека, select_next не должен считать
                 # его блокером ready (ADR-014 §2 говорит именно про ready-но-
                 # не-смерженный блокер).
+closed_externally_nums=""  # issue-номера, закрытые человеком (или другим
+                # процессом) ДО того, как ralph успел их исполнить этим
+                # прогоном (issue #220 п.1, ADR-019 доп.) — подмножество
+                # handled, отдельно от merged_nums и от skipped: это не
+                # смерженная этим прогоном задача (PR не было) и не
+                # SKIP-каскад по зависимости (блокер не застрял, он снят).
+                # select_next вычитает эти номера из open_numbers тем же
+                # способом, что и merged_now, — иначе их зависимые либо
+                # каскадно пропускались бы под чужой причиной («зависимость
+                # от застрявшей задачи»), либо инфлировали бы
+                # maxSkippedShare (ADR-016 §1 явно исключает из этой доли
+                # всё, что не является неудачей прогона).
 blocked_on_ready_nums=""  # issue-номера, отнесённые к blocked-on-ready в этом
                           # прогоне (подмножество handled), переживает
                           # итерации внешнего цикла — см. ADR-014 п.2
@@ -191,12 +203,9 @@ merged_list=""
 usage_summary=""  # строки «#N: 12s/3456 ток.» по клод-исполненным задачам (issue #132)
 stuck_summary=""
 skipped_summary=""
-# closed_before_start_summary — отдельная строка от skipped_summary (issue
-# #220 п.1): issues_file статичен на весь прогон (open_numbers в
-# select_next), поэтому issue, закрытый человеком между снимком и стартом
-# конкретной задачи, попадает в общий "skipped"-учёт (breaker/cascade ниже),
-# но НЕ в skipped_summary — та строка подписана "зависимость от застрявшей
-# задачи" и обозначала бы неверную причину.
+# closed_before_start_summary — issue-номера, закрытые человеком до того,
+# как ralph успел их исполнить (issue #220 п.1, рационале — у точки
+# использования ниже, в цикле).
 closed_before_start_summary=""
 blocked_on_ready_summary=""
 stop_reason=""
@@ -350,12 +359,12 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # (доступных задач не осталось).
 select_next() {
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
-    "$blocked_on_ready_nums" "$merged_nums" \
+    "$blocked_on_ready_nums" "$merged_nums" "$closed_externally_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv = sys.argv[1:8]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[8:12]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv, closed_csv = sys.argv[1:9]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[9:13]
 
 
 def csv_ints(s):
@@ -367,6 +376,7 @@ unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
 ready_now = csv_ints(ready_csv)
 prev_blocked_on_ready = csv_ints(prev_bor_csv)
 merged_now = csv_ints(merged_csv)
+closed_externally_now = csv_ints(closed_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
@@ -382,7 +392,13 @@ issues.sort(key=lambda it: it["number"])
 # зависимая задача не становится ни NEXT, ни blocked-on-ready (у неё нет
 # собственного ready-PR, чтобы попасть в эту ветку) и молча выпадает из
 # сводки прогона — регрессия ADR-014/issue #147 для новой ветки исходов.
-open_numbers = {it["number"] for it in issues} - merged_now
+# closed_externally_now вычитается тем же способом и по той же причине
+# (issue #220 п.1): issue, закрытый человеком ДО того, как этот прогон
+# успел его исполнить, точно так же больше не открыт на GitHub — его
+# "Blocked by #N" не должен ни каскадно SKIP'ить зависимые (блокер не
+# застрял, причина другая), ни висеть вечным блокером, которого не было бы,
+# закройся issue до снимка очереди, а не посреди прогона.
+open_numbers = {it["number"] for it in issues} - merged_now - closed_externally_now
 
 
 def blockers(body):
@@ -1319,14 +1335,16 @@ while [ "$exit_code" -eq 0 ]; do
   next_issue_state=$(cd "$root" && gh issue view "$issue_num" --json state -q .state 2>/dev/null)
   if [ "$next_issue_state" = "CLOSED" ]; then
     handled=$(csv_add "$handled" "$issue_num")
-    # skipped/skipped_count — тот же бакет, что и SKIP-каскад по
-    # зависимостям выше: и breaker'у (run_breaker_check_skipped_share), и
-    # select_next (unresolved у зависимых issues) нужен факт "issue не
-    # доигран до исхода этим прогоном", не причина. closed_before_start_summary
-    # — отдельная человекочитаемая строка (не skipped_summary): та подписана
-    # "зависимость от застрявшей задачи" и обозначала бы неверную причину.
-    skipped=$(csv_add "$skipped" "$issue_num")
-    skipped_count=$((skipped_count + 1))
+    # closed_externally_nums — НЕ skipped/skipped_count (круг 1 ревью PR #245):
+    # этот issue не «пропущен по зависимости» и не вошёл в maxSkippedShare
+    # (ADR-016 §1 явно исключает из этой доли всё, что не неудача прогона —
+    # закрытие человеком посреди прогона такая же легитимная причина, как
+    # owner:human/blocked-on-ready). select_next вычитает closed_externally_nums
+    # из open_numbers тем же способом, что и merged_now, — зависимые issues
+    # становятся обычным NEXT-кандидатом, а не каскадным SKIP под чужой
+    # причиной («зависимость от застрявшей задачи» подписана бы неверно:
+    # блокер не застрял, он закрыт).
+    closed_externally_nums=$(csv_add "$closed_externally_nums" "$issue_num")
     closed_before_start_summary="$closed_before_start_summary #$issue_num"
     if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=skipped reason="issue closed outside this run"; then
       journal_break
