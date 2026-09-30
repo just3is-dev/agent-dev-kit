@@ -776,15 +776,16 @@ chmod 644 "$STATS_RC/autopilot-2026-09-29.jsonl"
 assert_exit "AC-6: adk-stats: (issue #136) падение агрегатора расхода не маскируется успешным основным — exit ненулевой" \
   0 $?
 
-# упали ОБА агрегатора (оба файла нечитаемы): порядок кодов — exit берёт
-# код основного агрегатора, падение расхода его не перетирает (issue #212,
-# хвост круга 7 PR #199: порядок main_rc/usage_rc не был закреплён)
+# упали ОБА агрегатора (оба файла нечитаемы): exit ненулевой. Порядок
+# main_rc/usage_rc снаружи ненаблюдаем — оба агрегатора падают единицей
+# (разбор — круг 1 ревью PR #232), поэтому тест закрепляет только
+# «падение обоих не маскируется» (issue #212, хвост круга 7 PR #199)
 chmod 000 "$STATS_RC/issue-40.jsonl" "$STATS_RC/autopilot-2026-09-29.jsonl"
 ADK_LOGS_DIR="$STATS_RC" "$HOOKS/adk-stats.sh" >/dev/null 2>&1
 stats_both_st=$?
 chmod 644 "$STATS_RC/issue-40.jsonl" "$STATS_RC/autopilot-2026-09-29.jsonl"
 [ "$stats_both_st" -eq "$stats_rc_st" ]
-assert_exit "issue #212: adk-stats: упали оба агрегатора — exit равен коду основного (тот же, что при падении только его)" \
+assert_exit "issue #212: adk-stats: упали оба агрегатора — exit ненулевой (порядок кодов снаружи ненаблюдаем: оба падают единицей)" \
   0 $?
 
 # нечитаемый autopilot-файл: путь «только прогоны» (announce)
@@ -5222,6 +5223,9 @@ assert_exit "issue #213: adk-ralph: nan — headless-процесс вызван
 # бы inf молча выключающим breaker — круг 1 ревью PR #226). Переиспользуем
 # фикстуру: чистые лог вызовов, prs и журнал, другой конфиг
 : > "$RBIN_RB_NAN/claude-calls.log"
+# сброс prs — гигиена изоляции прогонов, не наблюдаемое поведение:
+# унаследованный DRAFT предстарт не закорачивает (разбор — круг 1 ревью
+# PR #232), но зависимость исходов от порядка прогонов держать не хотим
 printf '[]\n' > "$RBIN_RB_NAN/prs-fixture.json"
 RALPH_RB_INF_CFG="$TMP/ralph-rb-inf-config.json"
 cat > "$RALPH_RB_INF_CFG" <<'EOF'
@@ -5233,7 +5237,7 @@ assert_exit "issue #213: adk-ralph: maxSkippedShare=\"inf\" — тоже отв�
 assert_contains "issue #213: adk-ralph: inf отвергнут с предупреждением и дефолтом (порог обязан быть конечным)" \
   "$ralph_rb_inf_out" "maxSkippedShare='inf' — не число, использован дефолт 0.5"
 rb_inf_calls=$(grep -c "Инструкция ралфа" "$RBIN_RB_NAN/claude-calls.log")
-assert_exit "issue #212: inf-прогон вызвал claude ровно один раз — сброс prs-fixture между прогонами наблюдаем (унаследованный draft закоротил бы предстарт)" \
+assert_exit "issue #213: inf-прогон вызывает claude ровно один раз" \
   1 "$rb_inf_calls"
 
 # issue #210 (блокер круга 1 PR #227): целый порог больше 2**63-1 валиден
@@ -5259,7 +5263,7 @@ assert_exit "issue #210: adk-ralph: stuck-breaker с гигантским пор
 assert_contains "issue #210: adk-ralph: причина остановки — доля пропущенных, не застревания" \
   "$ralph_rb_bigint_out" "breaker: доля пропущенных за прогон"
 rb_bigint_calls=$(grep -c "Инструкция ралфа" "$RBIN_RB_NAN/claude-calls.log")
-assert_exit "issue #212: bigint-прогон вызвал claude ровно один раз — сброс prs-fixture наблюдаем и здесь" \
+assert_exit "issue #210: bigint-прогон вызывает claude ровно один раз" \
   1 "$rb_bigint_calls"
 
 # issue #212: multiplier nan — валидатор size_multiplier читается на старте
@@ -5397,7 +5401,7 @@ assert_contains "issue #212: adk-ralph: .adk/stop-каталог — громк�
 assert_exit "issue #212: adk-ralph: .adk/stop-каталог — прогон остановлен (exit != 0)" \
   1 "$ralph_stop_dir_st"
 assert_contains "issue #212: adk-ralph: причина остановки — «стоп-файл» (первая проверка границы)" \
-  "$ralph_stop_dir_out" "стоп-файл"
+  "$ralph_stop_dir_out" "Причина остановки: стоп-файл"
 stop_dir_calls=$(cat "$RBIN_STOP_DIR/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
 assert_exit "issue #212: adk-ralph: .adk/stop-каталог — ни один issue не начат" \
   0 "$stop_dir_calls"
@@ -6522,36 +6526,6 @@ ralph_tok_valid=$(jsonl_check "$ralph_tok_log" 4 "$ralph_tok_spec")
 assert_exit "AC-6: adk-ralph: (issue #132) журнал — #971 c tokens=3500 (input+output+cache_creation, без cache_read) и duration, #976 без tokens, run_end с суммой прогона" \
   1 "$ralph_tok_valid"
 
-# ── issue #212: кламп positive_tokens (10**15) не был закреплён ни одним
-# тестом. Конфиг task.maxTokens = 10**16 валиден (>0), но клампится до
-# 10**15; стаб отдаёт usage на 2*10**15 — превышение ловится ТОЛЬКО если
-# кламп сработал (без него 2e15 < 1e16 и задача прошла бы как ready) ──────
-RALPH_TOKCLAMP="$TMP/ralph-tokclamp-proj"
-RBIN_TOKCLAMP="$TMP/ralph-tokclamp-bin"
-ralph_init "$RALPH_TOKCLAMP" "$RBIN_TOKCLAMP"
-cat > "$RBIN_TOKCLAMP/issues-fixture.json" <<'EOF'
-[
-  {"number": 981, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
-]
-EOF
-gh_ralph_stub "$RBIN_TOKCLAMP" "$RBIN_TOKCLAMP/issues-fixture.json" "$RBIN_TOKCLAMP/prs-fixture.json"
-claude_stub "$RBIN_TOKCLAMP" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9981, "isDraft": false, "headRefName": "issue-981-x"}]
-PRJSON
-printf '{"type":"result","usage":{"input_tokens":2000000000000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}\n'
-exit 0
-EOF
-RALPH_TOKCLAMP_CFG="$TMP/ralph-tokclamp-config.json"
-cat > "$RALPH_TOKCLAMP_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxTokens": 10000000000000000}}}}}
-EOF
-ralph_tokclamp_out=$(run_ralph "$RALPH_TOKCLAMP" "$RBIN_TOKCLAMP" "$TMP/ralph-tokclamp-logs" "$TMP/ralph-tokclamp-notify.log" "$RALPH_TOKCLAMP_CFG")
-assert_contains "issue #212: adk-ralph: maxTokens=10**16 клампится до 10**15 — расход 2*10**15 превышает клампнутый бюджет" \
-  "$ralph_tokclamp_out" "превысил бюджет задачи (1000000000000000) при issue #981"
-assert_not_contains "issue #212: adk-ralph: валидное большое значение — предупреждения о невалидности нет (кламп молчалив)" \
-  "$ralph_tokclamp_out" "не положительное целое токенов"
 ralph_tok_976=$(grep '"issue": "976"' "$ralph_tok_log" 2>/dev/null)
 assert_not_contains "AC-6: adk-ralph: (issue #132) у задачи без usage поля tokens нет вовсе (не 0 и не мусор)" \
   "$ralph_tok_976" '"tokens"'
@@ -6685,6 +6659,36 @@ assert_contains "AC-6: ADR-001 фиксирует состав токен-счё
 assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
   "$adr001_text" "БЕЗ cache_read"
 
+# ── issue #212: кламп positive_tokens (10**15) не был закреплён ни одним
+# тестом. Конфиг task.maxTokens = 10**16 валиден (>0), но клампится до
+# 10**15; стаб отдаёт usage на 2*10**15 — превышение ловится ТОЛЬКО если
+# кламп сработал (без него 2e15 < 1e16 и задача прошла бы как ready) ──────
+RALPH_TOKCLAMP="$TMP/ralph-tokclamp-proj"
+RBIN_TOKCLAMP="$TMP/ralph-tokclamp-bin"
+ralph_init "$RALPH_TOKCLAMP" "$RBIN_TOKCLAMP"
+cat > "$RBIN_TOKCLAMP/issues-fixture.json" <<'EOF'
+[
+  {"number": 981, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+gh_ralph_stub "$RBIN_TOKCLAMP" "$RBIN_TOKCLAMP/issues-fixture.json" "$RBIN_TOKCLAMP/prs-fixture.json"
+claude_stub "$RBIN_TOKCLAMP" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+cat > "$d/prs-fixture.json" <<'PRJSON'
+[{"number": 9981, "isDraft": false, "headRefName": "issue-981-x"}]
+PRJSON
+printf '{"type":"result","usage":{"input_tokens":2000000000000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}\n'
+exit 0
+EOF
+RALPH_TOKCLAMP_CFG="$TMP/ralph-tokclamp-config.json"
+cat > "$RALPH_TOKCLAMP_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxTokens": 10000000000000000}}}}}
+EOF
+ralph_tokclamp_out=$(run_ralph "$RALPH_TOKCLAMP" "$RBIN_TOKCLAMP" "$TMP/ralph-tokclamp-logs" "$TMP/ralph-tokclamp-notify.log" "$RALPH_TOKCLAMP_CFG")
+assert_contains "issue #212: adk-ralph: maxTokens=10**16 клампится до 10**15 — расход 2*10**15 превышает клампнутый бюджет" \
+  "$ralph_tokclamp_out" "превысил бюджет задачи (1000000000000000) при issue #981"
+assert_not_contains "issue #212: adk-ralph: валидное большое значение — предупреждения о невалидности нет (кламп молчалив)" \
+  "$ralph_tokclamp_out" "не положительное целое токенов"
 # ── issue #133, AC-4: множитель бюджета для задач с label size:large —
 # оба бюджета задачи (минуты и токены) умножаются на
 # policies.autopilot.budget.sizeLargeMultiplier (дефолт 2); задача без
@@ -6998,6 +7002,7 @@ assert_contains "AC-8: adk-ralph: (issue #138) прогон без конфиг�
 
 # ralph: конфиг есть, но БЕЗ блоков budget/breaker — те же дефолты
 : > "$RBIN_NC/claude-calls.log"
+# сброс prs — гигиена изоляции прогонов (см. комментарий у RB_NAN)
 printf '[]\n' > "$RBIN_NC/prs-fixture.json"
 ralph_nb_out=$(run_ralph "$RALPH_NC" "$RBIN_NC" "$TMP/ralph-noblocks-logs" "$TMP/ralph-noblocks-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-8: adk-ralph: (issue #138) конфиг без блоков budget/breaker — полный цикл на дефолтах, exit 0" 0 $?
@@ -7390,7 +7395,7 @@ check_ac_doc AC-4 "README: команда обновления оговарив�
 check_ac_doc AC-4 "README: пример settings.json уточняет путь (.claude/settings.json проектный vs ~/.claude/settings.json пользовательский)" \
   "$KIT/README.md" '~/.claude/settings.json'
 [ -f "$KIT/docs/specs/004-plugin-versioning.md" ]
-assert_exit "AC-4: spec 004 существует (страж ниже не должен пройти молча на \$(cat) от исчезнувшего файла)" 0 $?
+assert_exit "issue #212: spec 004 существует (страж ниже не должен пройти молча на \$(cat) от исчезнувшего файла)" 0 $?
 assert_not_contains "AC-4: spec 004 не несёт аннотацию (ждёт #153) на AC-4 — тест уже покрывает критерий" \
   "$(cat "$KIT/docs/specs/004-plugin-versioning.md")" 'AC-4 (ждёт #153)'
 

@@ -245,6 +245,11 @@ SPEC-003 «Жёсткие бюджеты» (AC-3, issue #131 — только в
 
 ## Последствия
 
+- Бюджет задачи покрывает только сам headless-процесс `claude -p`:
+  merge-ветка ready-PR (issue #129, ADR-019) и предстартовая обработка
+  уже-ready issue (ADR-014) в него не входят — их длительность ограничена
+  только бюджетом прогона (оговорка issue #212).
+
 - Новые атрибуты `policies.autopilot.budget.task.maxMinutes` (дефолт `45`)
   и `policies.autopilot.budget.run.maxMinutes` (дефолт `240`) — только
   `hooks/scripts/adk-ralph.sh` их читает (`docs/config.md`); оба дефолта

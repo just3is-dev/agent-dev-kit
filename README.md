@@ -239,12 +239,12 @@ gh issue edit <N> --remove-label owner:human
 
 Изоляция v1 — на уровне разрешений Claude Code, а не sandbox: `adk-ralph.sh`
 не передаёт `--dangerously-skip-permissions` дочернему `claude -p` (AC-7
-SPEC-003, `docs/specs/003-autonomy.md`). Инструмент, не разрешённый заранее,
-остановит headless-процесс на интерактивном запросе разрешения — спросить
-там некого, и первый же ночной прогон остановится на отказе разрешения.
-Прежде чем оставлять ralph
-без присмотра, `.claude/settings.json` проекта должен разрешать минимум,
-которым пользуются `/work` и его субагенты:
+SPEC-003, `docs/specs/003-autonomy.md`). Инструмент, не разрешённый
+заранее, в headless-режиме получает отказ (спросить некого) — задача
+уходит в stuck («PR не создан»), цикл берёт следующую, и без нужных
+разрешений ночной прогон выгорит в needs-human до срабатывания breaker'а.
+Прежде чем оставлять ralph без присмотра, `.claude/settings.json` проекта
+должен разрешать минимум, которым пользуются `/work` и его субагенты:
 
 - **git**: `status`, `diff` (в т.ч. `diff main... --shortstat`), `add`,
   `commit`, `push` (в т.ч. `push --force-with-lease` после rebase), `fetch`,
