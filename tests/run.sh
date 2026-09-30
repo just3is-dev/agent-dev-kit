@@ -3324,6 +3324,18 @@ ralph_valid=$(jsonl_check "$ralph_log" 5 "$ralph_spec")
 assert_exit "AC-1: adk-ralph: журнал — run_start, issue #1 stuck/#2 skipped/#3 ready с причинами, run_end с агрегатами и причиной остановки" \
   1 "$ralph_valid"
 
+# issue #154, SPEC-004 AC-5: event=run_start несёт версию плагина (поле
+# version, ADR-001 «Расширения схемы») — читается общим хелпером
+# hooks/scripts/lib/plugin-version.sh (ADR-021), не парсится заново.
+# $ralph_spec целиком уже проверен блоком AC-1 выше — здесь та же спека
+# плюс "|version?" на первой строке (не голые пустые строки: command
+# substitution обрезает хвостовые "\n" у $(...), и спец из одних пустых
+# строк на хвосте потерял бы их все ещё до jsonl_check).
+ralph_version_spec=$(printf '%s' "$ralph_spec" | sed '1s/$/|version?/')
+ralph_version_valid=$(jsonl_check "$ralph_log" 5 "$ralph_version_spec")
+assert_exit "AC-5: adk-ralph: (issue #154) первая строка журнала прогона — event=run_start с непустым полем version (версия плагина из .claude-plugin/plugin.json)" \
+  1 "$ralph_version_valid"
+
 edit_log=$(cat "$RBIN/issue-edit.log" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: застрявший issue #1 помечен needs-human" "$edit_log" "issue edit 1 --add-label needs-human"
 assert_not_contains "AC-1: adk-ralph: issue #2 (пропущен каскадом) не получает needs-human — не он застрял" "$edit_log" "issue edit 2 "
@@ -8047,6 +8059,128 @@ assert_not_contains "issue #228: reviewer.md не содержит старую 
   "$(doc_text "$KIT/agents/reviewer.md")" "правкой на копии или с откатом через git"
 assert_not_contains "issue #228: skills/tdd/SKILL.md не содержит старую формулировку («откатом» без оговорки о чистом дереве)" \
   "$(doc_text "$KIT/skills/tdd/SKILL.md")" "правкой на копии или с откатом)"
+
+# ── Версия плагина в event=run_start (issue #154, SPEC-004 AC-5, ADR-021) ────
+# hooks/scripts/lib/plugin-version.sh — общий хелпер (ADR-002: разбор JSON
+# не дублируется — переиспользует lib/json-field.sh), CLI-обёртка
+# hooks/scripts/adk-plugin-version.sh (по образцу adk-config.sh) — для
+# вызова из markdown-инструкций команд, где сам lib не sourceable.
+
+# Ветка «кит сам себе плагин» (догфудинг, CLAUDE_PLUGIN_ROOT не задан):
+# self-location по BASH_SOURCE находит .claude-plugin/plugin.json в корне
+# самого кита — тот же файл, что версионируется этим же PR.
+PLUGIN_VERSION_SH="$HOOKS/adk-plugin-version.sh"
+kit_real_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$KIT/.claude-plugin/plugin.json")
+dogfood_version=$(env -u CLAUDE_PLUGIN_ROOT "$PLUGIN_VERSION_SH" 2>/dev/null)
+dogfood_st=$?
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) без CLAUDE_PLUGIN_ROOT — exit 0" 0 "$dogfood_st"
+[ "$dogfood_version" = "$kit_real_version" ]
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) без CLAUDE_PLUGIN_ROOT (догфудинг) читает version из .claude-plugin/plugin.json корня самого кита" \
+  0 $?
+
+# Ветка «потребительский проект» (CLAUDE_PLUGIN_ROOT задан хостом на
+# установленный кэш плагина) — override, не self-location кита.
+PVCONS="$TMP/plugin-version-consumer"
+mkdir -p "$PVCONS/.claude-plugin"
+cat > "$PVCONS/.claude-plugin/plugin.json" <<'EOF'
+{"name": "agent-dev-kit", "version": "9.9.9"}
+EOF
+consumer_version=$(CLAUDE_PLUGIN_ROOT="$PVCONS" "$PLUGIN_VERSION_SH" 2>/dev/null)
+assert_contains "AC-5: adk-plugin-version.sh: (issue #154) CLAUDE_PLUGIN_ROOT задан — читает version installed-кэша, не self-location кита" \
+  "$consumer_version" "9.9.9"
+
+# Установленный кэш без .claude-plugin/plugin.json — пустая строка, не падение
+PVEMPTY="$TMP/plugin-version-empty"
+mkdir -p "$PVEMPTY"
+empty_out=$(CLAUDE_PLUGIN_ROOT="$PVEMPTY" "$PLUGIN_VERSION_SH" 2>/dev/null)
+empty_st=$?
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) plugin.json отсутствует — exit 0 (не падение)" 0 "$empty_st"
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) plugin.json отсутствует — пустой вывод" 0 "$([ -z "$empty_out" ]; echo $?)"
+
+# Битый JSON — пустая строка, не падение
+PVBROKEN="$TMP/plugin-version-broken"
+mkdir -p "$PVBROKEN/.claude-plugin"
+printf '{not valid json' > "$PVBROKEN/.claude-plugin/plugin.json"
+broken_out=$(CLAUDE_PLUGIN_ROOT="$PVBROKEN" "$PLUGIN_VERSION_SH" 2>/dev/null)
+broken_st=$?
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) plugin.json битый JSON — exit 0 (не падение)" 0 "$broken_st"
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) plugin.json битый JSON — пустой вывод" 0 "$([ -z "$broken_out" ]; echo $?)"
+
+# Валидный JSON без поля version — пустая строка
+PVNOVER="$TMP/plugin-version-noversion"
+mkdir -p "$PVNOVER/.claude-plugin"
+printf '{"name": "agent-dev-kit"}' > "$PVNOVER/.claude-plugin/plugin.json"
+noversion_out=$(CLAUDE_PLUGIN_ROOT="$PVNOVER" "$PLUGIN_VERSION_SH" 2>/dev/null)
+assert_exit "AC-5: adk-plugin-version.sh: (issue #154) plugin.json без поля version — пустой вывод, не падение" \
+  0 "$([ -z "$noversion_out" ]; echo $?)"
+
+# ── /autopilot: тот же шаг «Перед первой итерацией» читает версию тем же
+# хелпером и пишет то же поле в event=run_start, что и adk-ralph.sh ────────
+assert_contains "AC-5: autopilot.md — «Перед первой итерацией» читает версию плагина через adk-plugin-version.sh (issue #154)" \
+  "$cycle_preamble" 'adk-plugin-version\.sh'
+assert_contains "AC-5: autopilot.md — event=run_start несёт поле version (то же, что пишет adk-ralph.sh)" \
+  "$cycle_preamble" 'event=run_start version='
+
+# ── ADR-001 «Расширения схемы»: запись о поле version на event=run_start ────
+adr001_v_text=$(doc_text "$KIT/docs/adr/001-journal-event-schema.md")
+assert_contains "AC-5: ADR-001 «Расширения схемы» фиксирует новую запись про issue #154" \
+  "$adr001_v_text" "issue #154"
+assert_contains "AC-5: ADR-001 называет поле version" \
+  "$adr001_v_text" "version"
+assert_contains "AC-5: ADR-001 называет писателей поля (adk-ralph.sh и /autopilot)" \
+  "$adr001_v_text" "adk-ralph.sh"
+assert_contains "AC-5: ADR-001 фиксирует обратимость расширения (старые строки без поля не участвуют)" \
+  "$adr001_v_text" "не участвуют"
+
+# ── adk-stats.sh: новое поле version на event=run_start не ломает агрегатор
+# и не меняет вывод (issue #154 DoD — adk-stats.sh не меняется, но обязан
+# не падать на новом поле; adk-stats.sh не читает событие run_start вовсе,
+# поэтому регрессия здесь ловила бы будущую правку, не сегодняшнее
+# поведение) ──────────────────────────────────────────────────────────────
+STATS_VEROLD="$TMP/stats-version-old"
+mkdir -p "$STATS_VEROLD"
+cat > "$STATS_VEROLD/issue-60.jsonl" <<'EOF'
+{"event":"start","issue":"60","type":"task","timestamp":"2026-09-30T09:00:00Z"}
+{"event":"outcome","issue":"60","type":"task","result":"merged","timestamp":"2026-09-30T10:00:00Z"}
+EOF
+cat > "$STATS_VEROLD/autopilot-2026-09-29.jsonl" <<'EOF'
+{"event":"run_start","timestamp":"2026-09-29T08:00:00Z"}
+{"event":"task","issue":"61","type":"task","result":"ready","timestamp":"2026-09-29T08:10:00Z"}
+{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","reason":"очередь пуста","timestamp":"2026-09-29T08:11:00Z"}
+EOF
+
+STATS_VERNEW="$TMP/stats-version-new"
+mkdir -p "$STATS_VERNEW"
+cp "$STATS_VEROLD/issue-60.jsonl" "$STATS_VERNEW/issue-60.jsonl"
+cat > "$STATS_VERNEW/autopilot-2026-09-30.jsonl" <<'EOF'
+{"event":"run_start","version":"0.1.41","timestamp":"2026-09-30T08:00:00Z"}
+{"event":"task","issue":"62","type":"task","result":"ready","timestamp":"2026-09-30T08:10:00Z"}
+{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","reason":"очередь пуста","timestamp":"2026-09-30T08:11:00Z"}
+EOF
+
+stats_verold_out=$(ADK_LOGS_DIR="$STATS_VEROLD" "$HOOKS/adk-stats.sh" 2>/dev/null)
+stats_verold_st=$?
+stats_vernew_out=$(ADK_LOGS_DIR="$STATS_VERNEW" "$HOOKS/adk-stats.sh" 2>/dev/null)
+stats_vernew_st=$?
+assert_exit "AC-5: adk-stats: (issue #154) autopilot-журнал БЕЗ поля version на run_start (старая запись) — exit 0" 0 "$stats_verold_st"
+assert_exit "AC-5: adk-stats: (issue #154) autopilot-журнал С полем version на run_start — exit 0" 0 "$stats_vernew_st"
+[ "$stats_verold_out" = "$stats_vernew_out" ]
+assert_exit "AC-5: adk-stats: (issue #154) вывод не меняется ни на строку от присутствия/отсутствия поля version на run_start" \
+  0 $?
+
+# смешанный каталог: часть autopilot-*.jsonl со старыми run_start без поля,
+# часть — с полем (issue #154 DoD дословно) — exit 0, агрегаты по
+# issue-*.jsonl по-прежнему считаются
+STATS_VERMIX="$TMP/stats-version-mixed"
+mkdir -p "$STATS_VERMIX"
+cp "$STATS_VEROLD/issue-60.jsonl" "$STATS_VERMIX/issue-60.jsonl"
+cp "$STATS_VEROLD/autopilot-2026-09-29.jsonl" "$STATS_VERMIX/autopilot-2026-09-29.jsonl"
+cp "$STATS_VERNEW/autopilot-2026-09-30.jsonl" "$STATS_VERMIX/autopilot-2026-09-30.jsonl"
+stats_vermix_out=$(ADK_LOGS_DIR="$STATS_VERMIX" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "AC-5: adk-stats: (issue #154) каталог со смесью старых (без version) и новых (с version) run_start — exit 0" \
+  0 $?
+assert_contains "AC-5: adk-stats: (issue #154) смешанный каталог — агрегаты задач по-прежнему считаются (Всего задач: 1)" \
+  "$stats_vermix_out" "Всего задач: 1"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
