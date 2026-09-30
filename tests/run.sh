@@ -8122,21 +8122,36 @@ assert_contains "AC-5: autopilot.md — event=run_start несёт поле vers
   "$cycle_preamble" 'event=run_start version='
 
 # ── ADR-001 «Расширения схемы»: запись о поле version на event=run_start ────
-adr001_v_text=$(doc_text "$KIT/docs/adr/001-journal-event-schema.md")
-assert_contains "AC-5: ADR-001 «Расширения схемы» фиксирует новую запись про issue #154" \
-  "$adr001_v_text" "issue #154"
-assert_contains "AC-5: ADR-001 называет поле version" \
-  "$adr001_v_text" "version"
-assert_contains "AC-5: ADR-001 называет писателей поля (adk-ralph.sh и /autopilot)" \
-  "$adr001_v_text" "adk-ralph.sh"
-assert_contains "AC-5: ADR-001 фиксирует обратимость расширения (старые строки без поля не участвуют)" \
-  "$adr001_v_text" "не участвуют"
+# Срез именно новой записи (md_section до конца файла — запись сейчас
+# последняя в списке), а не весь документ: круг 1 ревью PR #247 —
+# "adk-ralph.sh" и "не участвуют" уже встречаются в доке независимо от
+# этой задачи (первое — в других записях списка, второе — в разделе
+# «Решение»), проверка по всему doc_text прошла бы и без новой записи.
+adr001_v154_entry=$(md_section "$KIT/docs/adr/001-journal-event-schema.md" \
+  '^- 2026-09-30 \(issue #154, SPEC-004 AC-5, ADR-021\)' '$')
+assert_contains "AC-5: ADR-001 «Расширения схемы» содержит запись про issue #154 (не пустой срез)" \
+  "$adr001_v154_entry" "issue #154"
+assert_contains "AC-5: ADR-001 — запись про #154 называет поле version" \
+  "$adr001_v154_entry" "version"
+assert_contains "AC-5: ADR-001 — запись про #154 называет писателей поля (adk-ralph.sh и /autopilot)" \
+  "$adr001_v154_entry" "adk-ralph.sh"
+assert_contains "AC-5: ADR-001 — запись про #154 фиксирует обратимость расширения (строки без поля не участвуют)" \
+  "$adr001_v154_entry" "не участвуют"
+assert_contains "AC-5: ADR-001 — запись про #154 явно снимает расхождение пустого значения между писателями (issue #154, круг 1 ревью PR #247)" \
+  "$adr001_v154_entry" "неотличимы"
 
 # ── adk-stats.sh: новое поле version на event=run_start не ломает агрегатор
 # и не меняет вывод (issue #154 DoD — adk-stats.sh не меняется, но обязан
 # не падать на новом поле; adk-stats.sh не читает событие run_start вовсе,
 # поэтому регрессия здесь ловила бы будущую правку, не сегодняшнее
 # поведение) ──────────────────────────────────────────────────────────────
+# verold/vernew различаются РОВНО одним полем (version на run_start) —
+# тот же файл (та же дата), тот же issue, те же duration/tokens на
+# event=task, чтобы задействовать и раздел «Расход задач прогонов»
+# (единственный код-путь, которым adk-stats.sh вообще читает
+# autopilot-*.jsonl) — круг 1 ревью PR #247: без duration/tokens этот
+# раздел не печатался вовсе, и побайтное сравнение ловило бы только
+# падение скрипта, не реальное чтение поля version.
 STATS_VEROLD="$TMP/stats-version-old"
 mkdir -p "$STATS_VEROLD"
 cat > "$STATS_VEROLD/issue-60.jsonl" <<'EOF'
@@ -8145,17 +8160,17 @@ cat > "$STATS_VEROLD/issue-60.jsonl" <<'EOF'
 EOF
 cat > "$STATS_VEROLD/autopilot-2026-09-29.jsonl" <<'EOF'
 {"event":"run_start","timestamp":"2026-09-29T08:00:00Z"}
-{"event":"task","issue":"61","type":"task","result":"ready","timestamp":"2026-09-29T08:10:00Z"}
-{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","reason":"очередь пуста","timestamp":"2026-09-29T08:11:00Z"}
+{"event":"task","issue":"61","type":"task","result":"ready","duration":"90s","tokens":"1500","timestamp":"2026-09-29T08:10:00Z"}
+{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","tokens":"1500","reason":"очередь пуста","timestamp":"2026-09-29T08:11:00Z"}
 EOF
 
 STATS_VERNEW="$TMP/stats-version-new"
 mkdir -p "$STATS_VERNEW"
 cp "$STATS_VEROLD/issue-60.jsonl" "$STATS_VERNEW/issue-60.jsonl"
-cat > "$STATS_VERNEW/autopilot-2026-09-30.jsonl" <<'EOF'
-{"event":"run_start","version":"0.1.41","timestamp":"2026-09-30T08:00:00Z"}
-{"event":"task","issue":"62","type":"task","result":"ready","timestamp":"2026-09-30T08:10:00Z"}
-{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","reason":"очередь пуста","timestamp":"2026-09-30T08:11:00Z"}
+cat > "$STATS_VERNEW/autopilot-2026-09-29.jsonl" <<'EOF'
+{"event":"run_start","version":"9.9.9","timestamp":"2026-09-29T08:00:00Z"}
+{"event":"task","issue":"61","type":"task","result":"ready","duration":"90s","tokens":"1500","timestamp":"2026-09-29T08:10:00Z"}
+{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","tokens":"1500","reason":"очередь пуста","timestamp":"2026-09-29T08:11:00Z"}
 EOF
 
 stats_verold_out=$(ADK_LOGS_DIR="$STATS_VEROLD" "$HOOKS/adk-stats.sh" 2>/dev/null)
@@ -8170,12 +8185,18 @@ assert_exit "AC-5: adk-stats: (issue #154) вывод не меняется ни
 
 # смешанный каталог: часть autopilot-*.jsonl со старыми run_start без поля,
 # часть — с полем (issue #154 DoD дословно) — exit 0, агрегаты по
-# issue-*.jsonl по-прежнему считаются
+# issue-*.jsonl по-прежнему считаются. Два разных файла (разные даты в
+# имени) — в отличие от verold/vernew выше, здесь как раз нужны две
+# разные записи в одном каталоге одновременно, не изолированный diff.
 STATS_VERMIX="$TMP/stats-version-mixed"
 mkdir -p "$STATS_VERMIX"
 cp "$STATS_VEROLD/issue-60.jsonl" "$STATS_VERMIX/issue-60.jsonl"
 cp "$STATS_VEROLD/autopilot-2026-09-29.jsonl" "$STATS_VERMIX/autopilot-2026-09-29.jsonl"
-cp "$STATS_VERNEW/autopilot-2026-09-30.jsonl" "$STATS_VERMIX/autopilot-2026-09-30.jsonl"
+cat > "$STATS_VERMIX/autopilot-2026-09-30.jsonl" <<'EOF'
+{"event":"run_start","version":"9.9.9","timestamp":"2026-09-30T08:00:00Z"}
+{"event":"task","issue":"62","type":"task","result":"ready","duration":"90s","tokens":"1500","timestamp":"2026-09-30T08:10:00Z"}
+{"event":"run_end","done":"0","ready":"1","stuck":"0","skipped":"0","tokens":"1500","reason":"очередь пуста","timestamp":"2026-09-30T08:11:00Z"}
+EOF
 stats_vermix_out=$(ADK_LOGS_DIR="$STATS_VERMIX" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-5: adk-stats: (issue #154) каталог со смесью старых (без version) и новых (с version) run_start — exit 0" \
   0 $?
