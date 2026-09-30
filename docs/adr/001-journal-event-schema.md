@@ -296,3 +296,19 @@ Issue #4 (`/stats`, эта задача) зависит только от #1 (`a
   `run.maxTokens` (по аналогии с `sizeLargeMultiplier`) либо перевод
   источника бюджета на `total_cost_usd`/`modelUsage` вместо `usage` —
   отдельная задача, эта запись схему журнала не меняет.
+- 2026-09-30 (issue #220 п.1, ADR-019 доп.): новое значение `result=
+  closed-externally` на `event=task` в `autopilot-<дата>.jsonl` (только
+  `adk-ralph.sh`) — issue, закрытый человеком (или другим процессом) до
+  того, как `adk-ralph.sh` успел его исполнить этим прогоном (предстартовая
+  перепроверка `gh issue view --json state`). Тем же приёмом, что уже ввёл
+  `result=blocked-on-ready` (запись 2026-09-27 issue #147 выше): исход не
+  `stuck`, не обычный `skipped`, но и не пропадает из журнала молча.
+  Сознательно НЕ входит в знаменатель/числитель `maxSkippedShare`
+  (ADR-016 §1 определяет его по `result` ∈ {ready, stuck, skipped}) —
+  кодировать этот исход значением `result=skipped` означало бы, что число
+  записей `result=skipped` в журнале перестаёт совпадать с полем
+  `run_end.skipped`, которое этот же документ (запись про `maxSkippedShare`
+  выше) определяет как долю именно `result=skipped`; отдельное значение
+  `result` снимает расхождение без исключений в тексте ADR-016 задним
+  числом. Симметрично `blocked_on_ready=<k>` на `event=run_end` — новое
+  поле `closed_externally=<k>`, число таких issues за прогон.

@@ -153,7 +153,9 @@ ralph_signal_cleanup() {
   "$logger" "$run_unit" event=run_end done="${merged_count:-0}" ready="${ready_count:-0}" \
     tokens="${run_tokens_used:-0}" \
     stuck="${stuck_count:-0}" skipped="${skipped_count:-0}" \
-    blocked_on_ready="${blocked_on_ready_count:-0}" reason="прерван сигналом $sig" || true
+    blocked_on_ready="${blocked_on_ready_count:-0}" \
+    closed_externally="${closed_externally_count:-0}" \
+    reason="прерван сигналом $sig" || true
   exit "$sig_exit"
 }
 trap 'ralph_signal_cleanup INT' INT
@@ -175,6 +177,12 @@ merged_nums=""  # issue-номера, смерженные этим прогон
                 # мердж уже не ждёт человека, select_next не должен считать
                 # его блокером ready (ADR-014 §2 говорит именно про ready-но-
                 # не-смерженный блокер).
+closed_externally_nums=""  # issue-номера, закрытые человеком (или другим
+                # процессом) ДО того, как ralph успел их исполнить этим
+                # прогоном (issue #220 п.1, рационале — ADR-019 доп.) —
+                # подмножество handled, отдельно и от merged_nums, и от
+                # skipped. select_next вычитает эти номера из open_numbers
+                # тем же способом, что и merged_now.
 blocked_on_ready_nums=""  # issue-номера, отнесённые к blocked-on-ready в этом
                           # прогоне (подмножество handled), переживает
                           # итерации внешнего цикла — см. ADR-014 п.2
@@ -186,11 +194,14 @@ stuck_count=0
 skipped_count=0
 blocked_on_ready_count=0  # задачи, заблокированные ready-но-не-смерженным
                           # блокером этого прогона (ADR-014, issue #147)
+closed_externally_count=0  # issue-номера, закрытые человеком до старта
+                            # задачи этим прогоном (issue #220 п.1)
 ready_list=""
 merged_list=""
 usage_summary=""  # строки «#N: 12s/3456 ток.» по клод-исполненным задачам (issue #132)
 stuck_summary=""
 skipped_summary=""
+closed_externally_summary=""
 blocked_on_ready_summary=""
 stop_reason=""
 exit_code=0
@@ -343,12 +354,12 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # (доступных задач не осталось).
 select_next() {
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
-    "$blocked_on_ready_nums" "$merged_nums" \
+    "$blocked_on_ready_nums" "$merged_nums" "$closed_externally_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
 import json, re, sys
 
-issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv = sys.argv[1:8]
-task_label, bug_label, ff_label, consolidate_label = sys.argv[8:12]
+issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv, closed_csv = sys.argv[1:9]
+task_label, bug_label, ff_label, consolidate_label = sys.argv[9:13]
 
 
 def csv_ints(s):
@@ -360,6 +371,7 @@ unresolved = csv_ints(stuck_csv) | csv_ints(skipped_csv)
 ready_now = csv_ints(ready_csv)
 prev_blocked_on_ready = csv_ints(prev_bor_csv)
 merged_now = csv_ints(merged_csv)
+closed_externally_now = csv_ints(closed_csv)
 
 with open(issues_file) as f:
     issues = json.load(f)
@@ -375,7 +387,13 @@ issues.sort(key=lambda it: it["number"])
 # зависимая задача не становится ни NEXT, ни blocked-on-ready (у неё нет
 # собственного ready-PR, чтобы попасть в эту ветку) и молча выпадает из
 # сводки прогона — регрессия ADR-014/issue #147 для новой ветки исходов.
-open_numbers = {it["number"] for it in issues} - merged_now
+# closed_externally_now вычитается тем же способом и по той же причине
+# (issue #220 п.1): issue, закрытый человеком ДО того, как этот прогон
+# успел его исполнить, точно так же больше не открыт на GitHub — его
+# "Blocked by #N" не должен ни каскадно SKIP'ить зависимые (блокер не
+# застрял, причина другая), ни висеть вечным блокером, которого не было бы,
+# закройся issue до снимка очереди, а не посреди прогона.
+open_numbers = {it["number"] for it in issues} - merged_now - closed_externally_now
 
 
 def blockers(body):
@@ -920,12 +938,17 @@ finish_ready_outcome() {
 # ── Default branch — определяется фактически, не хардкодится (issue #144,
 # ADR-007 §6). `git symbolic-ref --short refs/remotes/origin/HEAD` даёт то
 # же имя, что видит обычный клон после `git remote set-head origin -a`;
-# фолбэк на "main", если определить не удалось (нет origin, HEAD не
-# выставлен, репозиторий свежий/нестандартный). Вычисляется один раз до
-# цикла — смена default branch в origin посреди прогона вне области этой
-# задачи (известное ограничение, «Последствия» ADR-007).
+# локальное определение недоступно (нет origin, HEAD не выставлен,
+# репозиторий свежий/нестандартный) — вторая попытка через `gh repo view`
+# (issue #220 п.2). Фолбэк на "main" — только если недоступны оба способа
+# (fail-closed). Вычисляется один раз до цикла — смена default branch в
+# origin посреди прогона вне области этой задачи (известное ограничение,
+# «Последствия» ADR-007).
 default_branch=$(cd "$root" && git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
 default_branch="${default_branch#origin/}"
+if [ -z "$default_branch" ]; then
+  default_branch=$(cd "$root" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+fi
 default_branch="${default_branch:-main}"
 
 # return_to_default_branch — возврат рабочего дерева на default branch
@@ -1291,6 +1314,32 @@ while [ "$exit_code" -eq 0 ]; do
       break
       ;;
   esac
+
+  # ── Предстартовая перепроверка состояния issue (issue #220 п.1) ─────────
+  # issues_file — статичный снимок "gh issue list --state open" на старте
+  # прогона (не перезапрашивается между итерациями, см. open_numbers в
+  # select_next выше). merged_now вычитает из очереди только задачи,
+  # смерженные ЭТИМ прогоном (ADR-019 §10) — issue, закрытый человеком
+  # (или другим процессом) посреди прогона, снимком не замечен и
+  # select_next выбрал бы его снова. Один дешёвый gh-вызов прямо перед
+  # стартом ловит эту гонку. Сбой самого вызова (сеть, rate limit) не
+  # блокирует прогон — issue обрабатывается как раньше (fail-open: пустой
+  # $next_issue_state не равен "CLOSED").
+  next_issue_state=$(cd "$root" && gh issue view "$issue_num" --json state -q .state 2>/dev/null)
+  if [ "$next_issue_state" = "CLOSED" ]; then
+    handled=$(csv_add "$handled" "$issue_num")
+    closed_externally_nums=$(csv_add "$closed_externally_nums" "$issue_num")
+    closed_externally_count=$((closed_externally_count + 1))
+    closed_externally_summary="$closed_externally_summary #$issue_num"
+    # result=closed-externally — новое значение схемы ADR-001 (аналогично
+    # blocked-on-ready), не result=skipped: сознательно не участвует в
+    # skipped_count/maxSkippedShare (обоснование — ADR-019 доп.).
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=closed-externally reason="issue closed outside this run"; then
+      journal_break
+      break
+    fi
+    continue
+  fi
 
   # Эффективные бюджеты задачи (issue #133): label size:large умножает обе
   # половины (минуты и токены) на size_multiplier; без label — базовые.
@@ -1665,6 +1714,7 @@ done
 # #129, ADR-019 — merged_count теперь отражает факт).
 "$logger" "$run_unit" event=run_end done="$merged_count" ready="$ready_count" stuck="$stuck_count" \
   skipped="$skipped_count" blocked_on_ready="$blocked_on_ready_count" \
+  closed_externally="$closed_externally_count" \
   tokens="$run_tokens_used" reason="$stop_reason" || true
 
 summary="=== Ralph: итог прогона ===
@@ -1672,6 +1722,7 @@ summary="=== Ralph: итог прогона ===
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
+Закрыто человеком до старта задачи: ${closed_externally_summary:-нет}
 Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
 Расход по задачам (сек/токены):${usage_summary:- нет}
@@ -1681,10 +1732,11 @@ Ready (ждут человека): ${ready_list:-нет}
 echo "$summary"
 # Сводка дублируется локальным уведомлением (SPEC-003 «Сводка прогона и
 # HITL»; DoD issue #139: «event=run_end и уведомление») — не только
-# терминал и журнал. merged=$merged_count дописан В КОНЕЦ строки (issue
-# #129), а не сразу после "завершён:", чтобы не сдвинуть существующие
-# assert_contains на буквальный префикс "ready=... stuck=... skipped=..."
-# у фикстур, предшествующих merge (issue #139/#134/#135/#147/#130).
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count. Причина: $stop_reason" || true
+# терминал и журнал. merged=$merged_count и closed_externally=$closed_externally_count
+# дописаны В КОНЕЦ строки (issue #129, issue #220 п.1), а не сразу после
+# "завершён:", чтобы не сдвинуть существующие assert_contains на буквальный
+# префикс "ready=... stuck=... skipped=..." у фикстур, предшествующих этим
+# полям (issue #139/#134/#135/#147/#130).
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count closed_externally=$closed_externally_count. Причина: $stop_reason" || true
 
 exit "$exit_code"

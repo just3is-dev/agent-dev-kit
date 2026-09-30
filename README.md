@@ -221,11 +221,18 @@ issue → ветка issue-N-слаг → падающие тесты из DoD �
 меткой `owner:human` до того, как за него возьмётся автономный прогон:
 
 ```
-gh label create owner:human 2>/dev/null; gh issue edit <N> --add-label owner:human
+if ! label_err=$(gh label create owner:human 2>&1 >/dev/null) && \
+   ! printf '%s' "$label_err" | grep -q 'already exists'; then
+  echo "gh label create owner:human failed: $label_err" >&2
+fi
+gh issue edit <N> --add-label owner:human
 ```
 
-(`gh label create` идемпотентен — если label уже есть в репозитории,
-вторая часть команды всё равно отработает). И `/autopilot` (шаг 1), и
+(`gh label create` идемпотентен, но не глушится вслепую: нулевой exit или
+«already exists» в stderr — успех (label уже есть в репозитории, вторая
+команда всё равно отработает); любая другая ошибка, например отказ по
+правам, показывается явно — тот же паттерн, что шаг 4 `commands/plan.md`
+при создании label типа задачи). И `/autopilot` (шаг 1), и
 `adk-ralph.sh` пропускают issues с `owner:human` молча: это не застревание
 и не skip по зависимости, метку `needs-human` они на них не ставят и
 никаких записей по ним не пишут в журнал. Снять резерв и вернуть issue в

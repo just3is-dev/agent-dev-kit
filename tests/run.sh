@@ -3826,6 +3826,90 @@ assert_exit "AC-1 (issue #158): adk-ralph: owner:human — headless-процес
 assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-процесс не вызывался с номером #90" \
   "$oh_claude_calls" "issue #90"
 
+# ── issue #220 п.1: снимок очереди (issues_file) статичен на старте
+# прогона — issue #300 (без блокеров) закрыт человеком МЕЖДУ снимком и
+# моментом, когда ralph фактически берёт его в работу (симулируется gh-стабом
+# "issue view", возвращающим CLOSED только для #300). #301 — независимый
+# issue без блокеров. #302 объявляет "Blocked by #300" — проверяет, что
+# закрытие #300 не каскадно пропускает зависимые задачи (ADR-019 доп.:
+# #302 обязан стать обычным NEXT-кандидатом, а не SKIP под чужой причиной).
+# Ожидание: ralph не запускает claude -p на #300, журнал отмечает его
+# result=closed-externally с явной причиной, сводка называет его отдельной
+# строкой (не как обычный SKIP-по-зависимости, не увеличивая skipped=), и
+# #301/#302 оба доигрываются до ready как обычные независимые кандидаты
+# (#302 — без единой строки SKIP на своём пути) ────────────────────────────
+RALPH_CLOSED="$TMP/ralph-closed-proj"
+RBIN_CLOSED="$TMP/ralph-closed-bin"
+RALPH_CLOSED_LOGS="$TMP/ralph-closed-logs"
+ralph_init "$RALPH_CLOSED" "$RBIN_CLOSED"
+cat > "$RBIN_CLOSED/issues-fixture.json" <<'EOF'
+[
+  {"number": 300, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 301, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"},
+  {"number": 302, "labels": [{"name":"type:task"}], "body": "Blocked by #300"}
+]
+EOF
+IFS= read -r -d '' closed_gh_extra <<'EXTRA' || true
+  "issue view")
+    case "$3" in
+      300) printf '%s\n' CLOSED ;;
+      *) printf '%s\n' OPEN ;;
+    esac
+    exit 0
+    ;;
+EXTRA
+gh_ralph_stub "$RBIN_CLOSED" "$RBIN_CLOSED/issues-fixture.json" "$RBIN_CLOSED/prs-fixture.json" log "$closed_gh_extra"
+claude_stub "$RBIN_CLOSED" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+case "$issue_num" in
+  301) pr=451; head=issue-301-z ;;
+  302) pr=452; head=issue-302-z ;;
+esac
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": $pr, "isDraft": false, "headRefName": "$head"}]
+PRJSON
+exit 0
+EOF
+
+ralph_closed_out=$(run_ralph "$RALPH_CLOSED" "$RBIN_CLOSED" "$RALPH_CLOSED_LOGS" "$TMP/ralph-closed-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "issue #220 п.1: adk-ralph: issue закрыт человеком между снимком очереди и стартом задачи — прогон завершается штатно" \
+  0 $?
+assert_contains "issue #220 п.1: adk-ralph: закрытый #300 не занимает слот — сводка перечисляет ready #301 и #302" \
+  "$ralph_closed_out" "#301"
+assert_contains "issue #220 п.1: adk-ralph: зависимый #302 доигран до ready, не застрял на закрытом блокере" \
+  "$ralph_closed_out" "#302"
+assert_contains "issue #220 п.1: adk-ralph: сводка называет #300 отдельной строкой «закрыто человеком до старта»" \
+  "$ralph_closed_out" "Закрыто человеком до старта задачи:  #300"
+assert_not_contains "issue #220 п.1: adk-ralph: #300 не попадает в строку «Пропущено (зависимость от застрявшей задачи)» — причина другая" \
+  "$ralph_closed_out" "Пропущено (зависимость от застрявшей задачи):  #300"
+assert_contains "issue #220 п.1: adk-ralph: строка «Пропущено (зависимость от застрявшей задачи)» пуста — #302 не каскадно пропущен" \
+  "$ralph_closed_out" "Пропущено (зависимость от застрявшей задачи): нет"
+
+closed_claude_calls=$(cat "$RBIN_CLOSED/claude-calls.log" 2>/dev/null)
+closed_claude_call_count=$(printf '%s' "$closed_claude_calls" | grep -c "Инструкция ралфа")
+assert_exit "issue #220 п.1: adk-ralph: headless-процесс запущен ровно два раза (#301, #302 — #300 не исполнялся вовсе)" \
+  2 "$closed_claude_call_count"
+assert_not_contains "issue #220 п.1: adk-ralph: headless-процесс не вызывался с номером #300" \
+  "$closed_claude_calls" "issue #300"
+
+RALPH_CLOSED_LOGS_FILE="$(ralph_journal "$RALPH_CLOSED_LOGS")"
+closed_log=$(cat "$RALPH_CLOSED_LOGS_FILE" 2>/dev/null)
+closed_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=300|type=task|result=closed-externally' \
+  'event=task|issue=301|type=bug|result=ready' \
+  'event=task|issue=302|type=task|result=ready' \
+  'event=run_end|done=0|ready=2|stuck=0|skipped=0|closed_externally=1|reason=очередь пуста')
+closed_valid=$(jsonl_check "$RALPH_CLOSED_LOGS_FILE" 5 "$closed_spec")
+assert_exit "issue #220 п.1: adk-ralph: журнал — #300 result=closed-externally, #301/#302 result=ready, run_end skipped=0 closed_externally=1 (не считается пропуском breaker'а)" \
+  1 "$closed_valid"
+assert_contains "issue #220 п.1: adk-ralph: журнал объясняет причину — issue закрыт вне прогона" \
+  "$closed_log" '"reason": "issue closed outside this run"'
+assert_not_contains "issue #220 п.1: adk-ralph: журнал не содержит SKIP-запись по #302 (не каскадный пропуск)" \
+  "$closed_log" '"issue": "302", "type": "task", "result": "skipped"'
+assert_not_contains "issue #220 п.1: adk-ralph: журнал не кодирует закрытие человеком значением result=skipped" \
+  "$closed_log" '"issue": "300", "type": "task", "result": "skipped"'
+
 # ── issue #146: разбор «Blocked by #N» устойчив к любому текстовому
 # разделителю между номерами, не только запятой/пробелу. #500 объявляет
 # блокеры словом («#199 and #700»), #501 — запятой («#199, #701», уже
@@ -4356,6 +4440,48 @@ assert_exit "issue #144: default branch trunk — вторая задача ст
 defbranch_final=$(git -C "$RALPH_DEFBRANCH" rev-parse --abbrev-ref HEAD)
 [ "$defbranch_final" = "trunk" ]
 assert_exit "issue #144: default branch trunk — финальная ветка репозитория после прогона — trunk, не жёстко зашитое main" \
+  0 $?
+
+# ── issue #220 п.2: локальное определение default branch недоступно (нет
+# origin, refs/remotes/origin/HEAD не выставлен) — фолбэк обязан попытаться
+# `gh repo view --json defaultBranchRef` ПЕРЕД тем, как откатиться на
+# зашитое "main". В репозитории фикстуры нет ветки "main" вовсе: если бы
+# фолбэк ушёл сразу на "main" без попытки через gh, return_to_default_branch
+# упал бы на несуществующей ветке и прогон завершился бы НЕ штатно — это и
+# отличает «починили» от «осталось как было» ──────────────────────────────
+RALPH_GHDEFBRANCH="$TMP/ralph-ghdefbranch-proj"
+RBIN_GHDEFBRANCH="$TMP/ralph-ghdefbranch-bin"
+mkdir -p "$RALPH_GHDEFBRANCH" "$RBIN_GHDEFBRANCH"
+(cd "$RALPH_GHDEFBRANCH" && git_c init -q -b trunk && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_GHDEFBRANCH/issues-fixture.json" <<'EOF'
+[
+  {"number": 631, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_GHDEFBRANCH/prs-fixture.json" <<'EOF'
+[]
+EOF
+IFS= read -r -d '' ghdefbranch_gh_extra <<'EXTRA' || true
+  "repo view") printf '%s\n' trunk; exit 0 ;;
+EXTRA
+gh_ralph_stub "$RBIN_GHDEFBRANCH" "$RBIN_GHDEFBRANCH/issues-fixture.json" "$RBIN_GHDEFBRANCH/prs-fixture.json" log "$ghdefbranch_gh_extra"
+claude_stub "$RBIN_GHDEFBRANCH" <<'EOF'
+git checkout -q -b "issue-${issue_num}-x"
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 731, "isDraft": false, "headRefName": "issue-${issue_num}-x"}]
+PRJSON
+exit 0
+EOF
+
+ralph_ghdefbranch_out=$(run_ralph "$RALPH_GHDEFBRANCH" "$RBIN_GHDEFBRANCH" "$TMP/ralph-ghdefbranch-logs" "$TMP/ralph-ghdefbranch-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "issue #220 п.2: adk-ralph: локальное определение default branch недоступно — фолбэк через gh repo view, прогон завершается штатно" \
+  0 $?
+
+ghdefbranch_final=$(git -C "$RALPH_GHDEFBRANCH" rev-parse --abbrev-ref HEAD)
+[ "$ghdefbranch_final" = "trunk" ]
+assert_exit "issue #220 п.2: default branch из gh repo view — дерево репозитория после прогона на trunk (не на несуществующем main)" \
   0 $?
 
 # ── issue #144: ADR-007 документирует решение о возврате дерева между
@@ -7339,6 +7465,8 @@ assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 рев�
   "$ralph_signal_log" '"done": "1"'
 assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) SIGTERM — event=run_end.reason называет причину сигналом (значение внесено в реестр ADR-007 §3 / ADR-001)" \
   "$ralph_signal_log" '"reason": "прерван сигналом TERM"'
+assert_contains "issue #220 п.1 (важное круга 3 ревью PR #245): SIGTERM — ralph_signal_cleanup тоже пишет closed_externally на event=run_end (тот же писатель, что и blocked_on_ready)" \
+  "$ralph_signal_log" '"closed_externally": "0"'
 
 # ── issue #131: docs/config.md фиксирует дефолты 45/240 — прямая проверка
 # самих значений (не только «дефолт не мешает быстрому тесту»), которую
@@ -7882,6 +8010,22 @@ assert_contains "issue #158: README описывает режим «Самост
 assert_contains "issue #158: README документирует label-резерв owner:human" "$readme_full" "owner:human"
 assert_contains "issue #158: README показывает идемпотентную команду создания label" "$readme_full" "gh label create owner:human"
 assert_contains "issue #158: README показывает снятие резерва" "$readme_full" "gh issue edit <N> --remove-label owner:human"
+
+# ── issue #220 п.3: README пример создания label owner:human не глушит
+# gh label create вслепую (issue #158 требовал этот приём от commands/plan.md
+# шаг 4 — тот же паттерн, только пример README до этой задачи ему не
+# следовал: `2>/dev/null` перед `;` скрывал и «already exists», и настоящую
+# ошибку одинаково) ───────────────────────────────────────────────────────
+assert_contains "issue #220 п.3: README label owner:human перехватывает stderr gh label create (не глушит 2>/dev/null)" \
+  "$readme_full" 'gh label create owner:human.*2>&1'
+assert_contains "issue #220 п.3: README label owner:human считает успехом идемпотентный случай «label уже есть» (already exists)" \
+  "$readme_full" 'already exists'
+assert_contains "issue #220 п.3: README label owner:human не глушит прочие ошибки — показывает их явно" \
+  "$readme_full" 'gh label create owner:human failed'
+assert_contains "issue #220 п.3: README label owner:human ссылается на тот же паттерн, что commands/plan.md" \
+  "$readme_full" 'commands/plan\.md'
+assert_not_contains "issue #220 п.3: README label owner:human больше не глушит gh label create слепым 2>/dev/null" \
+  "$readme_full" 'gh label create owner:human 2>/dev/null'
 
 readme_sostav=$(md_section "$KIT/README.md" '^## Состав репозитория' '^## Статус')
 assert_contains "issue #148: README называет adk-ralph.sh среди точек входа hooks/" "$readme_sostav" "adk-ralph.sh"
