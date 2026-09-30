@@ -408,9 +408,10 @@ protection по `policies` — merge в main только через PR с зе�
 .claude-plugin/   манифест плагина и marketplace для локальной установки
 hooks/            гейты: PostToolUse → check, Stop → test, PreToolUse →
                   запреты; плюс журналирование прогонов и агрегация
-                  (adk-log.sh, adk-stats.sh), AC-трассируемость (ac-check.sh)
-                  и headless-цикл по очереди issues (adk-ralph.sh, SPEC-003:
-                  docs/specs/003-autonomy.md; запуск —
+                  (adk-log.sh, adk-stats.sh), AC-трассируемость (ac-check.sh),
+                  фронтматтер commands/agents/skills самого кита
+                  (frontmatter-check.sh) и headless-цикл по очереди issues
+                  (adk-ralph.sh, SPEC-003: docs/specs/003-autonomy.md; запуск —
                   hooks/scripts/adk-ralph.sh из корня проекта)
 commands/         /project-init, /spec, /plan, /work, /review, /autopilot,
                   /stats, /consolidate
@@ -437,9 +438,13 @@ scripts/, tests/  собственный контракт кита: смоук-�
 
 Кит ест свой же корм: у него есть собственные `scripts/check` и
 `scripts/test`, так что при доработке плагина его же гейты проверяют
-правки хуков. В `scripts/check` кита это включает и проверку
+правки хуков. В `scripts/check` кита это включает проверку
 трассируемости `AC → тест` (`hooks/scripts/ac-check.sh . tests/run.sh`) —
-та же конвенция, что кит требует от проектов, которые инициализирует.
+та же конвенция, что кит требует от проектов, которые инициализирует —
+и безусловную проверку фронтматтера `commands/*.md`, `agents/*.md`,
+`skills/*/SKILL.md` (`hooks/scripts/frontmatter-check.sh` — обязательные
+по типу файла ключи, парсится без сломанной строки-продолжения; issue
+#201, ADR-021).
 
 ## Статус (roadmap)
 

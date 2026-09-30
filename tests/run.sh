@@ -8734,9 +8734,100 @@ assert_exit "issue #201: незакрытый фронтматтер — кра�
 assert_contains "issue #201: ошибка называет файл с незакрытым фронтматтером" "$fm_out" "unterminated.md"
 rm -f "$FM/commands/unterminated.md"
 
-# scripts/check кита зовёт frontmatter-check.sh и падает вместе с ним.
-(cd "$KIT" && ./scripts/check >/dev/null 2>&1)
-assert_exit "issue #201: scripts/check кита зелёный (включает frontmatter-check)" 0 $?
+# Пустое, но присутствующее значение (кавычки не спасают) — красный check.
+cat > "$FM/commands/empty-desc.md" <<'EOF'
+---
+description: ""
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: пустое quoted-значение description — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ description (пустая строка в кавычках)" "$fm_out" "description"
+rm -f "$FM/commands/empty-desc.md"
+
+# Ревью круга 1 PR #243: строка-продолжение, потерявшая отступ и вставшая
+# на колонку 0, но содержащая ":" — не молча заводит новый ключ, а
+# отвергается белым списком допустимых ключей типа файла.
+cat > "$FM/commands/broken-continuation-colon.md" <<'EOF'
+---
+description: первая строка описания
+issues: вторая строка потеряла отступ, но похожа на "ключ: значение"
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: продолжение с колонки 0, похожее на ключ, — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл" "$fm_out" "broken-continuation-colon.md"
+assert_contains "issue #201: ошибка называет неизвестный ключ, не молча заводит его" "$fm_out" "неизвестный ключ"
+rm -f "$FM/commands/broken-continuation-colon.md"
+
+# Ревью круга 1 PR #243: многострочное значение, чья строка-продолжение
+# сама содержит ": " — рантайм Claude Code такое значение теряет (нет
+# построчного fallback для многострочных значений), гейт обязан
+# повторять эту границу, а не быть терпимее.
+cat > "$FM/commands/multiline-colon.md" <<'EOF'
+---
+description: первая строка описания
+  issues: продолжение с отступом, но с двоеточием внутри
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: двоеточие внутри отступной строки-продолжения — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с двоеточием в продолжении" "$fm_out" "multiline-colon.md"
+rm -f "$FM/commands/multiline-colon.md"
+
+# ── scripts/check кита реально зовёт frontmatter-check.sh, не только сам
+# скрипт по отдельности (ревью круга 1 PR #243: тест на "check зелёный"
+# не доказывал саму проводку) — изолированная копия по образцу фикстуры
+# issue #24 ($KCHK), но с НАСТОЯЩИМ frontmatter-check.sh и сломанным
+# commands/*.md ──────────────────────────────────────────────────────────────
+FMWIRE="$TMP/frontmatter-wired"
+rm -rf "$FMWIRE"
+mkdir -p "$FMWIRE/.claude-plugin" "$FMWIRE/hooks/scripts" "$FMWIRE/scripts" "$FMWIRE/tests" "$FMWIRE/bin" "$FMWIRE/commands"
+echo '{}' > "$FMWIRE/.claude-plugin/plugin.json"
+echo '{}' > "$FMWIRE/.claude-plugin/marketplace.json"
+echo '{}' > "$FMWIRE/hooks/hooks.json"
+cp "$KIT/scripts/check" "$FMWIRE/scripts/check"
+cp "$HOOKS/frontmatter-check.sh" "$FMWIRE/hooks/scripts/frontmatter-check.sh"
+chmod +x "$FMWIRE/scripts/check" "$FMWIRE/hooks/scripts/frontmatter-check.sh"
+cat > "$FMWIRE/hooks/scripts/ac-check.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FMWIRE/hooks/scripts/ac-check.sh"
+cat > "$FMWIRE/tests/run.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$FMWIRE/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FMWIRE/bin/claude"
+# ровно класс бага PR #199 (строка-продолжение потеряла отступ)
+cat > "$FMWIRE/commands/stats.md" <<'EOF'
+---
+description: первая строка описания
+на колонке 0 вместо отступа
+argument-hint: "[без аргументов]"
+---
+тело
+EOF
+
+fmwire_out=$(cd "$FMWIRE" && PATH="$FMWIRE/bin:$PATH" ./scripts/check some/file.ts 2>&1)
+fmwire_st=$?
+assert_exit "issue #201: scripts/check <файл> красный на сломанном фронтматтере (частичный прогон)" 1 "$fmwire_st"
+assert_contains "issue #201: scripts/check <файл> называет файл со сломанным фронтматтером" "$fmwire_out" "stats.md"
+
+fmwire_out=$(cd "$FMWIRE" && PATH="$FMWIRE/bin:$PATH" ./scripts/check 2>&1)
+fmwire_st=$?
+assert_exit "issue #201: scripts/check без аргументов красный на сломанном фронтматтере (полный прогон)" 1 "$fmwire_st"
+assert_contains "issue #201: scripts/check без аргументов называет файл со сломанным фронтматтером" "$fmwire_out" "stats.md"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
