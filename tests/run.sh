@@ -886,6 +886,23 @@ stats_out=$(ADK_LOGS_DIR="$STATS_NOROUND" "$HOOKS/adk-stats.sh" 2>&1)
 assert_exit "AC-3: adk-stats: event=review без поля round — exit 0" 0 $?
 assert_contains "AC-3: adk-stats: без поля round круги считаются по числу строк event=review=2 (issue #28 K9)" "$stats_out" "Средние круги ревью: 2.0"
 
+# issue #203: event=review с round:1e400 (валидный JSON, число парсится как
+# float('inf')) — int(ev.get("round", 0)) кидает OverflowError, которую
+# except (TypeError, ValueError) не ловит; строка должна пропускаться как
+# битая, с предупреждением, а не ронять скрипт трейсбеком
+STATS_ROUND_OVERFLOW="$TMP/stats-round-overflow"
+mkdir -p "$STATS_ROUND_OVERFLOW"
+cat > "$STATS_ROUND_OVERFLOW/issue-203.jsonl" <<'EOF'
+{"event":"start","issue":"203","timestamp":"2026-08-05T09:00:00Z"}
+{"event":"review","issue":"203","round":1e400,"verdict":"REQUEST_CHANGES","timestamp":"2026-08-05T09:10:00Z"}
+{"event":"review","issue":"203","round":2,"verdict":"APPROVE","timestamp":"2026-08-05T09:20:00Z"}
+{"event":"outcome","issue":"203","result":"merged","timestamp":"2026-08-05T09:25:00Z"}
+EOF
+stats_out=$(ADK_LOGS_DIR="$STATS_ROUND_OVERFLOW" "$HOOKS/adk-stats.sh" 2>&1)
+assert_exit "issue #203: adk-stats: round:1e400 (OverflowError у int(inf)) не роняет скрипт" 0 $?
+assert_contains "issue #203: adk-stats: строка с round:1e400 пропущена с предупреждением, как битая" "$stats_out" "битая строка пропущена"
+assert_contains "issue #203: adk-stats: круг с валидным round на соседней строке всё ещё посчитан (max_round=2)" "$stats_out" "Средние круги ревью: 2.0"
+
 # 2-3 задачи + прогон autopilot + одно застревание, с битой строкой в одном файле
 STATS_DIR="$TMP/stats-logs"
 mkdir -p "$STATS_DIR"
