@@ -7539,6 +7539,20 @@ assert_contains "issue #148: README ссылается на SPEC-003 у adk-ralp
 assert_contains "issue #148: README называет спеку docs/specs/003-autonomy.md" "$readme_sostav" "docs/specs/003-autonomy.md"
 assert_contains "issue #148: README называет способ запуска adk-ralph.sh из корня проекта" "$readme_sostav" "hooks/scripts/adk-ralph.sh из корня проекта"
 
+# ── Правило мутации безопасно для грязного дерева (issue #228, инцидент
+# 2026-09-30: «откат через git» на грязном дереве читался как
+# `git checkout -- <файл>`, который стирает незакоммиченную работу —
+# adk-ralph.sh был потерян и восстановлен только из случайной резервной
+# копии) ──────────────────────────────────────────────────────────────────
+check_ac_doc "issue #228" "reviewer: мутация — только на копии, пока работа не закоммичена; откат через git — только на чистом дереве" \
+  "$KIT/agents/reviewer.md" "только на копии (worktree/scratchpad), пока работа не закоммичена; откат через git — только когда дерево чистое"
+check_ac_doc "issue #228" "skills/tdd: та же безопасная формулировка мутации для грязного дерева" \
+  "$KIT/skills/tdd/SKILL.md" "только на копии (worktree/scratchpad), пока работа не закоммичена; откат через git — только когда дерево чистое"
+assert_not_contains "issue #228: reviewer.md не содержит старую формулировку («откатом через git» без оговорки о чистом дереве)" \
+  "$(doc_text "$KIT/agents/reviewer.md")" "правкой на копии или с откатом через git"
+assert_not_contains "issue #228: skills/tdd/SKILL.md не содержит старую формулировку («откатом» без оговорки о чистом дереве)" \
+  "$(doc_text "$KIT/skills/tdd/SKILL.md")" "правкой на копии или с откатом)"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
