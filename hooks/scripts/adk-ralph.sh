@@ -1442,6 +1442,23 @@ try:
 except Exception:
     pass
 ' "$work_dir/claude-out.json"
+
+      # Снятие usage (issue #132) — сразу после сам-завершившегося процесса,
+      # ДО проверки claude_rc ниже (issue #214: раньше это стояло после
+      # ветвления по коду возврата, и usage упавшей задачи не читался вовсе —
+      # реальные токены потрачены независимо от исхода claude -p, run.maxTokens
+      # без этого занижен ровно на стоимость всех неуспешных задач). После
+      # kill по бюджету времени (task_budget_hit=1, обрабатывается веткой
+      # ниже) это неприменимо — файл может быть пустым или оборванным, там
+      # расход не читается (минуты пишутся, токены нет).
+      if task_tokens=$(parse_claude_tokens "$work_dir/claude-out.json"); then
+        run_tokens_used=$((run_tokens_used + task_tokens))
+      else
+        task_tokens=""
+        echo "adk-ralph: usage headless-процесса не прочитан (issue" \
+          "#$issue_num) — токены не записаны, токеновый бюджет задачи не" \
+          "применён." >&2
+      fi
     fi
 
     if [ "$task_budget_hit" -eq 0 ] && [ "$claude_rc" -ne 0 ]; then
@@ -1503,17 +1520,9 @@ except Exception:
       fi
       pr_state="budget-exceeded"
     else
-      # Снятие usage (issue #132) — только после сам-завершившегося
-      # процесса: после kill по бюджету времени файл может быть пустым или
-      # оборванным, там расход не читается (минуты пишутся, токены нет).
-      if task_tokens=$(parse_claude_tokens "$work_dir/claude-out.json"); then
-        run_tokens_used=$((run_tokens_used + task_tokens))
-      else
-        task_tokens=""
-        echo "adk-ralph: usage headless-процесса не прочитан (issue" \
-          "#$issue_num) — токены не записаны, токеновый бюджет задачи не" \
-          "применён." >&2
-      fi
+      # Usage (task_tokens/run_tokens_used) уже снят выше, до ветвления по
+      # claude_rc (issue #132, issue #214) — здесь только его применение к
+      # токеновому бюджету задачи.
       if [ -n "$task_tokens" ] && [ "$task_tokens" -gt "$effective_task_token_budget" ]; then
         # Токеновая половина жёсткого бюджета задачи (issue #132): usage
         # известен только по завершении процесса, поэтому проверка

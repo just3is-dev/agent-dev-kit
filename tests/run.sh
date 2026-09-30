@@ -3641,6 +3641,42 @@ ralph_cfail_notify=$(cat "$RALPH_CFAIL_NOTIFY" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: claude -p падает — итог прогона всё равно уведомлён (SPEC-003 «Сводка прогона и HITL»)" \
   "$ralph_cfail_notify" "Прогон завершён: ready=0 stuck=0 skipped=0"
 
+# ── issue #214: claude -p падает (exit≠0), но успевает напечатать валидный
+# usage в stdout ДО падения — расход упавшей задачи обязан попасть в
+# run_tokens_used и tokens= event=run_end (иначе токеновый бюджет прогона
+# занижен ровно на стоимость всех неуспешных задач) ─────────────────────────
+RALPH_CFAILTOK="$TMP/ralph-cfailtok-proj"
+RBIN_CFAILTOK="$TMP/ralph-cfailtok-bin"
+ralph_init "$RALPH_CFAILTOK" "$RBIN_CFAILTOK"
+cat > "$RBIN_CFAILTOK/issues-fixture.json" <<'EOF'
+[
+  {"number": 977, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+gh_ralph_stub "$RBIN_CFAILTOK" "$RBIN_CFAILTOK/issues-fixture.json" "$RBIN_CFAILTOK/prs-fixture.json"
+claude_stub "$RBIN_CFAILTOK" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+# cache_read гигантский нарочно: он не входит в счётчик (issue #132), так же
+# как и в остальных token-фикстурах этого файла
+printf '{"type":"result","usage":{"input_tokens":5000,"output_tokens":1000,"cache_creation_input_tokens":200,"cache_read_input_tokens":99999}}\n'
+exit 1
+EOF
+RALPH_CFAILTOK_LOGS="$TMP/ralph-cfailtok-logs"
+RALPH_CFAILTOK_NOTIFY="$TMP/ralph-cfailtok-notify.log"
+ralph_cfailtok_out=$(run_ralph "$RALPH_CFAILTOK" "$RBIN_CFAILTOK" "$RALPH_CFAILTOK_LOGS" "$RALPH_CFAILTOK_NOTIFY" "$RALPH_NOMERGE_CFG")
+ralph_cfailtok_st=$?
+assert_exit "issue #214: adk-ralph: claude -p падает (exit 1) с валидным usage в stdout — прогон всё равно завершается с ошибкой" \
+  1 "$ralph_cfailtok_st"
+ralph_cfailtok_log="$(ralph_journal "$RALPH_CFAILTOK_LOGS")"
+assert_not_contains "issue #214: adk-ralph: упавшая задача #977 по-прежнему не залогирована как обработанная (нет event=task — состояние PR не выяснено, ADR-007 §4)" \
+  "$(cat "$ralph_cfailtok_log" 2>/dev/null)" '"issue": "977"'
+cfailtok_spec=$(printf '%s\n%s' \
+  'event=run_start' \
+  'event=run_end|tokens=6200|reason=claude -p завершился с ошибкой (exit 1) при issue #977')
+cfailtok_valid=$(jsonl_check "$ralph_cfailtok_log" 2 "$cfailtok_spec")
+assert_exit "issue #214: adk-ralph: расход упавшей задачи (6200 = input+output+cache_creation, без cache_read) учтён в run_tokens_used и tokens= event=run_end" \
+  1 "$cfailtok_valid"
+
 # ── gh issue edit --add-label needs-human падает — единственный механизм
 # HITL не должен отказывать молча (важно круга 3 ревью PR #141): громкое
 # предупреждение в stderr, прогон при этом не останавливается целиком ──────
