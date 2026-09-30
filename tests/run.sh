@@ -7572,12 +7572,17 @@ assert_contains "AC-1: version-bump-check.yml — вызывает .github/scrip
 
 # ── .github/scripts/spec-annotation-check.sh + .github/workflows/
 # spec-annotation-check.yml: CI-гейт «забытая аннотация (ждёт #N)»
-# (issue #200). Скрипт — чистая функция: корень проекта + номера issue из
-# "Closes #N" аргументами, без сети/git внутри — извлечение номеров из
-# тела PR делает вызывающий workflow ──────────────────────────────────────
+# (issue #200). Скрипт — чистая функция: корень проекта аргументом, тело
+# PR на stdin, без сети/git внутри. Разбор "Closes #N" живёт в самом
+# скрипте (круг 1 ревью PR #242: inline-однострочник в workflow не был
+# покрыт фикстурами и ловил ложные совпадения вроде "discloses #N") ───────
 SAC="$KIT/.github/scripts/spec-annotation-check.sh"
 SACP="$TMP/sacproj"
 mkdir -p "$SACP/docs/specs"
+
+run_sac() { # run_sac <root> <тело PR> — прогон скрипта с телом на stdin (stdout+stderr вместе)
+  printf '%s' "$2" | "$SAC" "$1" 2>&1
+}
 
 cat > "$SACP/docs/specs/001-x.md" <<'EOF'
 # SPEC
@@ -7592,9 +7597,9 @@ EOF
 
 # PR закрывает #200, аннотация (ждёт #200) ещё в спеке — красный гейт,
 # сообщение называет правило шага 3 commands/work.md и файл спеки
-sac_out=$("$SAC" "$SACP" 200 2>&1)
+sac_out=$(run_sac "$SACP" "Closes #200")
 sac_st=$?
-assert_exit "issue #200: аннотация (ждёт #200) осталась, PR закрывает #200 — exit 1" 1 "$sac_st"
+assert_exit "issue #200: тело 'Closes #200', аннотация осталась — exit 1" 1 "$sac_st"
 assert_contains "issue #200: сообщение называет правило шага 3 commands/work.md" "$sac_out" "commands/work.md, шаг 3"
 assert_contains "issue #200: сообщение называет файл спеки с оставшейся аннотацией" "$sac_out" "001-x.md"
 assert_contains "issue #200: сообщение показывает саму аннотацию" "$sac_out" "(ждёт #200)"
@@ -7610,11 +7615,11 @@ cat > "$SACP/docs/specs/001-x.md" <<'EOF'
 - [ ] AC-001-3: первый критерий
 - [ ] AC-001-4: второй критерий, тест issue #200 закрыл его
 EOF
-"$SAC" "$SACP" 200 >/dev/null 2>&1
+run_sac "$SACP" "Closes #200" >/dev/null
 assert_exit "issue #200: аннотация снята в том же PR — exit 0" 0 $?
 
-# аннотация с тем же номером снова в спеке, но PR её не закрывает
-# (Closes #N отсутствует в теле PR) — гейт молчит, даже если аннотация есть
+# аннотация с тем же номером снова в спеке, но тело PR не содержит "Closes"
+# вовсе — гейт молчит, даже если аннотация есть
 cat > "$SACP/docs/specs/001-x.md" <<'EOF'
 # SPEC
 
@@ -7624,36 +7629,57 @@ cat > "$SACP/docs/specs/001-x.md" <<'EOF'
 
 - [ ] AC-001-4 (ждёт #200): второй критерий
 EOF
-sac_silent_out=$("$SAC" "$SACP" 2>&1)
-assert_exit "issue #200: PR без Closes #N — гейт молчит (exit 0) несмотря на аннотацию" 0 $?
-assert_not_contains "issue #200: PR без Closes #N — вывод не жалуется на аннотацию" "$sac_silent_out" "(ждёт #200)"
+sac_silent_out=$(run_sac "$SACP" "Просто описание PR без ключевого слова закрытия.")
+assert_exit "issue #200: тело без Closes #N — гейт молчит (exit 0) несмотря на аннотацию" 0 $?
+assert_not_contains "issue #200: тело без Closes #N — вывод не жалуется на аннотацию" "$sac_silent_out" "(ждёт #200)"
+
+# пустое тело PR — тот же случай "нечего проверять"
+run_sac "$SACP" "" >/dev/null
+assert_exit "issue #200: пустое тело PR — exit 0" 0 $?
 
 # аннотация принадлежит другому issue — PR, закрывающий #200, её не трогает
-"$SAC" "$SACP" 201 >/dev/null 2>&1
+run_sac "$SACP" "Closes #201" >/dev/null
 assert_exit "issue #200: аннотация (ждёт #200) не мешает PR, закрывающему другой issue (#201)" 0 $?
 
 # PR закрывает несколько issue (несколько Closes #N) — совпадение любого
 # номера с оставшейся аннотацией красит гейт
-sac_multi_out=$("$SAC" "$SACP" 55 200 77 2>&1)
+sac_multi_out=$(run_sac "$SACP" "Closes #55
+
+Closes #200
+
+Closes #77")
 sac_multi_st=$?
-assert_exit "issue #200: несколько номеров issue, один совпал с аннотацией — exit 1" 1 "$sac_multi_st"
+assert_exit "issue #200: несколько 'Closes #N', один совпал с аннотацией — exit 1" 1 "$sac_multi_st"
 assert_contains "issue #200: список номеров — совпавший назван в сообщении" "$sac_multi_out" "(ждёт #200)"
+
+# регистронезависимость и вариант с двоеточием после "Closes"
+run_sac "$SACP" "CLOSES #200" >/dev/null
+assert_exit "issue #200: 'CLOSES #200' (верхний регистр) распознаётся — exit 1" 1 $?
+run_sac "$SACP" "Closes: #200" >/dev/null
+assert_exit "issue #200: 'Closes: #200' (двоеточие) распознаётся — exit 1" 1 $?
+
+# "discloses #200" — не "Closes #200": левая граница слова не даёт ложного
+# совпадения (найдено ревью PR #242 круг 1 на исходном inline-разборе)
+sac_boundary_out=$(run_sac "$SACP" "Этот PR discloses #200 как побочный эффект.")
+assert_exit "issue #200: 'discloses #200' не матчит 'closes #N' (граница слова) — exit 0" 0 $?
+assert_not_contains "issue #200: 'discloses #200' — вывод не жалуется на аннотацию" "$sac_boundary_out" "(ждёт #200)"
 
 # без docs/specs/ вовсе — гейт не падает с трейсбеком
 SACP_NOSPECS="$TMP/sacproj-nospecs"
 mkdir -p "$SACP_NOSPECS"
-"$SAC" "$SACP_NOSPECS" 200 >/dev/null 2>&1
+run_sac "$SACP_NOSPECS" "Closes #200" >/dev/null
 assert_exit "issue #200: проект без docs/specs/ — exit 0, не падение" 0 $?
 
 # без аргумента project_root — usage-ошибка, не падение с трейсбеком
+# (проверка root — раньше чтения stdin, поэтому без stdin не виснет)
 "$SAC" >/dev/null 2>&1
 assert_exit "issue #200: без аргументов — usage, exit 2" 2 $?
 
 rm -rf "$SACP" "$SACP_NOSPECS"
 
 # ── .github/workflows/spec-annotation-check.yml: тонкая обёртка над
-# spec-annotation-check.sh на pull_request, номера issue — из "Closes #N"
-# тела PR (issue #200) ─────────────────────────────────────────────────────
+# spec-annotation-check.sh на pull_request — сама разбирает "Closes #N" в
+# скрипте, workflow только передаёт тело PR (issue #200) ─────────────────
 SAC_WORKFLOW="$KIT/.github/workflows/spec-annotation-check.yml"
 
 ruby -ryaml -e "YAML.load_file(ARGV[0])" "$SAC_WORKFLOW" >/dev/null 2>&1
@@ -7664,19 +7690,24 @@ y = YAML.load_file(ARGV[0])
 on = y[true] || y["on"] || {}
 puts "has_pull_request=#{on.key?("pull_request")}"
 puts "has_push=#{on.key?("push")}"
+pr_types = (on["pull_request"] || {})["types"] || []
+puts "has_edited=#{pr_types.include?("edited")}"
+puts "has_synchronize=#{pr_types.include?("synchronize")}"
 steps = (y["jobs"] || {}).values.flat_map { |j| j["steps"] || [] }
 calls_script = steps.any? { |s| (s["run"] || "").include?(".github/scripts/spec-annotation-check.sh") }
 puts "calls_script=#{calls_script}"
-reads_body = steps.any? { |s| (s["run"] || "").include?("PR_BODY") || (s.dig("env", "PR_BODY") || "").include?("pull_request.body") }
+reads_body = steps.any? { |s| (s["run"] || "").include?("PR_BODY") && (s.dig("env", "PR_BODY") || "").include?("pull_request.body") }
 puts "reads_body=#{reads_body}"
-parses_closes = steps.any? { |s| (s["run"] || "") =~ /[Cc]loses/ }
-puts "parses_closes=#{parses_closes}"
+pipes_stdin = steps.any? { |s| (s["run"] || "") =~ /PR_BODY.*\|\s*\.github\/scripts\/spec-annotation-check\.sh/ }
+puts "pipes_stdin=#{pipes_stdin}"
 ' "$SAC_WORKFLOW" 2>&1)
 assert_contains "issue #200: spec-annotation-check.yml — срабатывает на pull_request" "$sac_workflow_probe" "has_pull_request=true"
 assert_not_contains "issue #200: spec-annotation-check.yml — не срабатывает на push" "$sac_workflow_probe" "has_push=true"
+assert_contains "issue #200: spec-annotation-check.yml — перезапускается на edited (правка тела PR)" "$sac_workflow_probe" "has_edited=true"
+assert_contains "issue #200: spec-annotation-check.yml — перезапускается на synchronize (новый push)" "$sac_workflow_probe" "has_synchronize=true"
 assert_contains "issue #200: spec-annotation-check.yml — вызывает .github/scripts/spec-annotation-check.sh" "$sac_workflow_probe" "calls_script=true"
 assert_contains "issue #200: spec-annotation-check.yml — читает тело PR из github.event.pull_request.body" "$sac_workflow_probe" "reads_body=true"
-assert_contains "issue #200: spec-annotation-check.yml — извлекает номер issue из Closes #N" "$sac_workflow_probe" "parses_closes=true"
+assert_contains "issue #200: spec-annotation-check.yml — передаёт тело PR скрипту через stdin (не аргументом)" "$sac_workflow_probe" "pipes_stdin=true"
 
 # ── README: установка через маркетплейс, обновление, двухступенчатость
 # (SPEC-004 AC-4, issue #153) ────────────────────────────────────────────────

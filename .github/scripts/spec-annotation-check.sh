@@ -5,26 +5,36 @@
 # «ждать» больше нечего») ловилось ревью дважды подряд (PR #198 AC-4,
 # PR #199 AC-6), гейт дешевле инструкции.
 #
-# Использование: spec-annotation-check.sh <project_root> [issue_number ...]
-#   issue_number — номера из "Closes #N" тела PR; вызывающий workflow
-#   (.github/workflows/spec-annotation-check.yml) достаёт их из
-#   github.event.pull_request.body через gh/GitHub Actions контекст —
-#   здесь сеть и git не нужны, вход полностью фикстурный.
+# Использование: spec-annotation-check.sh <project_root> (тело PR на stdin)
+#   Номера issue разбираются из тела PR самим скриптом (круг 1 ревью PR
+#   #242: извлечение "Closes #N" было inline-однострочником в workflow и
+#   не тестировалось фикстурами) — вызывающий workflow
+#   (.github/workflows/spec-annotation-check.yml) только передаёт тело
+#   через github.event.pull_request.body, сеть/git внутри не нужны.
 #
-# Без issue_number (PR без Closes #N) — гейт молчит: exit 0, нечего
-# проверять. С issue_number — ищет буквальную подстроку "(ждёт #N)" по
-# всем docs/specs/*.md под project_root; нашёл — exit 1 с именем правила
-# и списком файлов; не нашёл — exit 0.
+# Разбор тела: "Closes #N" (регистронезависимо, опциональное двоеточие
+# после "closes", опциональные пробелы перед "#") с левой границей слова —
+# "discloses #5" не матчит "closes #5". Другие закрывающие глаголы GitHub
+# (Fixes/Resolves/...) и кросс-репо ссылки (owner/repo#N) не разбираются —
+# конвенция кита (шаг 5 commands/work.md) предписывает ровно "Closes #N" в
+# своём репозитории.
+#
+# Без "Closes #N" в теле — гейт молчит: exit 0, нечего проверять. С одним
+# или несколькими номерами — ищет буквальную подстроку "(ждёт #N)" по всем
+# docs/specs/*.md под project_root; нашёл — exit 1 с именем правила и
+# списком файлов; не нашёл — exit 0.
 set -u
 
 root="${1:-}"
 if [ -z "$root" ]; then
-  echo "usage: spec-annotation-check.sh <project_root> [issue_number ...]" >&2
+  echo "usage: spec-annotation-check.sh <project_root> (тело PR на stdin)" >&2
   exit 2
 fi
-shift
 
-if [ $# -eq 0 ]; then
+body="$(cat)"
+issue_numbers=$(printf '%s' "$body" | grep -ioE '(^|[^a-z])closes:?[[:space:]]*#[0-9]+' | grep -oE '[0-9]+' | sort -un)
+
+if [ -z "$issue_numbers" ]; then
   echo "ok: тело PR без Closes #N — проверка аннотаций (ждёт #N) пропущена"
   exit 0
 fi
@@ -33,7 +43,7 @@ specs_dir="$root/docs/specs"
 violations=""
 
 if [ -d "$specs_dir" ]; then
-  for n in "$@"; do
+  for n in $issue_numbers; do
     needle="(ждёт #${n})"
     for f in "$specs_dir"/*.md; do
       [ -f "$f" ] || continue

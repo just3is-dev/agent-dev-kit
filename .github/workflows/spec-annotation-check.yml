@@ -2,6 +2,7 @@ name: Spec annotation gate
 
 on:
   pull_request:
+    types: [opened, edited, synchronize, reopened]
 
 jobs:
   spec-annotation-check:
@@ -13,5 +14,4 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -eo pipefail
-          issue_numbers=$(printf '%s' "$PR_BODY" | grep -ioE 'closes #[0-9]+' | grep -oE '[0-9]+' || true)
-          .github/scripts/spec-annotation-check.sh . $issue_numbers
+          printf '%s' "$PR_BODY" | .github/scripts/spec-annotation-check.sh .
