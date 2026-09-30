@@ -7570,6 +7570,114 @@ assert_not_contains "AC-1: version-bump-check.yml — не срабатывае�
 assert_contains "AC-1: version-bump-check.yml — checkout с полной историей (fetch-depth: 0)" "$vbc_workflow_probe" "fetch_depth=0"
 assert_contains "AC-1: version-bump-check.yml — вызывает .github/scripts/version-bump-check.sh" "$vbc_workflow_probe" "calls_script=true"
 
+# ── .github/scripts/spec-annotation-check.sh + .github/workflows/
+# spec-annotation-check.yml: CI-гейт «забытая аннотация (ждёт #N)»
+# (issue #200). Скрипт — чистая функция: корень проекта + номера issue из
+# "Closes #N" аргументами, без сети/git внутри — извлечение номеров из
+# тела PR делает вызывающий workflow ──────────────────────────────────────
+SAC="$KIT/.github/scripts/spec-annotation-check.sh"
+SACP="$TMP/sacproj"
+mkdir -p "$SACP/docs/specs"
+
+cat > "$SACP/docs/specs/001-x.md" <<'EOF'
+# SPEC
+
+Статус: approved
+
+## Критерии приёмки
+
+- [ ] AC-001-3: первый критерий
+- [ ] AC-001-4 (ждёт #200): второй критерий, ловит реализация issue #200
+EOF
+
+# PR закрывает #200, аннотация (ждёт #200) ещё в спеке — красный гейт,
+# сообщение называет правило шага 3 commands/work.md и файл спеки
+sac_out=$("$SAC" "$SACP" 200 2>&1)
+sac_st=$?
+assert_exit "issue #200: аннотация (ждёт #200) осталась, PR закрывает #200 — exit 1" 1 "$sac_st"
+assert_contains "issue #200: сообщение называет правило шага 3 commands/work.md" "$sac_out" "commands/work.md, шаг 3"
+assert_contains "issue #200: сообщение называет файл спеки с оставшейся аннотацией" "$sac_out" "001-x.md"
+assert_contains "issue #200: сообщение показывает саму аннотацию" "$sac_out" "(ждёт #200)"
+
+# аннотация снята — зелёный гейт
+cat > "$SACP/docs/specs/001-x.md" <<'EOF'
+# SPEC
+
+Статус: approved
+
+## Критерии приёмки
+
+- [ ] AC-001-3: первый критерий
+- [ ] AC-001-4: второй критерий, тест issue #200 закрыл его
+EOF
+"$SAC" "$SACP" 200 >/dev/null 2>&1
+assert_exit "issue #200: аннотация снята в том же PR — exit 0" 0 $?
+
+# аннотация с тем же номером снова в спеке, но PR её не закрывает
+# (Closes #N отсутствует в теле PR) — гейт молчит, даже если аннотация есть
+cat > "$SACP/docs/specs/001-x.md" <<'EOF'
+# SPEC
+
+Статус: approved
+
+## Критерии приёмки
+
+- [ ] AC-001-4 (ждёт #200): второй критерий
+EOF
+sac_silent_out=$("$SAC" "$SACP" 2>&1)
+assert_exit "issue #200: PR без Closes #N — гейт молчит (exit 0) несмотря на аннотацию" 0 $?
+assert_not_contains "issue #200: PR без Closes #N — вывод не жалуется на аннотацию" "$sac_silent_out" "(ждёт #200)"
+
+# аннотация принадлежит другому issue — PR, закрывающий #200, её не трогает
+"$SAC" "$SACP" 201 >/dev/null 2>&1
+assert_exit "issue #200: аннотация (ждёт #200) не мешает PR, закрывающему другой issue (#201)" 0 $?
+
+# PR закрывает несколько issue (несколько Closes #N) — совпадение любого
+# номера с оставшейся аннотацией красит гейт
+sac_multi_out=$("$SAC" "$SACP" 55 200 77 2>&1)
+sac_multi_st=$?
+assert_exit "issue #200: несколько номеров issue, один совпал с аннотацией — exit 1" 1 "$sac_multi_st"
+assert_contains "issue #200: список номеров — совпавший назван в сообщении" "$sac_multi_out" "(ждёт #200)"
+
+# без docs/specs/ вовсе — гейт не падает с трейсбеком
+SACP_NOSPECS="$TMP/sacproj-nospecs"
+mkdir -p "$SACP_NOSPECS"
+"$SAC" "$SACP_NOSPECS" 200 >/dev/null 2>&1
+assert_exit "issue #200: проект без docs/specs/ — exit 0, не падение" 0 $?
+
+# без аргумента project_root — usage-ошибка, не падение с трейсбеком
+"$SAC" >/dev/null 2>&1
+assert_exit "issue #200: без аргументов — usage, exit 2" 2 $?
+
+rm -rf "$SACP" "$SACP_NOSPECS"
+
+# ── .github/workflows/spec-annotation-check.yml: тонкая обёртка над
+# spec-annotation-check.sh на pull_request, номера issue — из "Closes #N"
+# тела PR (issue #200) ─────────────────────────────────────────────────────
+SAC_WORKFLOW="$KIT/.github/workflows/spec-annotation-check.yml"
+
+ruby -ryaml -e "YAML.load_file(ARGV[0])" "$SAC_WORKFLOW" >/dev/null 2>&1
+assert_exit "issue #200: spec-annotation-check.yml — валиден как YAML" 0 $?
+
+sac_workflow_probe=$(ruby -ryaml -e '
+y = YAML.load_file(ARGV[0])
+on = y[true] || y["on"] || {}
+puts "has_pull_request=#{on.key?("pull_request")}"
+puts "has_push=#{on.key?("push")}"
+steps = (y["jobs"] || {}).values.flat_map { |j| j["steps"] || [] }
+calls_script = steps.any? { |s| (s["run"] || "").include?(".github/scripts/spec-annotation-check.sh") }
+puts "calls_script=#{calls_script}"
+reads_body = steps.any? { |s| (s["run"] || "").include?("PR_BODY") || (s.dig("env", "PR_BODY") || "").include?("pull_request.body") }
+puts "reads_body=#{reads_body}"
+parses_closes = steps.any? { |s| (s["run"] || "") =~ /[Cc]loses/ }
+puts "parses_closes=#{parses_closes}"
+' "$SAC_WORKFLOW" 2>&1)
+assert_contains "issue #200: spec-annotation-check.yml — срабатывает на pull_request" "$sac_workflow_probe" "has_pull_request=true"
+assert_not_contains "issue #200: spec-annotation-check.yml — не срабатывает на push" "$sac_workflow_probe" "has_push=true"
+assert_contains "issue #200: spec-annotation-check.yml — вызывает .github/scripts/spec-annotation-check.sh" "$sac_workflow_probe" "calls_script=true"
+assert_contains "issue #200: spec-annotation-check.yml — читает тело PR из github.event.pull_request.body" "$sac_workflow_probe" "reads_body=true"
+assert_contains "issue #200: spec-annotation-check.yml — извлекает номер issue из Closes #N" "$sac_workflow_probe" "parses_closes=true"
+
 # ── README: установка через маркетплейс, обновление, двухступенчатость
 # (SPEC-004 AC-4, issue #153) ────────────────────────────────────────────────
 readme_install=$(md_section "$KIT/README.md" '^## Установка' '^## Как этим пользоваться')

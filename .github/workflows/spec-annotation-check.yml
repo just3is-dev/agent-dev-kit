@@ -1,0 +1,17 @@
+name: Spec annotation gate
+
+on:
+  pull_request:
+
+jobs:
+  spec-annotation-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check spec annotations
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -eo pipefail
+          issue_numbers=$(printf '%s' "$PR_BODY" | grep -ioE 'closes #[0-9]+' | grep -oE '[0-9]+' || true)
+          .github/scripts/spec-annotation-check.sh . $issue_numbers
