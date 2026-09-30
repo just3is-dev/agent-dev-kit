@@ -927,12 +927,19 @@ finish_ready_outcome() {
 # ── Default branch — определяется фактически, не хардкодится (issue #144,
 # ADR-007 §6). `git symbolic-ref --short refs/remotes/origin/HEAD` даёт то
 # же имя, что видит обычный клон после `git remote set-head origin -a`;
-# фолбэк на "main", если определить не удалось (нет origin, HEAD не
-# выставлен, репозиторий свежий/нестандартный). Вычисляется один раз до
-# цикла — смена default branch в origin посреди прогона вне области этой
-# задачи (известное ограничение, «Последствия» ADR-007).
+# локальное определение недоступно (нет origin, HEAD не выставлен,
+# репозиторий свежий/нестандартный) — вторая попытка через `gh repo view`
+# (issue #220 п.2: раньше при недоступном локальном определении фолбэк сразу
+# уходил на зашитый "main", не пытаясь узнать реальное имя у GitHub). Фолбэк
+# на "main" — fail-closed: если недоступны оба способа, поведение то же, что
+# было до этой задачи. Вычисляется один раз до цикла — смена default branch
+# в origin посреди прогона вне области этой задачи (известное ограничение,
+# «Последствия» ADR-007).
 default_branch=$(cd "$root" && git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
 default_branch="${default_branch#origin/}"
+if [ -z "$default_branch" ]; then
+  default_branch=$(cd "$root" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+fi
 default_branch="${default_branch:-main}"
 
 # return_to_default_branch — возврат рабочего дерева на default branch

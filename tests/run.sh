@@ -4418,6 +4418,48 @@ defbranch_final=$(git -C "$RALPH_DEFBRANCH" rev-parse --abbrev-ref HEAD)
 assert_exit "issue #144: default branch trunk — финальная ветка репозитория после прогона — trunk, не жёстко зашитое main" \
   0 $?
 
+# ── issue #220 п.2: локальное определение default branch недоступно (нет
+# origin, refs/remotes/origin/HEAD не выставлен) — фолбэк обязан попытаться
+# `gh repo view --json defaultBranchRef` ПЕРЕД тем, как откатиться на
+# зашитое "main". В репозитории фикстуры нет ветки "main" вовсе: если бы
+# фолбэк ушёл сразу на "main" без попытки через gh, return_to_default_branch
+# упал бы на несуществующей ветке и прогон завершился бы НЕ штатно — это и
+# отличает «починили» от «осталось как было» ──────────────────────────────
+RALPH_GHDEFBRANCH="$TMP/ralph-ghdefbranch-proj"
+RBIN_GHDEFBRANCH="$TMP/ralph-ghdefbranch-bin"
+mkdir -p "$RALPH_GHDEFBRANCH" "$RBIN_GHDEFBRANCH"
+(cd "$RALPH_GHDEFBRANCH" && git_c init -q -b trunk && \
+  echo seed > seed.txt && git add seed.txt && git_c commit -q -m seed)
+
+cat > "$RBIN_GHDEFBRANCH/issues-fixture.json" <<'EOF'
+[
+  {"number": 631, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
+]
+EOF
+cat > "$RBIN_GHDEFBRANCH/prs-fixture.json" <<'EOF'
+[]
+EOF
+IFS= read -r -d '' ghdefbranch_gh_extra <<'EXTRA' || true
+  "repo view") printf '%s\n' trunk; exit 0 ;;
+EXTRA
+gh_ralph_stub "$RBIN_GHDEFBRANCH" "$RBIN_GHDEFBRANCH/issues-fixture.json" "$RBIN_GHDEFBRANCH/prs-fixture.json" log "$ghdefbranch_gh_extra"
+claude_stub "$RBIN_GHDEFBRANCH" <<'EOF'
+git checkout -q -b "issue-${issue_num}-x"
+cat > "$d/prs-fixture.json" <<PRJSON
+[{"number": 731, "isDraft": false, "headRefName": "issue-${issue_num}-x"}]
+PRJSON
+exit 0
+EOF
+
+ralph_ghdefbranch_out=$(run_ralph "$RALPH_GHDEFBRANCH" "$RBIN_GHDEFBRANCH" "$TMP/ralph-ghdefbranch-logs" "$TMP/ralph-ghdefbranch-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "issue #220 п.2: adk-ralph: локальное определение default branch недоступно — фолбэк через gh repo view, прогон завершается штатно" \
+  0 $?
+
+ghdefbranch_final=$(git -C "$RALPH_GHDEFBRANCH" rev-parse --abbrev-ref HEAD)
+[ "$ghdefbranch_final" = "trunk" ]
+assert_exit "issue #220 п.2: default branch из gh repo view — дерево репозитория после прогона на trunk (не на несуществующем main)" \
+  0 $?
+
 # ── issue #144: ADR-007 документирует решение о возврате дерева между
 # итерациями (единая функция на любом выходе из цикла, определение default
 # branch, отказ checkout не best-effort) и известное ограничение
