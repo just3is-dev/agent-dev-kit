@@ -6860,6 +6860,17 @@ assert_contains "AC-6: ADR-001 фиксирует состав токен-счё
 assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
   "$adr001_text" "БЕЗ cache_read"
 
+check_ac_doc "issue #219" "ADR-001: usage не включает расход субагентов (Task tool) — цитата официальной документации SDK" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "Excluded. Counts only the top-level agent loop, so tokens consumed inside subagents are not added"
+check_ac_doc "issue #219" "ADR-001: живой эксперимент честно зафиксирован как неудавшийся (401, OAuth access token revoked), а не выдуман" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "OAuth access token has been revoked"
+check_ac_doc "issue #219" "ADR-001: рекомендация по калибровке дана без изменения кода в этой задаче" \
+  "$KIT/docs/adr/001-journal-event-schema.md" "эта запись схему журнала не меняет"
+check_ac_doc "issue #219" "docs/config.md: budget.task.maxTokens явно оговаривает исключение субагентов из usage" \
+  "$KIT/docs/config.md" "НЕ включает расход субагентов (Task tool)"
+check_ac_doc "issue #219" "docs/config.md: budget.run.maxTokens ссылается на то же исключение субагентов, что и task.maxTokens" \
+  "$KIT/docs/config.md" "то же исключение субагентов из счётчика usage"
+
 # ── issue #212: кламп positive_tokens (10**15) не был закреплён ни одним
 # тестом. Конфиг task.maxTokens = 10**16 валиден (>0), но клампится до
 # 10**15; стаб отдаёт usage на 2*10**15 — превышение ловится ТОЛЬКО если
