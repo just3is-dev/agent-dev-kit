@@ -2966,7 +2966,9 @@ claude_stub_guard() { # claude_stub_guard <bindir> — общая часть с�
   # раньше проверял только аргументы вызова, не окружение запуска, поэтому ни
   # одна фикстура не поймала баг «adk-ralph.sh не пробрасывает
   # CLAUDE_PLUGIN_ROOT дочернему claude -p». Каждая фикстура дописывает
-  # (cat >>) остаток стаба после этого пролога.
+  # (cat >>) остаток стаба после этого пролога. issue_num — здесь же
+  # (issue #207: строка извлечения повторялась в ~29 телах); телам, не
+  # использующим его, лишняя переменная не мешает.
   cat > "$1/claude" <<'EOF'
 #!/usr/bin/env bash
 d="$(cd "$(dirname "$0")" && pwd)"
@@ -2974,10 +2976,54 @@ if [ -z "${CLAUDE_PLUGIN_ROOT:-}" ]; then
   echo "CLAUDE_PLUGIN_ROOT_MISSING" >> "$d/claude-calls.log"
   exit 1
 fi
+issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 EOF
 }
 
-gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
+# claude_stub <bindir> — guard-пролог + тело стаба со stdin + chmod
+# (issue #207: хвост «EOF + chmod» повторялся у 66 фикстур)
+claude_stub() {
+  claude_stub_guard "$1"
+  cat >> "$1/claude"
+  chmod +x "$1/claude"
+}
+
+# claude_stub_one_pr <bindir> <args|call> <number> <isDraft> <headRefName>
+# — самое частое тело (22 фикстуры, issue #207): залогировать вызов и
+# записать в prs-fixture.json ровно один PR. Формат строки лога
+# сохраняется («$*» или «call») — на нём держатся счётчики вызовов.
+# Маркер PRJSON в кавычках, как в исходных телах: number/head — литералы,
+# runtime-подстановок в JSON нет.
+claude_stub_one_pr() {
+  local bindir="$1" log="$2" number="$3" draft="$4" head="$5"
+  claude_stub_guard "$bindir"
+  {
+    if [ "$log" = call ]; then
+      printf '%s\n' 'echo "call" >> "$d/claude-calls.log"'
+    else
+      printf '%s\n' 'echo "$*" >> "$d/claude-calls.log"'
+    fi
+    printf '%s\n' "cat > \"\$d/prs-fixture.json\" <<'PRJSON'"
+    printf '[{"number": %s, "isDraft": %s, "headRefName": "%s"}]\n' "$number" "$draft" "$head"
+    printf '%s\n' 'PRJSON' 'exit 0'
+  } >> "$bindir/claude"
+  chmod +x "$bindir/claude"
+}
+
+# gh_forbidden_stub <bindir> — стаб gh для фикстур, где ЛЮБОЙ вызов gh —
+# ошибка сценария (issue #207: две дословные копии). Пишет вызов в
+# gh-calls.log — ассерты проверяют, что файла нет вовсе.
+gh_forbidden_stub() {
+  cat > "$1/gh" <<'EOF'
+#!/usr/bin/env bash
+d="$(cd "$(dirname "$0")" && pwd)"
+echo "UNEXPECTED gh CALL: $*" >> "$d/gh-calls.log"
+exit 1
+EOF
+  chmod +x "$1/gh"
+}
+
+gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] [extra] — общий
   # каркас стаба gh для ralph-фикстур ниже (issue #149, по образцу
   # claude_stub_guard выше, issue #139): пишет "$bindir/gh" целиком, без
   # cat >> — параметры целиком определяют поведение, поэтому порядок веток
@@ -2990,10 +3036,19 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
   # <edit> — необязательный (по умолчанию "log"): "log" логирует "$*" в
   # issue-edit.log и завершается 0; "FAIL:<сообщение>" — как выше, для
   # фикстур, которым нужен сбой gh issue edit (issue #149: HTTP 403).
+  # <extra> — необязательный текст ДОПОЛНИТЕЛЬНЫХ веток case (issue #207:
+  # merge-фикстуры дописывали pr view/pr merge/pr checkout, копируя весь
+  # каркас — 13 ручных стабов мимо хелпера). Печатается перед общим
+  # default `*)` как есть (printf '%s'), поэтому runtime-переменные стаба
+  # ($d, $*, $3) в extra пишутся в одинарных bash-кавычках фикстуры;
+  # extra с generation-time подстановками (пути $RALPH_X) собирается через
+  # `IFS= read -r -d '' … <<EXTRA || true` с \$-экраном runtime-части —
+  # не `$(cat <<…)`: bash 3.2 macOS не разбирает «)» внутри такой
+  # подстановки (см. checkout-тройку BEHIND/TRUNK/ACTCONFLICT).
   # gh label create всегда no-op: adk-ralph.sh сам глушит её результат
   # (`>/dev/null 2>&1 || true`), варьировать эту ветку не нужно ни одной
   # существующей ralph-фикстуре.
-  local bindir="$1" issues="$2" prs="$3" edit="${4:-log}"
+  local bindir="$1" issues="$2" prs="$3" edit="${4:-log}" extra="${5:-}"
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'd="$(cd "$(dirname "$0")" && pwd)"'
@@ -3013,6 +3068,7 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
       FAIL:*) printf '  "issue edit") echo "%s" >&2; exit 1 ;;\n' "${edit#FAIL:}" ;;
       *) printf '%s\n' '  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;' ;;
     esac
+    [ -n "$extra" ] && printf '%s\n' "$extra"
     printf '%s\n' '  *) echo "unexpected gh call: $*" >&2; exit 1 ;;'
     printf '%s\n' 'esac'
   } > "$bindir/gh"
@@ -3100,15 +3156,12 @@ cat > "$RBIN/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN" "$RBIN/issues-fixture.json" "$RBIN/prs-fixture.json"
-claude_stub_guard "$RBIN"
-cat >> "$RBIN/claude" <<'EOF'
+claude_stub "$RBIN" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-# Номер обрабатываемого issue — только из хвостового маркера ("для задачи
-# issue #N."), не голым `case "$*" in *"issue #1"*)`: сам текст-инструкция
-# ралфа безусловно содержит "issue #139" (ссылка на issue, которым заведён
-# adk-ralph.sh) — это ложно совпадает с шаблоном "issue #1" как префикс
-# любого запуска, независимо от реально обрабатываемого номера.
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+# Номер обрабатываемого issue — $issue_num из guard-пролога (issue #207):
+# только хвостовой маркер ("для задачи issue #N."), не голый
+# `case "$*" in *"issue #1"*)` — сам текст-инструкция ралфа безусловно
+# содержит "issue #139" и ложно совпадал бы с "issue #1" как префикс.
 case "$issue_num" in
   1)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -3123,7 +3176,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN/claude"
 
 RALPH_LOGS="$TMP/ralph-logs"
 RALPH_NOTIFY="$TMP/ralph-notify.log"
@@ -3244,15 +3296,13 @@ cat > "$RBIN_ROOTENV/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_ROOTENV" "$RBIN_ROOTENV/issues-fixture.json" "$RBIN_ROOTENV/prs-fixture.json"
-claude_stub_guard "$RBIN_ROOTENV"
-cat >> "$RBIN_ROOTENV/claude" <<'EOF'
+claude_stub "$RBIN_ROOTENV" <<'EOF'
 echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >> "$d/claude-calls.log"
 cat > "$d/prs-fixture.json" <<'PRJSON'
 [{"number": 401, "isDraft": false, "headRefName": "issue-91-z"}]
 PRJSON
 exit 0
 EOF
-chmod +x "$RBIN_ROOTENV/claude"
 RALPH_ROOTENV_LOGS="$TMP/ralph-rootenv-logs"
 
 ralph_rootenv_out=$(cd "$RALPH_ROOTENV" && unset CLAUDE_PLUGIN_ROOT && PATH="$RBIN_ROOTENV:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ROOTENV" \
@@ -3273,13 +3323,7 @@ RALPH_OFF="$TMP/ralph-off-proj"
 RBIN_OFF="$TMP/ralph-off-bin"
 mkdir -p "$RALPH_OFF" "$RBIN_OFF"
 (cd "$RALPH_OFF" && git_c init -q -b main)
-cat > "$RBIN_OFF/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-echo "UNEXPECTED gh CALL: $*" >> "$d/gh-calls.log"
-exit 1
-EOF
-chmod +x "$RBIN_OFF/gh"
+gh_forbidden_stub "$RBIN_OFF"
 RALPH_OFF_LOGS="$TMP/ralph-off-logs"
 RALPH_OFF_CFG="$TMP/ralph-off-config.json"
 cat > "$RALPH_OFF_CFG" <<'EOF'
@@ -3320,11 +3364,9 @@ cat > "$RBIN_ERR/issues-fixture.json" <<'EOF'
 ]
 EOF
 gh_ralph_stub "$RBIN_ERR" "$RBIN_ERR/issues-fixture.json" "FAIL:gh: rate limit exceeded"
-claude_stub_guard "$RBIN_ERR"
-cat >> "$RBIN_ERR/claude" <<'EOF'
+claude_stub "$RBIN_ERR" <<'EOF'
 exit 0
 EOF
-chmod +x "$RBIN_ERR/claude"
 RALPH_ERR_LOGS="$TMP/ralph-err-logs"
 RALPH_ERR_NOTIFY="$TMP/ralph-err-notify.log"
 
@@ -3362,13 +3404,10 @@ cat > "$RBIN3/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN3" "$RBIN3/issues-fixture.json" "$RBIN3/prs-fixture.json"
-claude_stub_guard "$RBIN3"
-cat >> "$RBIN3/claude" <<'EOF'
+claude_stub "$RBIN3" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
-# Номер issue — из хвостового маркера, не подстрочным case по "$*" целиком
-# (см. комментарий у аналогичного стаба фикстуры issue #139 выше: сам текст
-# инструкции ралфа безусловно содержит "issue #139").
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+# Номер issue — $issue_num из guard-пролога (хвостовой маркер, не case по
+# "$*" целиком: текст инструкции безусловно содержит "issue #139").
 case "$issue_num" in
   21)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -3388,7 +3427,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN3/claude"
 RALPH3_LOGS="$TMP/ralph-three-logs"
 RALPH3_NOTIFY="$TMP/ralph-three-notify.log"
 
@@ -3412,13 +3450,7 @@ RALPH_NOCLAUDE="$TMP/ralph-noclaude-proj"
 RBIN_NOCLAUDE="$TMP/ralph-noclaude-bin"
 mkdir -p "$RALPH_NOCLAUDE" "$RBIN_NOCLAUDE"
 (cd "$RALPH_NOCLAUDE" && git_c init -q -b main)
-cat > "$RBIN_NOCLAUDE/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-echo "UNEXPECTED gh CALL: $*" >> "$d/gh-calls.log"
-exit 1
-EOF
-chmod +x "$RBIN_NOCLAUDE/gh"
+gh_forbidden_stub "$RBIN_NOCLAUDE"
 # Намеренно нет исполняемого claude ни в $RBIN_NOCLAUDE, ни в узком PATH
 # ниже (system PATH урезан до /usr/bin:/bin — на машине разработчика
 # настоящий claude обычно стоит в PATH, префлайт должен смотреть на PATH
@@ -3469,13 +3501,11 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$RBIN_CFAIL/gh"
-claude_stub_guard "$RBIN_CFAIL"
-cat >> "$RBIN_CFAIL/claude" <<'EOF'
+claude_stub "$RBIN_CFAIL" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
 echo "claude: rate limit exceeded" >&2
 exit 1
 EOF
-chmod +x "$RBIN_CFAIL/claude"
 RALPH_CFAIL_LOGS="$TMP/ralph-cfail-logs"
 RALPH_CFAIL_NOTIFY="$TMP/ralph-cfail-notify.log"
 
@@ -3525,11 +3555,9 @@ cat > "$RBIN_EDITFAIL/prs-fixture.json" <<'EOF'
 EOF
 gh_ralph_stub "$RBIN_EDITFAIL" "$RBIN_EDITFAIL/issues-fixture.json" "$RBIN_EDITFAIL/prs-fixture.json" \
   "FAIL:gh: HTTP 403: Resource not accessible by integration"
-claude_stub_guard "$RBIN_EDITFAIL"
-cat >> "$RBIN_EDITFAIL/claude" <<'EOF'
+claude_stub "$RBIN_EDITFAIL" <<'EOF'
 exit 0
 EOF
-chmod +x "$RBIN_EDITFAIL/claude"
 RALPH_EDITFAIL_LOGS="$TMP/ralph-editfail-logs"
 
 ralph_editfail_out=$(run_ralph "$RALPH_EDITFAIL" "$RBIN_EDITFAIL" "$RALPH_EDITFAIL_LOGS" "$TMP/ralph-editfail-notify.log" "$RALPH_NOMERGE_CFG")
@@ -3565,11 +3593,9 @@ cat > "$RBIN_NH/prs-fixture.json" <<'EOF'
 ]
 EOF
 gh_ralph_stub "$RBIN_NH" "$RBIN_NH/issues-fixture.json" "$RBIN_NH/prs-fixture.json"
-claude_stub_guard "$RBIN_NH"
-cat >> "$RBIN_NH/claude" <<'EOF'
+claude_stub "$RBIN_NH" <<'EOF'
 exit 0
 EOF
-chmod +x "$RBIN_NH/claude"
 RALPH_NH_LOGS="$TMP/ralph-nh-logs"
 
 ralph_nh_out=$(run_ralph "$RALPH_NH" "$RBIN_NH" "$RALPH_NH_LOGS" "$TMP/ralph-nh-notify.log" "$RALPH_NOMERGE_CFG")
@@ -3615,10 +3641,8 @@ cat > "$RBIN_OH/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_OH" "$RBIN_OH/issues-fixture.json" "$RBIN_OH/prs-fixture.json"
-claude_stub_guard "$RBIN_OH"
-cat >> "$RBIN_OH/claude" <<'EOF'
+claude_stub "$RBIN_OH" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   91)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -3628,7 +3652,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_OH/claude"
 RALPH_OH_LOGS="$TMP/ralph-oh-logs"
 
 ralph_oh_out=$(run_ralph "$RALPH_OH" "$RBIN_OH" "$RALPH_OH_LOGS" "$TMP/ralph-oh-notify.log" "$RALPH_NOMERGE_CFG")
@@ -3693,12 +3716,10 @@ cat > "$RBIN_BLK/prs-fixture.json" <<'EOF'
 ]
 EOF
 gh_ralph_stub "$RBIN_BLK" "$RBIN_BLK/issues-fixture.json" "$RBIN_BLK/prs-fixture.json"
-claude_stub_guard "$RBIN_BLK"
-cat >> "$RBIN_BLK/claude" <<'EOF'
+claude_stub "$RBIN_BLK" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 exit 0
 EOF
-chmod +x "$RBIN_BLK/claude"
 RALPH_BLK_LOGS="$TMP/ralph-blk-logs"
 
 ralph_blk_out=$(run_ralph "$RALPH_BLK" "$RBIN_BLK" "$RALPH_BLK_LOGS" "$TMP/ralph-blk-notify.log" "$RALPH_NOMERGE_CFG")
@@ -3774,11 +3795,9 @@ with open("'"$RBIN_TRUNC"'/prs-fixture.json", "w") as f:
     json.dump(prs, f)
 '
 gh_ralph_stub "$RBIN_TRUNC" "$RBIN_TRUNC/issues-fixture.json" "$RBIN_TRUNC/prs-fixture.json"
-claude_stub_guard "$RBIN_TRUNC"
-cat >> "$RBIN_TRUNC/claude" <<'EOF'
+claude_stub "$RBIN_TRUNC" <<'EOF'
 exit 0
 EOF
-chmod +x "$RBIN_TRUNC/claude"
 
 ralph_trunc_out=$(run_ralph "$RALPH_TRUNC" "$RBIN_TRUNC" "$TMP/ralph-trunc-logs" "$TMP/ralph-trunc-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: gh pr list вернул ровно 200 PR на всех трёх итерациях — прогон всё равно завершается штатно (предупреждение, не отказ)" \
@@ -3854,12 +3873,10 @@ cat > "$RBIN_GITSTATE/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_GITSTATE" "$RBIN_GITSTATE/issues-fixture.json" "$RBIN_GITSTATE/prs-fixture.json"
-claude_stub_guard "$RBIN_GITSTATE"
-cat >> "$RBIN_GITSTATE/claude" <<'EOF'
+claude_stub "$RBIN_GITSTATE" <<'EOF'
 # Логирует ветку, на которой реально стартовал (до создания своей) — это то,
 # что проверяет тест круга 6: вторая задача обязана стартовать на main, а не
 # на ветке первой задачи (issue-201-x).
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
 git checkout -q -b "issue-${issue_num}-x"
 case "$issue_num" in
@@ -3876,7 +3893,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_GITSTATE/claude"
 
 ralph_gitstate_out=$(run_ralph "$RALPH_GITSTATE" "$RBIN_GITSTATE" "$TMP/ralph-gitstate-logs" "$TMP/ralph-gitstate-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: два независимых issue в настоящем git-репозитории — прогон завершается штатно" 0 $?
@@ -3920,9 +3936,7 @@ cat > "$RBIN_CHECKOUTFAIL/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL/issues-fixture.json" "$RBIN_CHECKOUTFAIL/prs-fixture.json"
-claude_stub_guard "$RBIN_CHECKOUTFAIL"
-cat >> "$RBIN_CHECKOUTFAIL/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_CHECKOUTFAIL" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
 if [ "$issue_num" = "801" ]; then
@@ -3936,7 +3950,6 @@ PRJSON
 fi
 exit 0
 EOF
-chmod +x "$RBIN_CHECKOUTFAIL/claude"
 
 ralph_checkoutfail_out=$(run_ralph "$RALPH_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL" "$TMP/ralph-checkoutfail-logs" "$TMP/ralph-checkoutfail-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: git checkout main отказывает (дерево грязное) — прогон останавливается с честной причиной (exit != 0), не тихо" \
@@ -3985,9 +3998,7 @@ cat > "$RBIN_CFAIL_MID/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_CFAIL_MID" "$RBIN_CFAIL_MID/issues-fixture.json" "$RBIN_CFAIL_MID/prs-fixture.json"
-claude_stub_guard "$RBIN_CFAIL_MID"
-cat >> "$RBIN_CFAIL_MID/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_CFAIL_MID" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
 if [ "$issue_num" = "601" ]; then
@@ -4001,7 +4012,6 @@ if [ "$issue_num" = "602" ]; then
 fi
 exit 0
 EOF
-chmod +x "$RBIN_CFAIL_MID/claude"
 
 ralph_cfail_mid_out=$(run_ralph "$RALPH_CFAIL_MID" "$RBIN_CFAIL_MID" "$TMP/ralph-cfail-mid-logs" "$TMP/ralph-cfail-mid-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: claude -p падает не на первом issue прогона — прогон завершается с ошибкой" \
@@ -4066,9 +4076,7 @@ case "\$1 \$2" in
 esac
 EOF
 chmod +x "$RBIN_PRFAIL_MID/gh"
-claude_stub_guard "$RBIN_PRFAIL_MID"
-cat >> "$RBIN_PRFAIL_MID/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_PRFAIL_MID" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 git checkout -q -b "issue-${issue_num}-x"
 if [ "$issue_num" = "611" ]; then
@@ -4078,7 +4086,6 @@ PRJSON
 fi
 exit 0
 EOF
-chmod +x "$RBIN_PRFAIL_MID/claude"
 
 ralph_prfail_mid_out=$(run_ralph "$RALPH_PRFAIL_MID" "$RBIN_PRFAIL_MID" "$TMP/ralph-prfail-mid-logs" "$TMP/ralph-prfail-mid-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: gh pr list падает не на первом issue прогона — прогон завершается с ошибкой" \
@@ -4121,9 +4128,7 @@ cat > "$RBIN_DEFBRANCH/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_DEFBRANCH" "$RBIN_DEFBRANCH/issues-fixture.json" "$RBIN_DEFBRANCH/prs-fixture.json"
-claude_stub_guard "$RBIN_DEFBRANCH"
-cat >> "$RBIN_DEFBRANCH/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_DEFBRANCH" <<'EOF'
 git rev-parse --abbrev-ref HEAD >> "$d/claude-start-branch.log"
 git checkout -q -b "issue-${issue_num}-x"
 pr_num=$((720 + issue_num - 620))
@@ -4132,7 +4137,6 @@ cat > "$d/prs-fixture.json" <<PRJSON
 PRJSON
 exit 0
 EOF
-chmod +x "$RBIN_DEFBRANCH/claude"
 
 ralph_defbranch_out=$(run_ralph "$RALPH_DEFBRANCH" "$RBIN_DEFBRANCH" "$TMP/ralph-defbranch-logs" "$TMP/ralph-defbranch-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: default branch — trunk (не main) — прогон завершается штатно" 0 $?
@@ -4187,15 +4191,7 @@ cat > "$RBIN_AR/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_AR" "$RBIN_AR/issues-fixture.json" "$RBIN_AR/prs-fixture.json"
-claude_stub_guard "$RBIN_AR"
-cat >> "$RBIN_AR/claude" <<'EOF'
-echo "call" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 601, "isDraft": false, "headRefName": "issue-61-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_AR/claude"
+claude_stub_one_pr "$RBIN_AR" call '601' false 'issue-61-x'
 RALPH_AR_LOGS="$TMP/ralph-already-ready-logs"
 
 ralph_ar_run1=$(run_ralph "$RALPH_AR" "$RBIN_AR" "$RALPH_AR_LOGS" "$TMP/ralph-already-ready-notify1.log" "$RALPH_NOMERGE_CFG")
@@ -4252,15 +4248,7 @@ cat > "$RBIN_BOR/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BOR" "$RBIN_BOR/issues-fixture.json" "$RBIN_BOR/prs-fixture.json"
-claude_stub_guard "$RBIN_BOR"
-cat >> "$RBIN_BOR/claude" <<'EOF'
-echo "call" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_BOR/claude"
+claude_stub_one_pr "$RBIN_BOR" call '701' false 'issue-71-x'
 RALPH_BOR_LOGS="$TMP/ralph-blocked-on-ready-logs"
 
 ralph_bor_out=$(run_ralph "$RALPH_BOR" "$RBIN_BOR" "$RALPH_BOR_LOGS" "$TMP/ralph-blocked-on-ready-notify.log" "$RALPH_NOMERGE_CFG")
@@ -4311,10 +4299,8 @@ cat > "$RBIN_BOR_MIX/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BOR_MIX" "$RBIN_BOR_MIX/issues-fixture.json" "$RBIN_BOR_MIX/prs-fixture.json"
-claude_stub_guard "$RBIN_BOR_MIX"
-cat >> "$RBIN_BOR_MIX/claude" <<'EOF'
+claude_stub "$RBIN_BOR_MIX" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   71)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -4329,7 +4315,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_BOR_MIX/claude"
 RALPH_BOR_MIX_LOGS="$TMP/ralph-bor-mixed-logs"
 
 ralph_bor_mix_out=$(run_ralph "$RALPH_BOR_MIX" "$RBIN_BOR_MIX" "$RALPH_BOR_MIX_LOGS" "$TMP/ralph-bor-mixed-notify.log" "$RALPH_NOMERGE_CFG")
@@ -4365,15 +4350,7 @@ cat > "$RBIN_BOR_CHAIN/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BOR_CHAIN" "$RBIN_BOR_CHAIN/issues-fixture.json" "$RBIN_BOR_CHAIN/prs-fixture.json"
-claude_stub_guard "$RBIN_BOR_CHAIN"
-cat >> "$RBIN_BOR_CHAIN/claude" <<'EOF'
-echo "call" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 701, "isDraft": false, "headRefName": "issue-71-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_BOR_CHAIN/claude"
+claude_stub_one_pr "$RBIN_BOR_CHAIN" call '701' false 'issue-71-x'
 RALPH_BOR_CHAIN_LOGS="$TMP/ralph-bor-chain-logs"
 
 ralph_bor_chain_out=$(run_ralph "$RALPH_BOR_CHAIN" "$RBIN_BOR_CHAIN" "$RALPH_BOR_CHAIN_LOGS" "$TMP/ralph-bor-chain-notify.log" "$RALPH_NOMERGE_CFG")
@@ -4425,10 +4402,8 @@ cat > "$RBIN_BOR_XITER/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BOR_XITER" "$RBIN_BOR_XITER/issues-fixture.json" "$RBIN_BOR_XITER/prs-fixture.json"
-claude_stub_guard "$RBIN_BOR_XITER"
-cat >> "$RBIN_BOR_XITER/claude" <<'EOF'
+claude_stub "$RBIN_BOR_XITER" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   71)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -4443,7 +4418,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_BOR_XITER/claude"
 RALPH_BOR_XITER_LOGS="$TMP/ralph-bor-xiter-logs"
 
 ralph_bor_xiter_out=$(run_ralph "$RALPH_BOR_XITER" "$RBIN_BOR_XITER" "$RALPH_BOR_XITER_LOGS" "$TMP/ralph-bor-xiter-notify.log" "$RALPH_NOMERGE_CFG")
@@ -4497,12 +4471,10 @@ cat > "$RBIN_SYSGATE/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SYSGATE" "$RBIN_SYSGATE/issues-fixture.json" "$RBIN_SYSGATE/prs-fixture.json"
-claude_stub_guard "$RBIN_SYSGATE"
-cat >> "$RBIN_SYSGATE/claude" <<'EOF'
+claude_stub "$RBIN_SYSGATE" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
 exit 0
 EOF
-chmod +x "$RBIN_SYSGATE/claude"
 
 RALPH_SYSGATE_LOGS="$TMP/ralph-sysgate-logs"
 RALPH_SYSGATE_NOTIFY="$TMP/ralph-sysgate-notify.log"
@@ -4564,15 +4536,7 @@ cat > "$RBIN_SYSGATE2/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SYSGATE2" "$RBIN_SYSGATE2/issues-fixture.json" "$RBIN_SYSGATE2/prs-fixture.json"
-claude_stub_guard "$RBIN_SYSGATE2"
-cat >> "$RBIN_SYSGATE2/claude" <<'EOF'
-echo "call" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 501, "isDraft": false, "headRefName": "issue-402-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_SYSGATE2/claude"
+claude_stub_one_pr "$RBIN_SYSGATE2" call '501' false 'issue-402-x'
 
 ralph_sysgate2_out=$(run_ralph "$RALPH_SYSGATE2" "$RBIN_SYSGATE2" "$TMP/ralph-sysgate2-logs" "$TMP/ralph-sysgate2-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) гейты краснеют после первой итерации — прогон завершается с ошибкой" \
@@ -4603,15 +4567,7 @@ cat > "$RBIN_NOSCRIPTS/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_NOSCRIPTS" "$RBIN_NOSCRIPTS/issues-fixture.json" "$RBIN_NOSCRIPTS/prs-fixture.json"
-claude_stub_guard "$RBIN_NOSCRIPTS"
-cat >> "$RBIN_NOSCRIPTS/claude" <<'EOF'
-echo "call" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 511, "isDraft": false, "headRefName": "issue-411-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_NOSCRIPTS/claude"
+claude_stub_one_pr "$RBIN_NOSCRIPTS" call '511' false 'issue-411-x'
 
 ralph_noscripts_out=$(run_ralph "$RALPH_NOSCRIPTS" "$RBIN_NOSCRIPTS" "$TMP/ralph-noscripts-logs" "$TMP/ralph-noscripts-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) проект без scripts/check и scripts/test — гейт молча пропускается, прогон штатный (exit 0)" \
@@ -4646,12 +4602,10 @@ cat > "$RBIN_SYSGATE_TEST/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SYSGATE_TEST" "$RBIN_SYSGATE_TEST/issues-fixture.json" "$RBIN_SYSGATE_TEST/prs-fixture.json"
-claude_stub_guard "$RBIN_SYSGATE_TEST"
-cat >> "$RBIN_SYSGATE_TEST/claude" <<'EOF'
+claude_stub "$RBIN_SYSGATE_TEST" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
 exit 0
 EOF
-chmod +x "$RBIN_SYSGATE_TEST/claude"
 
 ralph_sysgate_test_out=$(run_ralph "$RALPH_SYSGATE_TEST" "$RBIN_SYSGATE_TEST" "$TMP/ralph-sysgate-test-logs" "$TMP/ralph-sysgate-test-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) красный scripts/test (без scripts/check) — прогон завершается с ошибкой" \
@@ -4680,12 +4634,10 @@ cat > "$RBIN_LOGFAIL/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_LOGFAIL" "$RBIN_LOGFAIL/issues-fixture.json" "$RBIN_LOGFAIL/prs-fixture.json"
-claude_stub_guard "$RBIN_LOGFAIL"
-cat >> "$RBIN_LOGFAIL/claude" <<'EOF'
+claude_stub "$RBIN_LOGFAIL" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
 exit 0
 EOF
-chmod +x "$RBIN_LOGFAIL/claude"
 
 # ADK_LOGS_DIR указывает на обычный файл, не каталог: `mkdir -p` внутри
 # adk-log.sh не проверяет свой код возврата, но последующая запись строки
@@ -4756,13 +4708,10 @@ cat > "$RBIN_MIDLOGFAIL/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_MIDLOGFAIL" "$RBIN_MIDLOGFAIL/issues-fixture.json" "$RBIN_MIDLOGFAIL/prs-fixture.json"
-claude_stub_guard "$RBIN_MIDLOGFAIL"
-cat >> "$RBIN_MIDLOGFAIL/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_MIDLOGFAIL" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 exit 0
 EOF
-chmod +x "$RBIN_MIDLOGFAIL/claude"
 
 ralph_midlogfail_out=$(run_ralph "$RALPH_MIDLOGFAIL" "$RBIN_MIDLOGFAIL" "$RALPH_MIDLOGFAIL_LOGS" "$TMP/ralph-midlogfail-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла (не на run_start) — прогон завершается с ошибкой" \
@@ -4838,9 +4787,7 @@ cat > "$RBIN_CONFLICT/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_CONFLICT" "$RBIN_CONFLICT/issues-fixture.json" "$RBIN_CONFLICT/prs-fixture.json"
-claude_stub_guard "$RBIN_CONFLICT"
-cat >> "$RBIN_CONFLICT/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_CONFLICT" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 case "$issue_num" in
   431)
@@ -4856,7 +4803,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_CONFLICT/claude"
 
 ralph_conflict_out=$(run_ralph "$RALPH_CONFLICT" "$RBIN_CONFLICT" "$TMP/ralph-conflict-logs" "$TMP/ralph-conflict-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) серия из 2 конфликтов актуализации подряд — прогон завершается с ошибкой" \
@@ -4897,10 +4843,8 @@ cat > "$RBIN_RB_STUCK/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_STUCK" "$RBIN_RB_STUCK/issues-fixture.json" "$RBIN_RB_STUCK/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_STUCK"
-cat >> "$RBIN_RB_STUCK/claude" <<'EOF'
+claude_stub "$RBIN_RB_STUCK" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   701)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -4915,7 +4859,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_RB_STUCK/claude"
 
 RALPH_RB_STUCK_LOGS="$TMP/ralph-rb-stuck-logs"
 RALPH_RB_STUCK_NOTIFY="$TMP/ralph-rb-stuck-notify.log"
@@ -4963,10 +4906,8 @@ cat > "$RBIN_RB_SHARE/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_SHARE" "$RBIN_RB_SHARE/issues-fixture.json" "$RBIN_RB_SHARE/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_SHARE"
-cat >> "$RBIN_RB_SHARE/claude" <<'EOF'
+claude_stub "$RBIN_RB_SHARE" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   711)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -4981,7 +4922,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_RB_SHARE/claude"
 
 RALPH_RB_SHARE_LOGS="$TMP/ralph-rb-share-logs"
 RALPH_RB_SHARE_NOTIFY="$TMP/ralph-rb-share-notify.log"
@@ -5029,15 +4969,7 @@ cat > "$RBIN_RB_SMALLN/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_SMALLN" "$RBIN_RB_SMALLN/issues-fixture.json" "$RBIN_RB_SMALLN/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_SMALLN"
-cat >> "$RBIN_RB_SMALLN/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9721, "isDraft": true, "headRefName": "issue-721-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_RB_SMALLN/claude"
+claude_stub_one_pr "$RBIN_RB_SMALLN" args '9721' true 'issue-721-x'
 
 ralph_rb_smalln_out=$(run_ralph "$RALPH_RB_SMALLN" "$RBIN_RB_SMALLN" "$TMP/ralph-rb-smalln-logs" "$TMP/ralph-rb-smalln-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаменателя (3 задачи < 4) — не останавливается (exit 0)" \
@@ -5073,10 +5005,8 @@ cat > "$RBIN_RB_LASTTASK/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_LASTTASK" "$RBIN_RB_LASTTASK/issues-fixture.json" "$RBIN_RB_LASTTASK/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_LASTTASK"
-cat >> "$RBIN_RB_LASTTASK/claude" <<'EOF'
+claude_stub "$RBIN_RB_LASTTASK" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   781)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -5091,7 +5021,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_RB_LASTTASK/claude"
 
 ralph_rb_lasttask_out=$(run_ralph "$RALPH_RB_LASTTASK" "$RBIN_RB_LASTTASK" "$TMP/ralph-rb-lasttask-logs" "$TMP/ralph-rb-lasttask-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) breaker на последней доступной задаче — прогон завершается с ошибкой" \
@@ -5125,15 +5054,7 @@ cat > "$RBIN_RB_STUCKCFG/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_STUCKCFG" "$RBIN_RB_STUCKCFG/issues-fixture.json" "$RBIN_RB_STUCKCFG/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_STUCKCFG"
-cat >> "$RBIN_RB_STUCKCFG/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9771, "isDraft": true, "headRefName": "issue-771-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_RB_STUCKCFG/claude"
+claude_stub_one_pr "$RBIN_RB_STUCKCFG" args '9771' true 'issue-771-x'
 
 RALPH_RB_STUCKCFG_CFG="$TMP/ralph-rb-stuckcfg-config.json"
 cat > "$RALPH_RB_STUCKCFG_CFG" <<'EOF'
@@ -5169,15 +5090,7 @@ cat > "$RBIN_RB_ZERO/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_ZERO" "$RBIN_RB_ZERO/issues-fixture.json" "$RBIN_RB_ZERO/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_ZERO"
-cat >> "$RBIN_RB_ZERO/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9791, "isDraft": true, "headRefName": "issue-791-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_RB_ZERO/claude"
+claude_stub_one_pr "$RBIN_RB_ZERO" args '9791' true 'issue-791-x'
 
 RALPH_RB_ZERO_CFG="$TMP/ralph-rb-zero-config.json"
 cat > "$RALPH_RB_ZERO_CFG" <<'EOF'
@@ -5223,10 +5136,8 @@ cat > "$RBIN_RB_SHARECFG/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_SHARECFG" "$RBIN_RB_SHARECFG/issues-fixture.json" "$RBIN_RB_SHARECFG/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_SHARECFG"
-cat >> "$RBIN_RB_SHARECFG/claude" <<'EOF'
+claude_stub "$RBIN_RB_SHARECFG" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   761)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -5241,7 +5152,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_RB_SHARECFG/claude"
 
 RALPH_RB_SHARECFG_CFG="$TMP/ralph-rb-sharecfg-config.json"
 # canMerge:false — эта фикстура (в отличие от RALPH_RB_STUCKCFG/RALPH_RB_ZERO
@@ -5287,10 +5197,8 @@ cat > "$RBIN_RB_SHARE_BOUNDARY/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY/issues-fixture.json" "$RBIN_RB_SHARE_BOUNDARY/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_SHARE_BOUNDARY"
-cat >> "$RBIN_RB_SHARE_BOUNDARY/claude" <<'EOF'
+claude_stub "$RBIN_RB_SHARE_BOUNDARY" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   761)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -5310,7 +5218,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_RB_SHARE_BOUNDARY/claude"
 
 ralph_rb_share_boundary_out=$(run_ralph "$RALPH_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY" "$TMP/ralph-rb-share-boundary-logs" "$TMP/ralph-rb-share-boundary-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) доля РОВНО на дефолтном пороге 0.5 (строгое «>») — прогон НЕ останавливается (exit 0)" \
@@ -5345,15 +5252,7 @@ cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_RB_NAN" "$RBIN_RB_NAN/issues-fixture.json" "$RBIN_RB_NAN/prs-fixture.json"
-claude_stub_guard "$RBIN_RB_NAN"
-cat >> "$RBIN_RB_NAN/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9781, "isDraft": true, "headRefName": "issue-781-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_RB_NAN/claude"
+claude_stub_one_pr "$RBIN_RB_NAN" args '9781' true 'issue-781-x'
 RALPH_RB_NAN_CFG="$TMP/ralph-rb-nan-config.json"
 cat > "$RALPH_RB_NAN_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxSkippedShare": "nan"}}}}
@@ -5433,10 +5332,8 @@ cat > "$RBIN_STOP/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_STOP" "$RBIN_STOP/issues-fixture.json" "$RBIN_STOP/prs-fixture.json"
-claude_stub_guard "$RBIN_STOP"
-cat >> "$RBIN_STOP/claude" <<EOF
+claude_stub "$RBIN_STOP" <<EOF
 echo "\$*" >> "\$d/claude-calls.log"
-issue_num=\$(printf '%s' "\$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 if [ "\$issue_num" = "1301" ]; then
   mkdir -p "$RALPH_STOP/.adk"
   touch "$RALPH_STOP/.adk/stop"
@@ -5446,7 +5343,6 @@ PRJSON
 fi
 exit 0
 EOF
-chmod +x "$RBIN_STOP/claude"
 
 RALPH_STOP_LOGS="$TMP/ralph-stop-logs"
 RALPH_STOP_NOTIFY="$TMP/ralph-stop-notify.log"
@@ -5503,15 +5399,7 @@ cat > "$RBIN_STOP_PRE/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_STOP_PRE" "$RBIN_STOP_PRE/issues-fixture.json" "$RBIN_STOP_PRE/prs-fixture.json"
-claude_stub_guard "$RBIN_STOP_PRE"
-cat >> "$RBIN_STOP_PRE/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9910, "isDraft": false, "headRefName": "issue-1310-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_STOP_PRE/claude"
+claude_stub_one_pr "$RBIN_STOP_PRE" args '9910' false 'issue-1310-x'
 
 ralph_stop_pre_out=$(run_ralph "$RALPH_STOP_PRE" "$RBIN_STOP_PRE" "$TMP/ralph-stop-pre-logs" "$TMP/ralph-stop-pre-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: стоп-файл, лежащий до старта, удаляется на старте — прогон завершается штатно (exit 0)" \
@@ -5547,8 +5435,7 @@ cat > "$RBIN_STOP_LAST/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_STOP_LAST" "$RBIN_STOP_LAST/issues-fixture.json" "$RBIN_STOP_LAST/prs-fixture.json"
-claude_stub_guard "$RBIN_STOP_LAST"
-cat >> "$RBIN_STOP_LAST/claude" <<EOF
+claude_stub "$RBIN_STOP_LAST" <<EOF
 echo "\$*" >> "\$d/claude-calls.log"
 mkdir -p "$RALPH_STOP_LAST/.adk"
 touch "$RALPH_STOP_LAST/.adk/stop"
@@ -5557,7 +5444,6 @@ cat > "\$d/prs-fixture.json" <<'PRJSON'
 PRJSON
 exit 0
 EOF
-chmod +x "$RBIN_STOP_LAST/claude"
 
 ralph_stop_last_out=$(run_ralph "$RALPH_STOP_LAST" "$RBIN_STOP_LAST" "$TMP/ralph-stop-last-logs" "$TMP/ralph-stop-last-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: стоп-файл на последнем доступном issue — прогон завершается с ошибкой" \
@@ -5593,10 +5479,8 @@ cat > "$RBIN_STOP_VS_BREAKER/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER/issues-fixture.json" "$RBIN_STOP_VS_BREAKER/prs-fixture.json"
-claude_stub_guard "$RBIN_STOP_VS_BREAKER"
-cat >> "$RBIN_STOP_VS_BREAKER/claude" <<EOF
+claude_stub "$RBIN_STOP_VS_BREAKER" <<EOF
 echo "\$*" >> "\$d/claude-calls.log"
-issue_num=\$(printf '%s' "\$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "\$issue_num" in
   1320)
     cat > "\$d/prs-fixture.json" <<'PRJSON'
@@ -5613,7 +5497,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_STOP_VS_BREAKER/claude"
 
 ralph_stop_vs_breaker_out=$(run_ralph "$RALPH_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER" "$TMP/ralph-stop-vs-breaker-logs" "$TMP/ralph-stop-vs-breaker-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: коллизия стоп-файл vs breaker застреваний — прогон завершается с ошибкой" \
@@ -5661,8 +5544,7 @@ cat > "$RBIN_STOP_VS_GATES/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_STOP_VS_GATES" "$RBIN_STOP_VS_GATES/issues-fixture.json" "$RBIN_STOP_VS_GATES/prs-fixture.json"
-claude_stub_guard "$RBIN_STOP_VS_GATES"
-cat >> "$RBIN_STOP_VS_GATES/claude" <<EOF
+claude_stub "$RBIN_STOP_VS_GATES" <<EOF
 echo "\$*" >> "\$d/claude-calls.log"
 mkdir -p "$RALPH_STOP_VS_GATES/.adk"
 touch "$RALPH_STOP_VS_GATES/.adk/stop"
@@ -5671,7 +5553,6 @@ cat > "\$d/prs-fixture.json" <<'PRJSON'
 PRJSON
 exit 0
 EOF
-chmod +x "$RBIN_STOP_VS_GATES/claude"
 
 ralph_stop_vs_gates_out=$(run_ralph "$RALPH_STOP_VS_GATES" "$RBIN_STOP_VS_GATES" "$TMP/ralph-stop-vs-gates-logs" "$TMP/ralph-stop-vs-gates-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: коллизия стоп-файл vs красные гейты main — прогон завершается с ошибкой" \
@@ -5712,32 +5593,12 @@ EOF
 cat > "$RBIN_MERGE/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_MERGE"
-cat >> "$RBIN_MERGE/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5001, "isDraft": false, "headRefName": "issue-2001-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_MERGE/claude"
-# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — самописный стаб,
-# тот же приём, что уже используют RALPH_CFAIL/RALPH_CONFLICT выше для
-# сценариев за пределами общего каркаса.
-cat > "$RBIN_MERGE/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-2001-x"; exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_MERGE/gh"
+claude_stub_one_pr "$RBIN_MERGE" args '5001' false 'issue-2001-x'
+# merge-ветка resolve_ready_pr — pr view/pr merge через extra-параметр
+# gh_ralph_stub (issue #207) поверх общего каркаса.
+gh_ralph_stub "$RBIN_MERGE" "$RBIN_MERGE/issues-fixture.json" "$RBIN_MERGE/prs-fixture.json" log \
+  '  "pr view") echo "MERGEABLE null issue-2001-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
 RALPH_MERGE_CFG="$TMP/ralph-merge-config.json"
 cat > "$RALPH_MERGE_CFG" <<'EOF'
@@ -5786,29 +5647,10 @@ EOF
 cat > "$RBIN_MERGE2/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_MERGE2"
-cat >> "$RBIN_MERGE2/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5002, "isDraft": false, "headRefName": "issue-2002-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_MERGE2/claude"
-cat > "$RBIN_MERGE2/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-2002-x"; exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_MERGE2/gh"
+claude_stub_one_pr "$RBIN_MERGE2" args '5002' false 'issue-2002-x'
+gh_ralph_stub "$RBIN_MERGE2" "$RBIN_MERGE2/issues-fixture.json" "$RBIN_MERGE2/prs-fixture.json" log \
+  '  "pr view") echo "MERGEABLE null issue-2002-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
 RALPH_MERGE2_CFG="$TMP/ralph-merge2-config.json"
 cat > "$RALPH_MERGE2_CFG" <<'EOF'
@@ -5839,15 +5681,7 @@ cat > "$RBIN_HO/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_HO" "$RBIN_HO/issues-fixture.json" "$RBIN_HO/prs-fixture.json"
-claude_stub_guard "$RBIN_HO"
-cat >> "$RBIN_HO/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5010, "isDraft": false, "headRefName": "issue-2010-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_HO/claude"
+claude_stub_one_pr "$RBIN_HO" args '5010' false 'issue-2010-x'
 
 RALPH_HO_CFG="$TMP/ralph-ho-config.json"
 cat > "$RALPH_HO_CFG" <<'EOF'
@@ -5882,15 +5716,7 @@ cat > "$RBIN_MTYPO/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_MTYPO" "$RBIN_MTYPO/issues-fixture.json" "$RBIN_MTYPO/prs-fixture.json"
-claude_stub_guard "$RBIN_MTYPO"
-cat >> "$RBIN_MTYPO/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5011, "isDraft": false, "headRefName": "issue-2011-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_MTYPO/claude"
+claude_stub_one_pr "$RBIN_MTYPO" args '5011' false 'issue-2011-x'
 
 RALPH_MTYPO_CFG="$TMP/ralph-mtypo-config.json"
 cat > "$RALPH_MTYPO_CFG" <<'EOF'
@@ -5923,15 +5749,7 @@ cat > "$RBIN_CMTYPO/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_CMTYPO" "$RBIN_CMTYPO/issues-fixture.json" "$RBIN_CMTYPO/prs-fixture.json"
-claude_stub_guard "$RBIN_CMTYPO"
-cat >> "$RBIN_CMTYPO/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5012, "isDraft": false, "headRefName": "issue-2012-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_CMTYPO/claude"
+claude_stub_one_pr "$RBIN_CMTYPO" args '5012' false 'issue-2012-x'
 
 RALPH_CMTYPO_CFG="$TMP/ralph-cmtypo-config.json"
 cat > "$RALPH_CMTYPO_CFG" <<'EOF'
@@ -5988,30 +5806,13 @@ EOF
 cat > "$RBIN_BEHIND/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_BEHIND"
-cat >> "$RBIN_BEHIND/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5020, "isDraft": false, "headRefName": "issue-2020-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_BEHIND/claude"
-cat > "$RBIN_BEHIND/gh" <<EOF
-#!/usr/bin/env bash
-d="\$(cd "\$(dirname "\$0")" && pwd)"
-case "\$1 \$2" in
-  "issue list") cat "\$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "\$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+claude_stub_one_pr "$RBIN_BEHIND" args '5020' false 'issue-2020-x'
+IFS= read -r -d '' behind_gh_extra <<EXTRA || true
   "pr view") echo "MERGEABLE null issue-2020-x"; exit 0 ;;
   "pr checkout") (cd "$RALPH_BEHIND" && git checkout -B issue-2020-x origin/issue-2020-x) >/dev/null 2>&1; exit \$? ;;
   "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_BEHIND/gh"
+EXTRA
+gh_ralph_stub "$RBIN_BEHIND" "$RBIN_BEHIND/issues-fixture.json" "$RBIN_BEHIND/prs-fixture.json" log "${behind_gh_extra}"
 
 RALPH_BEHIND_CFG="$TMP/ralph-behind-config.json"
 cat > "$RALPH_BEHIND_CFG" <<'EOF'
@@ -6057,9 +5858,7 @@ EOF
 cat > "$RBIN_HRR/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_HRR"
-cat >> "$RBIN_HRR/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_HRR" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 case "$issue_num" in
   2030)
@@ -6075,27 +5874,15 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_HRR/claude"
-cat > "$RBIN_HRR/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view")
+gh_ralph_stub "$RBIN_HRR" "$RBIN_HRR/issues-fixture.json" "$RBIN_HRR/prs-fixture.json" log \
+  '  "pr view")
     case "$3" in
       5030) echo "MERGEABLE APPROVED issue-2030-x" ;;
       5031) echo "MERGEABLE REVIEW_REQUIRED issue-2031-x" ;;
       *) echo "MERGEABLE null unknown" ;;
     esac
     exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_HRR/gh"
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
 RALPH_HRR_CFG="$TMP/ralph-hrr-config.json"
 cat > "$RALPH_HRR_CFG" <<'EOF'
@@ -6137,24 +5924,9 @@ EOF
 cat > "$RBIN_UNK/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_UNK"
-cat >> "$RBIN_UNK/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5040, "isDraft": false, "headRefName": "issue-2040-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_UNK/claude"
-cat > "$RBIN_UNK/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view")
+claude_stub_one_pr "$RBIN_UNK" args '5040' false 'issue-2040-x'
+gh_ralph_stub "$RBIN_UNK" "$RBIN_UNK/issues-fixture.json" "$RBIN_UNK/prs-fixture.json" log \
+  '  "pr view")
     n=$(( $(cat "$d/pr-view-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$d/pr-view-calls"
     if [ "$n" -eq 1 ]; then
@@ -6163,11 +5935,7 @@ case "$1 $2" in
       echo "MERGEABLE null issue-2040-x"
     fi
     exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_UNK/gh"
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
 RALPH_UNK_CFG="$TMP/ralph-unk-config.json"
 cat > "$RALPH_UNK_CFG" <<'EOF'
@@ -6198,32 +5966,13 @@ EOF
 cat > "$RBIN_UNK2/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_UNK2"
-cat >> "$RBIN_UNK2/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5050, "isDraft": false, "headRefName": "issue-2050-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_UNK2/claude"
-cat > "$RBIN_UNK2/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view")
+claude_stub_one_pr "$RBIN_UNK2" args '5050' false 'issue-2050-x'
+gh_ralph_stub "$RBIN_UNK2" "$RBIN_UNK2/issues-fixture.json" "$RBIN_UNK2/prs-fixture.json" log \
+  '  "pr view")
     n=$(( $(cat "$d/pr-view-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$d/pr-view-calls"
     echo "UNKNOWN null issue-2050-x"
-    exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_UNK2/gh"
+    exit 0 ;;'
 
 RALPH_UNK2_CFG="$TMP/ralph-unk-exhausted-config.json"
 cat > "$RALPH_UNK2_CFG" <<'EOF'
@@ -6283,30 +6032,13 @@ EOF
 cat > "$RBIN_TRUNK/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_TRUNK"
-cat >> "$RBIN_TRUNK/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5060, "isDraft": false, "headRefName": "issue-2060-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_TRUNK/claude"
-cat > "$RBIN_TRUNK/gh" <<EOF
-#!/usr/bin/env bash
-d="\$(cd "\$(dirname "\$0")" && pwd)"
-case "\$1 \$2" in
-  "issue list") cat "\$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "\$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+claude_stub_one_pr "$RBIN_TRUNK" args '5060' false 'issue-2060-x'
+IFS= read -r -d '' trunk_gh_extra <<EXTRA || true
   "pr view") echo "MERGEABLE null issue-2060-x"; exit 0 ;;
   "pr checkout") (cd "$RALPH_TRUNK" && git checkout -B issue-2060-x origin/issue-2060-x) >/dev/null 2>&1; exit \$? ;;
   "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_TRUNK/gh"
+EXTRA
+gh_ralph_stub "$RBIN_TRUNK" "$RBIN_TRUNK/issues-fixture.json" "$RBIN_TRUNK/prs-fixture.json" log "${trunk_gh_extra}"
 
 RALPH_TRUNK_CFG="$TMP/ralph-trunk-config.json"
 cat > "$RALPH_TRUNK_CFG" <<'EOF'
@@ -6351,28 +6083,9 @@ EOF
 cat > "$RBIN_CONFPR/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_CONFPR"
-cat >> "$RBIN_CONFPR/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5090, "isDraft": false, "headRefName": "issue-2090-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_CONFPR/claude"
-cat > "$RBIN_CONFPR/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "CONFLICTING null issue-2090-x"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_CONFPR/gh"
+claude_stub_one_pr "$RBIN_CONFPR" args '5090' false 'issue-2090-x'
+gh_ralph_stub "$RBIN_CONFPR" "$RBIN_CONFPR/issues-fixture.json" "$RBIN_CONFPR/prs-fixture.json" log \
+  '  "pr view") echo "CONFLICTING null issue-2090-x"; exit 0 ;;'
 
 RALPH_CONFPR_CFG="$TMP/ralph-confpr-config.json"
 cat > "$RALPH_CONFPR_CFG" <<'EOF'
@@ -6411,29 +6124,12 @@ EOF
 cat > "$RBIN_ACTCONFLICT/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_ACTCONFLICT"
-cat >> "$RBIN_ACTCONFLICT/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 5070, "isDraft": false, "headRefName": "issue-2070-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_ACTCONFLICT/claude"
-cat > "$RBIN_ACTCONFLICT/gh" <<EOF
-#!/usr/bin/env bash
-d="\$(cd "\$(dirname "\$0")" && pwd)"
-case "\$1 \$2" in
-  "issue list") cat "\$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "\$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "\$*" >> "\$d/issue-edit.log"; exit 0 ;;
+claude_stub_one_pr "$RBIN_ACTCONFLICT" args '5070' false 'issue-2070-x'
+IFS= read -r -d '' actconflict_gh_extra <<EXTRA || true
   "pr view") echo "MERGEABLE null issue-2070-x"; exit 0 ;;
   "pr checkout") (cd "$RALPH_ACTCONFLICT" && git checkout -B issue-2070-x origin/issue-2070-x) >/dev/null 2>&1; exit \$? ;;
-  *) echo "unexpected gh call: \$*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_ACTCONFLICT/gh"
+EXTRA
+gh_ralph_stub "$RBIN_ACTCONFLICT" "$RBIN_ACTCONFLICT/issues-fixture.json" "$RBIN_ACTCONFLICT/prs-fixture.json" log "${actconflict_gh_extra}"
 
 RALPH_ACTCONFLICT_CFG="$TMP/ralph-actconflict-config.json"
 cat > "$RALPH_ACTCONFLICT_CFG" <<'EOF'
@@ -6481,9 +6177,7 @@ EOF
 cat > "$RBIN_MB/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_MB"
-cat >> "$RBIN_MB/claude" <<'EOF'
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
+claude_stub "$RBIN_MB" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
 case "$issue_num" in
   2080)
@@ -6499,21 +6193,9 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_MB/claude"
-cat > "$RBIN_MB/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-2080-x"; exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_MB/gh"
+gh_ralph_stub "$RBIN_MB" "$RBIN_MB/issues-fixture.json" "$RBIN_MB/prs-fixture.json" log \
+  '  "pr view") echo "MERGEABLE null issue-2080-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
 RALPH_MB_CFG="$TMP/ralph-mb-config.json"
 cat > "$RALPH_MB_CFG" <<'EOF'
@@ -6560,10 +6242,8 @@ cat > "$RBIN_BUDGET_TASK/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BUDGET_TASK" "$RBIN_BUDGET_TASK/issues-fixture.json" "$RBIN_BUDGET_TASK/prs-fixture.json"
-claude_stub_guard "$RBIN_BUDGET_TASK"
-cat >> "$RBIN_BUDGET_TASK/claude" <<'EOF'
+claude_stub "$RBIN_BUDGET_TASK" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   911)
     # #911 — «завис»: заменяет себя на sleep, дольше бюджета задачи ниже
@@ -6580,7 +6260,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_BUDGET_TASK/claude"
 
 RALPH_BUDGET_TASK_CFG="$TMP/ralph-budget-task-config.json"
 cat > "$RALPH_BUDGET_TASK_CFG" <<'EOF'
@@ -6660,14 +6339,12 @@ cat > "$RBIN_BUDGET_GROUPKILL/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" "$RBIN_BUDGET_GROUPKILL/prs-fixture.json"
-claude_stub_guard "$RBIN_BUDGET_GROUPKILL"
-cat >> "$RBIN_BUDGET_GROUPKILL/claude" <<'EOF'
+claude_stub "$RBIN_BUDGET_GROUPKILL" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 sleep 30 &
 echo $! > "$d/child-pid"
 wait
 EOF
-chmod +x "$RBIN_BUDGET_GROUPKILL/claude"
 
 RALPH_BUDGET_GROUPKILL_CFG="$TMP/ralph-budget-groupkill-config.json"
 cat > "$RALPH_BUDGET_GROUPKILL_CFG" <<'EOF'
@@ -6719,10 +6396,8 @@ cat > "$RBIN_BUDGET_RUN/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BUDGET_RUN" "$RBIN_BUDGET_RUN/issues-fixture.json" "$RBIN_BUDGET_RUN/prs-fixture.json"
-claude_stub_guard "$RBIN_BUDGET_RUN"
-cat >> "$RBIN_BUDGET_RUN/claude" <<'EOF'
+claude_stub "$RBIN_BUDGET_RUN" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   921)
     # 2s реальной работы — дольше дефолтного бюджета прогона ниже (1s), но
@@ -6741,7 +6416,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_BUDGET_RUN/claude"
 
 RALPH_BUDGET_RUN_CFG="$TMP/ralph-budget-run-config.json"
 cat > "$RALPH_BUDGET_RUN_CFG" <<'EOF'
@@ -6791,15 +6465,7 @@ cat > "$RBIN_BUDGET_ZERO/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BUDGET_ZERO" "$RBIN_BUDGET_ZERO/issues-fixture.json" "$RBIN_BUDGET_ZERO/prs-fixture.json"
-claude_stub_guard "$RBIN_BUDGET_ZERO"
-cat >> "$RBIN_BUDGET_ZERO/claude" <<'EOF'
-echo "$*" >> "$d/claude-calls.log"
-cat > "$d/prs-fixture.json" <<'PRJSON'
-[{"number": 9931, "isDraft": false, "headRefName": "issue-931-x"}]
-PRJSON
-exit 0
-EOF
-chmod +x "$RBIN_BUDGET_ZERO/claude"
+claude_stub_one_pr "$RBIN_BUDGET_ZERO" args '9931' false 'issue-931-x'
 
 RALPH_BUDGET_ZERO_CFG="$TMP/ralph-budget-zero-config.json"
 cat > "$RALPH_BUDGET_ZERO_CFG" <<'EOF'
@@ -6852,10 +6518,8 @@ cat > "$RBIN_BUDGET_DIRTY/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY/issues-fixture.json" "$RBIN_BUDGET_DIRTY/prs-fixture.json"
-claude_stub_guard "$RBIN_BUDGET_DIRTY"
-cat >> "$RBIN_BUDGET_DIRTY/claude" <<'EOF'
+claude_stub "$RBIN_BUDGET_DIRTY" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   961)
     # Реалистичная «середина работы»: своя ветка, незакоммиченная правка
@@ -6873,7 +6537,6 @@ case "$issue_num" in
 esac
 exit 0
 EOF
-chmod +x "$RBIN_BUDGET_DIRTY/claude"
 
 RALPH_BUDGET_DIRTY_CFG="$TMP/ralph-budget-dirty-config.json"
 cat > "$RALPH_BUDGET_DIRTY_CFG" <<'EOF'
@@ -6953,10 +6616,8 @@ cat > "$RBIN_TOK/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_TOK" "$RBIN_TOK/issues-fixture.json" "$RBIN_TOK/prs-fixture.json"
-claude_stub_guard "$RBIN_TOK"
-cat >> "$RBIN_TOK/claude" <<'EOF'
+claude_stub "$RBIN_TOK" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   971)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -6974,7 +6635,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_TOK/claude"
 RALPH_TOK_CFG="$TMP/ralph-tokens-config.json"
 cat > "$RALPH_TOK_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false}}}
@@ -7022,27 +6682,13 @@ EOF
 cat > "$RBIN_TOKB/prs-fixture.json" <<'EOF'
 []
 EOF
-# свой gh-стаб (не gh_ralph_stub): canMerge=true ведёт ready-исход #973 через
-# реальную merge-ветку resolve_ready_pr → нужны pr view/pr merge (тот же
-# приём, что фикстура RALPH_MB issue #129 выше)
-cat > "$RBIN_TOKB/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-973-x"; exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_TOKB/gh"
-claude_stub_guard "$RBIN_TOKB"
-cat >> "$RBIN_TOKB/claude" <<'EOF'
+# canMerge=true ведёт ready-исход #973 через реальную merge-ветку
+# resolve_ready_pr → pr view/pr merge через extra (приём RALPH_MB выше)
+gh_ralph_stub "$RBIN_TOKB" "$RBIN_TOKB/issues-fixture.json" "$RBIN_TOKB/prs-fixture.json" log \
+  '  "pr view") echo "MERGEABLE null issue-973-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
+claude_stub "$RBIN_TOKB" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   972)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -7059,7 +6705,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_TOKB/claude"
 RALPH_TOKB_CFG="$TMP/ralph-tokbudget-config.json"
 cat > "$RALPH_TOKB_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true, "budget": {"task": {"maxTokens": 1000}}}}}
@@ -7105,10 +6750,8 @@ cat > "$RBIN_TOKR/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_TOKR" "$RBIN_TOKR/issues-fixture.json" "$RBIN_TOKR/prs-fixture.json"
-claude_stub_guard "$RBIN_TOKR"
-cat >> "$RBIN_TOKR/claude" <<'EOF'
+claude_stub "$RBIN_TOKR" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 if [ "$issue_num" = "974" ]; then
   cat > "$d/prs-fixture.json" <<'PRJSON'
 [{"number": 9974, "isDraft": false, "headRefName": "issue-974-x"}]
@@ -7117,7 +6760,6 @@ PRJSON
 fi
 exit 0
 EOF
-chmod +x "$RBIN_TOKR/claude"
 RALPH_TOKR_CFG="$TMP/ralph-tokrun-config.json"
 cat > "$RALPH_TOKR_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"run": {"maxTokens": 3000}}}}}
@@ -7176,10 +6818,8 @@ cat > "$RBIN_SZ/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SZ" "$RBIN_SZ/issues-fixture.json" "$RBIN_SZ/prs-fixture.json"
-claude_stub_guard "$RBIN_SZ"
-cat >> "$RBIN_SZ/claude" <<'EOF'
+claude_stub "$RBIN_SZ" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   981)
     # дольше базового бюджета времени (3s), но меньше умноженного (6s)
@@ -7206,7 +6846,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_SZ/claude"
 RALPH_SZ_CFG="$TMP/ralph-sized-config.json"
 cat > "$RALPH_SZ_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "breaker": {"maxStuckPerRun": 5}, "budget": {"task": {"maxMinutes": 0.05, "maxTokens": 1000}}}}}
@@ -7247,8 +6886,7 @@ cat > "$RBIN_SZ5/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SZ5" "$RBIN_SZ5/issues-fixture.json" "$RBIN_SZ5/prs-fixture.json"
-claude_stub_guard "$RBIN_SZ5"
-cat >> "$RBIN_SZ5/claude" <<'EOF'
+claude_stub "$RBIN_SZ5" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 cat > "$d/prs-fixture.json" <<'PRJSON'
 [{"number": 9983, "isDraft": false, "headRefName": "issue-983-x"}]
@@ -7256,7 +6894,6 @@ PRJSON
 printf '{"type":"result","usage":{"input_tokens":4000,"output_tokens":400,"cache_creation_input_tokens":100,"cache_read_input_tokens":0}}\n'
 exit 0
 EOF
-chmod +x "$RBIN_SZ5/claude"
 RALPH_SZ5_CFG="$TMP/ralph-sized5-config.json"
 cat > "$RALPH_SZ5_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 5, "task": {"maxTokens": 1000}}}}}
@@ -7289,10 +6926,8 @@ cat > "$RBIN_SZ0/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SZ0" "$RBIN_SZ0/issues-fixture.json" "$RBIN_SZ0/prs-fixture.json"
-claude_stub_guard "$RBIN_SZ0"
-cat >> "$RBIN_SZ0/claude" <<'EOF'
+claude_stub "$RBIN_SZ0" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   984)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -7311,7 +6946,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_SZ0/claude"
 RALPH_SZ0_CFG="$TMP/ralph-sized0-config.json"
 cat > "$RALPH_SZ0_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 0, "task": {"maxTokens": 1000}}}}}
@@ -7352,8 +6986,7 @@ cat > "$RBIN_SZC/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN_SZC" "$RBIN_SZC/issues-fixture.json" "$RBIN_SZC/prs-fixture.json"
-claude_stub_guard "$RBIN_SZC"
-cat >> "$RBIN_SZC/claude" <<'EOF'
+claude_stub "$RBIN_SZC" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 cat > "$d/prs-fixture.json" <<'PRJSON'
 [{"number": 9987, "isDraft": false, "headRefName": "issue-987-x"}]
@@ -7361,7 +6994,6 @@ PRJSON
 printf '{"type":"result","usage":{"input_tokens":2000000000000000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}\n'
 exit 0
 EOF
-chmod +x "$RBIN_SZC/claude"
 RALPH_SZC_CFG="$TMP/ralph-sizedclamp-config.json"
 cat > "$RALPH_SZC_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 1e308, "task": {"maxTokens": 1000}}}}}
@@ -7466,33 +7098,19 @@ EOF
 cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
 []
 EOF
-# свой gh-стаб: дефолтная политика (canMerge=true) ведёт ready через
-# merge-ветку — нужны pr view/pr merge (приём фикстуры RALPH_MB)
-cat > "$RBIN_NC/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-${3#9}-x"; exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_NC/gh"
-claude_stub_guard "$RBIN_NC"
-cat >> "$RBIN_NC/claude" <<'EOF'
+# дефолтная политика (canMerge=true) ведёт ready через merge-ветку —
+# pr view/pr merge через extra; pr view отвечает веткой по номеру PR
+gh_ralph_stub "$RBIN_NC" "$RBIN_NC/issues-fixture.json" "$RBIN_NC/prs-fixture.json" log \
+  '  "pr view") echo "MERGEABLE null issue-${3#9}-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
+claude_stub "$RBIN_NC" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 cat > "$d/prs-fixture.json" <<PRJSON
 [{"number": 9$issue_num, "isDraft": false, "headRefName": "issue-$issue_num-x"}]
 PRJSON
 printf '{"type":"result","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":0}}\n'
 exit 0
 EOF
-chmod +x "$RBIN_NC/claude"
 # ADK_CONFIG_FILE указывает на заведомо несуществующий файл: adk_config_get
 # трактует отсутствие файла как «конфига нет» (это и проверяем), а явное
 # переопределение защищает фикстуру от конфига из окружения разработчика
@@ -7565,10 +7183,8 @@ EOF
 cat > "$RBIN_SIGNAL/prs-fixture.json" <<'EOF'
 []
 EOF
-claude_stub_guard "$RBIN_SIGNAL"
-cat >> "$RBIN_SIGNAL/claude" <<'EOF'
+claude_stub "$RBIN_SIGNAL" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-issue_num=$(printf '%s' "$*" | grep -oE 'для задачи issue #[0-9]+' | tail -1 | grep -oE '[0-9]+')
 case "$issue_num" in
   3001)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -7594,23 +7210,10 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN_SIGNAL/claude"
-# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — самописный стаб,
-# тот же приём, что RALPH_MERGE выше.
-cat > "$RBIN_SIGNAL/gh" <<'EOF'
-#!/usr/bin/env bash
-d="$(cd "$(dirname "$0")" && pwd)"
-case "$1 $2" in
-  "issue list") cat "$d/issues-fixture.json"; exit 0 ;;
-  "pr list") cat "$d/prs-fixture.json"; exit 0 ;;
-  "label create") exit 0 ;;
-  "issue edit") echo "$*" >> "$d/issue-edit.log"; exit 0 ;;
-  "pr view") echo "MERGEABLE null issue-3001-x"; exit 0 ;;
-  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;
-  *) echo "unexpected gh call: $*" >&2; exit 1 ;;
-esac
-EOF
-chmod +x "$RBIN_SIGNAL/gh"
+# merge-ветка через extra-параметр (приём RALPH_MERGE выше)
+gh_ralph_stub "$RBIN_SIGNAL" "$RBIN_SIGNAL/issues-fixture.json" "$RBIN_SIGNAL/prs-fixture.json" log \
+  '  "pr view") echo "MERGEABLE null issue-3001-x"; exit 0 ;;
+  "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
 RALPH_SIGNAL_CFG="$TMP/ralph-signal-config.json"
 cat > "$RALPH_SIGNAL_CFG" <<'EOF'
