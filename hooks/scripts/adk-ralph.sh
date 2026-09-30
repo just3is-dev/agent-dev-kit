@@ -380,7 +380,14 @@ open_numbers = {it["number"] for it in issues} - merged_now
 
 def blockers(body):
     out = set()
-    for m in re.finditer(r"Blocked by\s+([^\n]*)", body or ""):
+    # [ \t]+ (issue #215), не \s+: \s матчит и перевод строки, из-за чего
+    # голое «Blocked by» на конце строки захватывало номер со следующей
+    # строки как ложный блокер, даже когда та строка — обычный текст, не
+    # намеренная зависимость. Разделитель номеров ВНУТРИ списка блокеров
+    # (issue #146: «and», запятая, отдельные строки «Blocked by #N») не
+    # затронут — он разбирается отдельным findall «#(\d+)» ниже, по всей
+    # захваченной строке, а не этим \s+.
+    for m in re.finditer(r"Blocked by[ \t]+([^\n]*)", body or ""):
         out.update(int(x) for x in re.findall(r"#(\d+)", m.group(1)))
     return out
 
