@@ -191,6 +191,13 @@ merged_list=""
 usage_summary=""  # строки «#N: 12s/3456 ток.» по клод-исполненным задачам (issue #132)
 stuck_summary=""
 skipped_summary=""
+# closed_before_start_summary — отдельная строка от skipped_summary (issue
+# #220 п.1): issues_file статичен на весь прогон (open_numbers в
+# select_next), поэтому issue, закрытый человеком между снимком и стартом
+# конкретной задачи, попадает в общий "skipped"-учёт (breaker/cascade ниже),
+# но НЕ в skipped_summary — та строка подписана "зависимость от застрявшей
+# задачи" и обозначала бы неверную причину.
+closed_before_start_summary=""
 blocked_on_ready_summary=""
 stop_reason=""
 exit_code=0
@@ -1292,6 +1299,35 @@ while [ "$exit_code" -eq 0 ]; do
       ;;
   esac
 
+  # ── Предстартовая перепроверка состояния issue (issue #220 п.1) ─────────
+  # issues_file — статичный снимок "gh issue list --state open" на старте
+  # прогона (не перезапрашивается между итерациями, см. open_numbers в
+  # select_next выше). merged_now вычитает из очереди только задачи,
+  # смерженные ЭТИМ прогоном (ADR-019 §10) — issue, закрытый человеком
+  # (или другим процессом) посреди прогона, снимком не замечен и
+  # select_next выбрал бы его снова. Один дешёвый gh-вызов прямо перед
+  # стартом ловит эту гонку. Сбой самого вызова (сеть, rate limit) не
+  # блокирует прогон — issue обрабатывается как раньше (fail-open: пустой
+  # $next_issue_state не равен "CLOSED").
+  next_issue_state=$(cd "$root" && gh issue view "$issue_num" --json state -q .state 2>/dev/null)
+  if [ "$next_issue_state" = "CLOSED" ]; then
+    handled=$(csv_add "$handled" "$issue_num")
+    # skipped/skipped_count — тот же бакет, что и SKIP-каскад по
+    # зависимостям выше: и breaker'у (run_breaker_check_skipped_share), и
+    # select_next (unresolved у зависимых issues) нужен факт "issue не
+    # доигран до исхода этим прогоном", не причина. closed_before_start_summary
+    # — отдельная человекочитаемая строка (не skipped_summary): та подписана
+    # "зависимость от застрявшей задачи" и обозначала бы неверную причину.
+    skipped=$(csv_add "$skipped" "$issue_num")
+    skipped_count=$((skipped_count + 1))
+    closed_before_start_summary="$closed_before_start_summary #$issue_num"
+    if ! "$logger" "$run_unit" event=task issue="$issue_num" type="$issue_type" result=skipped reason="issue closed outside this run"; then
+      journal_break
+      break
+    fi
+    continue
+  fi
+
   # Эффективные бюджеты задачи (issue #133): label size:large умножает обе
   # половины (минуты и токены) на size_multiplier; без label — базовые.
   effective_task_budget_seconds="$task_budget_seconds"
@@ -1672,6 +1708,7 @@ summary="=== Ralph: итог прогона ===
 Ready (ждут человека): ${ready_list:-нет}
 Застряло: ${stuck_summary:-нет}
 Пропущено (зависимость от застрявшей задачи): ${skipped_summary:-нет}
+Закрыто человеком до старта задачи: ${closed_before_start_summary:-нет}
 Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
 Расход по задачам (сек/токены):${usage_summary:- нет}
