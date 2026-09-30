@@ -5237,7 +5237,7 @@ assert_exit "issue #213: adk-ralph: maxSkippedShare=\"inf\" — тоже отв�
 assert_contains "issue #213: adk-ralph: inf отвергнут с предупреждением и дефолтом (порог обязан быть конечным)" \
   "$ralph_rb_inf_out" "maxSkippedShare='inf' — не число, использован дефолт 0.5"
 rb_inf_calls=$(grep -c "Инструкция ралфа" "$RBIN_RB_NAN/claude-calls.log")
-assert_exit "issue #213: inf-прогон вызывает claude ровно один раз" \
+assert_exit "issue #213: inf-прогон дошёл до задачи #781 (claude вызван; 782-784 — зависимые пропуски)" \
   1 "$rb_inf_calls"
 
 # issue #210 (блокер круга 1 PR #227): целый порог больше 2**63-1 валиден
@@ -5263,7 +5263,7 @@ assert_exit "issue #210: adk-ralph: stuck-breaker с гигантским пор
 assert_contains "issue #210: adk-ralph: причина остановки — доля пропущенных, не застревания" \
   "$ralph_rb_bigint_out" "breaker: доля пропущенных за прогон"
 rb_bigint_calls=$(grep -c "Инструкция ралфа" "$RBIN_RB_NAN/claude-calls.log")
-assert_exit "issue #210: bigint-прогон вызывает claude ровно один раз" \
+assert_exit "issue #210: bigint-прогон дошёл до задачи #781 (claude вызван)" \
   1 "$rb_bigint_calls"
 
 # issue #212: multiplier nan — валидатор size_multiplier читается на старте
@@ -6689,6 +6689,7 @@ assert_contains "issue #212: adk-ralph: maxTokens=10**16 клампится до
   "$ralph_tokclamp_out" "превысил бюджет задачи (1000000000000000) при issue #981"
 assert_not_contains "issue #212: adk-ralph: валидное большое значение — предупреждения о невалидности нет (кламп молчалив)" \
   "$ralph_tokclamp_out" "не положительное целое токенов"
+
 # ── issue #133, AC-4: множитель бюджета для задач с label size:large —
 # оба бюджета задачи (минуты и токены) умножаются на
 # policies.autopilot.budget.sizeLargeMultiplier (дефолт 2); задача без
