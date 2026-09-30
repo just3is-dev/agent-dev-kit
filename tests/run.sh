@@ -76,11 +76,16 @@ meta_out=$(assert_contains "meta" "$multiline_val" "no-such-substring")
 nl_count=$(printf '%s' "$meta_out" | wc -l | tr -d ' ')
 assert_exit "assert_contains: FAIL схлопывает переводы строк в диагностике (однострочный вывод)" 0 "$nl_count"
 
+doc_text() { # doc_text [файл] — markdown-проза одной строкой (issue #208:
+  # склейка повторялась вручную у 8 присваиваний и внутри двух хелперов).
+  # Markdown переносит по словам — схлопываем переводы строк и повторные
+  # пробелы, чтобы искомая фраза не ломалась о жёсткий перенос. Без
+  # аргумента читает stdin (для md_section).
+  tr '\n' ' ' < "${1:-/dev/stdin}" | tr -s ' '
+}
+
 check_ac_doc() { # check_ac_doc <AC-тег> <описание> <файл> <искомая подстрока>
-  # Markdown-прозу переносит по словам — схлопываем переводы строк и
-  # повторяющиеся пробелы, чтобы искомая фраза не ломалась о жёсткий
-  # перенос строки, случайно совпавший с серединой фразы.
-  if tr '\n' ' ' < "$3" | tr -s ' ' | grep -qF -- "$4"; then
+  if doc_text "$3" | grep -qF -- "$4"; then
     echo "PASS: $1: $2"
   else
     echo "FAIL: $1: $2 — не найдена подстрока «$4» в $3"
@@ -97,7 +102,7 @@ md_section() { # md_section <файл> <начало-ERE> <конец-ERE, ли�
   # ломается на первом же таком паттерне с "unknown command".
   local end="$3"
   [ "$end" = '$' ] || end="\\|$3|"
-  sed -nE "\\|$2|,${end}p" "$1" | tr '\n' ' ' | tr -s ' '
+  sed -nE "\\|$2|,${end}p" "$1" | doc_text
 }
 
 count_lines() { # count_lines <файл> — обёртка над wc -l для сравнения через assert_exit
@@ -614,7 +619,6 @@ last_ts=$(tail -n1 "$LOGP/.adk/logs/issue-1.jsonl" | python3 -c 'import json,sys
 assert_not_contains "AC-1: adk-log: служебный timestamp не подменяется переданным полем" "$last_ts" '^bogus$'
 
 CUSTOM="$TMP/customlogs"
-rm -rf "$CUSTOM"
 ADK_LOGS_DIR="$CUSTOM" CLAUDE_PROJECT_DIR="$LOGP" "$HOOKS/adk-log.sh" autopilot-2026-08-07 event=run_start >/dev/null 2>&1
 [ -f "$CUSTOM/autopilot-2026-08-07.jsonl" ]
 assert_exit "AC-1: adk-log: ADK_LOGS_DIR переопределяет путь — файл создан в нём" 0 $?
@@ -781,7 +785,6 @@ chmod 644 "$STATS_RC_AP/autopilot-2026-09-29.jsonl"
 [ "$stats_aprc_st" -ne 0 ]
 assert_exit "AC-6: adk-stats: (issue #136) падение агрегатора расхода на пути «только прогоны» — exit ненулевой" \
   0 $?
-
 
 # каталог содержит только незавершённую задачу (event=start/review, без
 # outcome) — журнал НЕ пуст (есть записи), сообщение не должно говорить
@@ -1094,7 +1097,7 @@ assert_contains "issue #77: autopilot.md маппит rebase-merge на --rebase
 assert_contains "issue #77: autopilot.md маппит merge-commit на --merge" "$autopilot_step3" 'merge-commit.*--merge'
 assert_not_contains "issue #77: autopilot.md не мержит жёстким --squash без вывода метода приземления" "$autopilot_step3" 'pr merge <PR> --squash --delete-branch'
 
-config_doc_text=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+config_doc_text=$(doc_text "$KIT/docs/config.md")
 check_ac_doc "issue #77" "docs/config.md: canMerge выводит флаг merge из метода приземления, не жёсткий --squash" \
   "$KIT/docs/config.md" "gh pr merge <флаг> --delete-branch"
 assert_not_contains "issue #77: docs/config.md canMerge не упоминает безусловный --squash в описании merge" "$config_doc_text" 'gh pr merge --squash --delete-branch'
@@ -1107,7 +1110,7 @@ assert_not_contains "issue #77: work.md не утверждает безусло
 # ── issue #119 (хвост ревью PR #117, круг 1): README.md тоже безусловно
 # называл squash в описании merge через /autopilot — переформулировано
 # условно, как уже сделано в work.md/autopilot.md/docs/config.md.
-readme_text=$(tr '\n' ' ' < "$KIT/README.md" | tr -s ' ')
+readme_text=$(doc_text "$KIT/README.md")
 assert_not_contains "issue #119: README.md не утверждает безусловно «squash: один issue = один коммит»" "$readme_text" '(squash: один issue = один коммит в main)'
 check_ac_doc "issue #119" "README.md: merge-описание /autopilot оговорено — верно при дефолтном squash-merge" \
   "$KIT/README.md" "при дефолтном squash-merge — один issue = один коммит в main"
@@ -1291,7 +1294,7 @@ assert_contains "issue #159: work.md шаг 6 — сторож называет 
 # отчёт не обещает merge, а формулируется как «PR готов к ревью коллеги».
 assert_contains "AC-2: work.md шаг 7 сверяет формулировку отчёта с policies.merge" "$step7" 'policies\.merge'
 assert_contains "AC-2: work.md шаг 7 — при human-политиках отчёт «PR готов к ревью коллеги», не «смержено»" "$step7" 'готов к ревью коллеги'
-autopilot_text=$(tr '\n' ' ' < "$KIT/commands/autopilot.md" | tr -s ' ')
+autopilot_text=$(doc_text "$KIT/commands/autopilot.md")
 assert_contains "AC-2: autopilot.md сверяет формулировку сводки с policies.merge" "$autopilot_text" 'policies\.merge'
 assert_contains "AC-2: autopilot.md — заблокированные политикой ready-PR идут в сводку как «ждут человека», не «смержено»" "$autopilot_text" 'ждут человека'
 assert_contains "AC-2: autopilot.md шаг 3 — при human-политиках ready-PR не мержится (исключение названо в самом шаге)" "$autopilot_step3" 'policies\.merge'
@@ -3075,6 +3078,47 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] [extra] — о�
   chmod +x "$bindir/gh"
 }
 
+# ralph_bin <bin> — каталог стабов с пустым prs-fixture.json (issue #208).
+ralph_bin() {
+  mkdir -p "$1"
+  printf '[]\n' > "$1/prs-fixture.json"
+}
+
+# ralph_init <proj> <bin> — каркас простой ralph-фикстуры (issue #208:
+# mkdir+init повторялись ~50 раз, пустой prs-fixture — ~66): каталоги,
+# git-репозиторий проекта, пустой prs-fixture.json в каталоге стабов.
+ralph_init() {
+  mkdir -p "$1"
+  (cd "$1" && git_c init -q -b main)
+  ralph_bin "$2"
+}
+
+# ralph_clone <origin> <proj> [--branch <b>] [--advance <msg>] <ветки…> —
+# фикстура «клон с origin» (issue #208: блок повторялся в 10 фикстурах).
+# origin — обычный репозиторий с рабочим деревом, НЕ bare: тесты коммитят
+# прямо в него. Базовый коммит f.txt, ветки задач, опциональный доп-коммит
+# g.txt поверх (--advance: origin «уехал» после среза веток), клон,
+# локальная identity клона.
+ralph_clone() {
+  local origin="$1" proj="$2"; shift 2
+  local branch=main advance="" b
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch) branch="$2"; shift 2 ;;
+      --advance) advance="$2"; shift 2 ;;
+      *) break ;;
+    esac
+  done
+  mkdir -p "$origin"
+  (cd "$origin" && git_c init -q -b "$branch" && echo base > f.txt && git add f.txt && git_c commit -qm base)
+  for b in "$@"; do (cd "$origin" && git_c branch "$b"); done
+  if [ -n "$advance" ]; then
+    (cd "$origin" && echo more > g.txt && git add g.txt && git_c commit -qm "$advance")
+  fi
+  git_c clone -q "$origin" "$proj"
+  (cd "$proj" && git_c config user.email t@t && git_c config user.name t)
+}
+
 # run_ralph <proj> <bin> <logs> <notify> [config] — единый запуск
 # adk-ralph.sh для фикстур (issue #206, до него 70+ вызовов дублировали
 # 3-4 строки окружения). Код возврата прогона — код возврата функции.
@@ -3130,16 +3174,21 @@ RALPH_NOMERGE_CFG="$TMP/ralph-nomerge-config.json"
 cat > "$RALPH_NOMERGE_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false}}}
 EOF
+# Общий конфиг «merge включён» (issue #208: канонический
+# {"canMerge": true} повторялся 9 файлами у merge-фикстур)
+RALPH_MERGE_ON_CFG="$TMP/ralph-merge-on-config.json"
+cat > "$RALPH_MERGE_ON_CFG" <<'EOF'
+{"policies": {"autopilot": {"canMerge": true}}}
+EOF
 
 RALPH="$TMP/ralph-proj"
 RBIN="$TMP/ralph-bin"
-mkdir -p "$RALPH" "$RBIN"
-(cd "$RALPH" && git_c init -q -b main)
+ralph_init "$RALPH" "$RBIN"
 
 # Фикстура: issue #1 (без блокеров) получит черновик PR → застрянет;
 # issue #2 (Blocked by #1) должен быть пропущен каскадом, не исполняясь
 # вовсе; issue #3 (без блокеров, независимый) получит ready-PR.
-# prs-fixture.json стартует пустым (issue #147: adk-ralph теперь проверяет
+# prs-fixture.json стартует пустым — его создаёт ralph_init (issue #147: adk-ralph теперь проверяет
 # find_pr_state ДО запуска claude -p — статичная «уже готовая» фикстура
 # PR молча закоротила бы вызов claude ещё на предстартовой проверке, не
 # проверяя как раз то, что проверяет этот блок, — поэтому claude-стаб сам
@@ -3151,9 +3200,6 @@ cat > "$RBIN/issues-fixture.json" <<'EOF'
   {"number": 2, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #1"},
   {"number": 3, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN" "$RBIN/issues-fixture.json" "$RBIN/prs-fixture.json"
 claude_stub "$RBIN" <<'EOF'
@@ -3281,20 +3327,16 @@ check_ac_doc AC-7 "docs/config.md: policies.autopilot.sandbox описан ка�
 # собственном окружении стаба.
 RALPH_ROOTENV="$TMP/ralph-rootenv-proj"
 RBIN_ROOTENV="$TMP/ralph-rootenv-bin"
-mkdir -p "$RALPH_ROOTENV" "$RBIN_ROOTENV"
-(cd "$RALPH_ROOTENV" && git_c init -q -b main)
+ralph_init "$RALPH_ROOTENV" "$RBIN_ROOTENV"
 cat > "$RBIN_ROOTENV/issues-fixture.json" <<'EOF'
 [
   {"number": 91, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — иначе предстартовая проверка
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — иначе предстартовая проверка
 # find_pr_state (issue #147) закоротила бы issue #91 до единого вызова
 # claude, и этот блок перестал бы проверять то, ради чего заведён (проброс
 # CLAUDE_PLUGIN_ROOT дочернему headless-процессу).
-cat > "$RBIN_ROOTENV/prs-fixture.json" <<'EOF'
-[]
-EOF
 gh_ralph_stub "$RBIN_ROOTENV" "$RBIN_ROOTENV/issues-fixture.json" "$RBIN_ROOTENV/prs-fixture.json"
 claude_stub "$RBIN_ROOTENV" <<'EOF'
 echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >> "$d/claude-calls.log"
@@ -3321,8 +3363,7 @@ assert_contains "AC-1: adk-ralph: дочерний claude -p получил не
 # эффекта: ни строки в журнале, ни одного вызова gh (issue #139 DoD) ────────
 RALPH_OFF="$TMP/ralph-off-proj"
 RBIN_OFF="$TMP/ralph-off-bin"
-mkdir -p "$RALPH_OFF" "$RBIN_OFF"
-(cd "$RALPH_OFF" && git_c init -q -b main)
+ralph_init "$RALPH_OFF" "$RBIN_OFF"
 gh_forbidden_stub "$RBIN_OFF"
 RALPH_OFF_LOGS="$TMP/ralph-off-logs"
 RALPH_OFF_CFG="$TMP/ralph-off-config.json"
@@ -3356,8 +3397,7 @@ assert_exit "AC-1: adk-ralph: опечатка в enabled — журнал не 
 # не штампуется needs-human вслепую, прогон останавливается целиком ────────
 RALPH_ERR="$TMP/ralph-err-proj"
 RBIN_ERR="$TMP/ralph-err-bin"
-mkdir -p "$RALPH_ERR" "$RBIN_ERR"
-(cd "$RALPH_ERR" && git_c init -q -b main)
+ralph_init "$RALPH_ERR" "$RBIN_ERR"
 cat > "$RBIN_ERR/issues-fixture.json" <<'EOF'
 [
   {"number": 9, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
@@ -3386,8 +3426,7 @@ assert_contains "AC-1: adk-ralph: run_end фиксирует причину сб
 # сценарий DoD: «три доступных issue — три итерации, ready-PR у всех») ──────
 RALPH3="$TMP/ralph-three-proj"
 RBIN3="$TMP/ralph-three-bin"
-mkdir -p "$RALPH3" "$RBIN3"
-(cd "$RALPH3" && git_c init -q -b main)
+ralph_init "$RALPH3" "$RBIN3"
 cat > "$RBIN3/issues-fixture.json" <<'EOF'
 [
   {"number": 21, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -3395,14 +3434,11 @@ cat > "$RBIN3/issues-fixture.json" <<'EOF'
   {"number": 23, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — как в фикстуре issue #139 выше, ready-PR
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — как в фикстуре issue #139 выше, ready-PR
 # каждого issue появляется в фикстуре только в результате запуска claude-стаба
 # (issue #147: предстартовая проверка find_pr_state иначе закоротила бы все
 # три issue до единого вызова claude, не тестируя обработку «клод реально
 # отработал и создал ready-PR»).
-cat > "$RBIN3/prs-fixture.json" <<'EOF'
-[]
-EOF
 gh_ralph_stub "$RBIN3" "$RBIN3/issues-fixture.json" "$RBIN3/prs-fixture.json"
 claude_stub "$RBIN3" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
@@ -3448,8 +3484,7 @@ assert_contains "AC-1: adk-ralph: три независимые ready-задач
 # создан» по всей очереди issues ───────────────────────────────────────────
 RALPH_NOCLAUDE="$TMP/ralph-noclaude-proj"
 RBIN_NOCLAUDE="$TMP/ralph-noclaude-bin"
-mkdir -p "$RALPH_NOCLAUDE" "$RBIN_NOCLAUDE"
-(cd "$RALPH_NOCLAUDE" && git_c init -q -b main)
+ralph_init "$RALPH_NOCLAUDE" "$RBIN_NOCLAUDE"
 gh_forbidden_stub "$RBIN_NOCLAUDE"
 # Намеренно нет исполняемого claude ни в $RBIN_NOCLAUDE, ни в узком PATH
 # ниже (system PATH урезан до /usr/bin:/bin — на машине разработчика
@@ -3481,8 +3516,7 @@ assert_exit "AC-1: adk-ralph: claude не в PATH — gh ни разу не вы
 # после падения claude) ─────────────────────────────────────────────────────
 RALPH_CFAIL="$TMP/ralph-cfail-proj"
 RBIN_CFAIL="$TMP/ralph-cfail-bin"
-mkdir -p "$RALPH_CFAIL" "$RBIN_CFAIL"
-(cd "$RALPH_CFAIL" && git_c init -q -b main)
+ralph_init "$RALPH_CFAIL" "$RBIN_CFAIL"
 cat > "$RBIN_CFAIL/issues-fixture.json" <<'EOF'
 [
   {"number": 41, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -3543,15 +3577,11 @@ assert_contains "AC-1: adk-ralph: claude -p падает — итог прого
 # предупреждение в stderr, прогон при этом не останавливается целиком ──────
 RALPH_EDITFAIL="$TMP/ralph-editfail-proj"
 RBIN_EDITFAIL="$TMP/ralph-editfail-bin"
-mkdir -p "$RALPH_EDITFAIL" "$RBIN_EDITFAIL"
-(cd "$RALPH_EDITFAIL" && git_c init -q -b main)
+ralph_init "$RALPH_EDITFAIL" "$RBIN_EDITFAIL"
 cat > "$RBIN_EDITFAIL/issues-fixture.json" <<'EOF'
 [
   {"number": 51, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_EDITFAIL/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_EDITFAIL" "$RBIN_EDITFAIL/issues-fixture.json" "$RBIN_EDITFAIL/prs-fixture.json" \
   "FAIL:gh: HTTP 403: Resource not accessible by integration"
@@ -3577,8 +3607,7 @@ assert_contains "AC-1: adk-ralph: предупреждение о сбое needs
 # ready-PR ───────────────────────────────────────────────────────────────
 RALPH_NH="$TMP/ralph-nh-proj"
 RBIN_NH="$TMP/ralph-nh-bin"
-mkdir -p "$RALPH_NH" "$RBIN_NH"
-(cd "$RALPH_NH" && git_c init -q -b main)
+ralph_init "$RALPH_NH" "$RBIN_NH"
 cat > "$RBIN_NH/issues-fixture.json" <<'EOF'
 [
   {"number": 70, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -3624,22 +3653,18 @@ assert_not_contains "AC-1: adk-ralph: needs-human-каскад — issue #71 (у
 # не должно быть ни единой записи журнала, ни строки в issue-edit.log ────────
 RALPH_OH="$TMP/ralph-oh-proj"
 RBIN_OH="$TMP/ralph-oh-bin"
-mkdir -p "$RALPH_OH" "$RBIN_OH"
-(cd "$RALPH_OH" && git_c init -q -b main)
+ralph_init "$RALPH_OH" "$RBIN_OH"
 cat > "$RBIN_OH/issues-fixture.json" <<'EOF'
 [
   {"number": 90, "labels": [{"name":"type:task"},{"name":"owner:human"}], "body": "Зависит от: —"},
   {"number": 91, "labels": [{"name":"type:bug"}], "body": "Зависит от: —"}
 ]
 EOF
-# prs-fixture.json стартует пустым — то же самое, что у фикстур issue #139/
+# prs-fixture.json стартует пустым (его создаёт ralph_init) — то же самое, что у фикстур issue #139/
 # RALPH3 выше: с предстартовой проверкой find_pr_state (issue #147) заранее
 # заполненный ready-PR закоротил бы вызов claude ещё до проверки резерва
 # owner:human, а именно её (и последующий запуск claude на #91) проверяет
 # этот блок.
-cat > "$RBIN_OH/prs-fixture.json" <<'EOF'
-[]
-EOF
 gh_ralph_stub "$RBIN_OH" "$RBIN_OH/issues-fixture.json" "$RBIN_OH/prs-fixture.json"
 claude_stub "$RBIN_OH" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
@@ -3696,8 +3721,7 @@ assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-пр
 # номера в каждой паре не теряется), очередь берёт только #700-#702 ────────
 RALPH_BLK="$TMP/ralph-blk-proj"
 RBIN_BLK="$TMP/ralph-blk-bin"
-mkdir -p "$RALPH_BLK" "$RBIN_BLK"
-(cd "$RALPH_BLK" && git_c init -q -b main)
+ralph_init "$RALPH_BLK" "$RBIN_BLK"
 cat > "$RBIN_BLK/issues-fixture.json" <<'EOF'
 [
   {"number": 500, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #199 and #700"},
@@ -3776,8 +3800,7 @@ assert_exit "issue #146: adk-ralph: журнал — #700/#701/#702 ready(reused
 # процесса (важно круга 4 ревью PR #141) ────────────────────────────────────
 RALPH_TRUNC="$TMP/ralph-trunc-proj"
 RBIN_TRUNC="$TMP/ralph-trunc-bin"
-mkdir -p "$RALPH_TRUNC" "$RBIN_TRUNC"
-(cd "$RALPH_TRUNC" && git_c init -q -b main)
+ralph_init "$RALPH_TRUNC" "$RBIN_TRUNC"
 cat > "$RBIN_TRUNC/issues-fixture.json" <<'EOF'
 [
   {"number": 81, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -3813,8 +3836,7 @@ assert_exit "AC-1: adk-ralph: предупреждение об усечении
 # (мелочь круга 3 ревью PR #141) ────────────────────────────────────────────
 RALPH_ILFAIL="$TMP/ralph-ilfail-proj"
 RBIN_ILFAIL="$TMP/ralph-ilfail-bin"
-mkdir -p "$RALPH_ILFAIL" "$RBIN_ILFAIL"
-(cd "$RALPH_ILFAIL" && git_c init -q -b main)
+ralph_init "$RALPH_ILFAIL" "$RBIN_ILFAIL"
 gh_ralph_stub "$RBIN_ILFAIL" "FAIL:gh: rate limit exceeded" "-"
 cat > "$RBIN_ILFAIL/claude" <<'EOF'
 #!/usr/bin/env bash
@@ -4180,15 +4202,11 @@ check_ac_doc "issue #144" "ADR-007: риск самохостинга реали
 # PR #141) ────────────────────────────────────────────────────────────────
 RALPH_AR="$TMP/ralph-already-ready-proj"
 RBIN_AR="$TMP/ralph-already-ready-bin"
-mkdir -p "$RALPH_AR" "$RBIN_AR"
-(cd "$RALPH_AR" && git_c init -q -b main)
+ralph_init "$RALPH_AR" "$RBIN_AR"
 cat > "$RBIN_AR/issues-fixture.json" <<'EOF'
 [
   {"number": 61, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_AR/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_AR" "$RBIN_AR/issues-fixture.json" "$RBIN_AR/prs-fixture.json"
 claude_stub_one_pr "$RBIN_AR" call '601' false 'issue-61-x'
@@ -4236,16 +4254,12 @@ assert_exit "issue #147: adk-ralph: пометка reused=true встречае�
 # (не «очередь пуста») ──────────────────────────────────────────────────────
 RALPH_BOR="$TMP/ralph-blocked-on-ready-proj"
 RBIN_BOR="$TMP/ralph-blocked-on-ready-bin"
-mkdir -p "$RALPH_BOR" "$RBIN_BOR"
-(cd "$RALPH_BOR" && git_c init -q -b main)
+ralph_init "$RALPH_BOR" "$RBIN_BOR"
 cat > "$RBIN_BOR/issues-fixture.json" <<'EOF'
 [
   {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"}
 ]
-EOF
-cat > "$RBIN_BOR/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BOR" "$RBIN_BOR/issues-fixture.json" "$RBIN_BOR/prs-fixture.json"
 claude_stub_one_pr "$RBIN_BOR" call '701' false 'issue-71-x'
@@ -4286,17 +4300,13 @@ assert_exit "issue #147: adk-ralph: журнал — run_start, #71 ready, #72 b
 # считалась бы «просто ждёт мерджа», занижая maxSkippedShare (issue #134) ──
 RALPH_BOR_MIX="$TMP/ralph-bor-mixed-proj"
 RBIN_BOR_MIX="$TMP/ralph-bor-mixed-bin"
-mkdir -p "$RALPH_BOR_MIX" "$RBIN_BOR_MIX"
-(cd "$RALPH_BOR_MIX" && git_c init -q -b main)
+ralph_init "$RALPH_BOR_MIX" "$RBIN_BOR_MIX"
 cat > "$RBIN_BOR_MIX/issues-fixture.json" <<'EOF'
 [
   {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71, #73"},
   {"number": 73, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_BOR_MIX/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BOR_MIX" "$RBIN_BOR_MIX/issues-fixture.json" "$RBIN_BOR_MIX/prs-fixture.json"
 claude_stub "$RBIN_BOR_MIX" <<'EOF'
@@ -4337,17 +4347,13 @@ assert_contains "issue #147: adk-ralph: смешанные блокеры — ru
 # молча, как раньше пропадала #2 из issue #147 ──────────────────────────────
 RALPH_BOR_CHAIN="$TMP/ralph-bor-chain-proj"
 RBIN_BOR_CHAIN="$TMP/ralph-bor-chain-bin"
-mkdir -p "$RALPH_BOR_CHAIN" "$RBIN_BOR_CHAIN"
-(cd "$RALPH_BOR_CHAIN" && git_c init -q -b main)
+ralph_init "$RALPH_BOR_CHAIN" "$RBIN_BOR_CHAIN"
 cat > "$RBIN_BOR_CHAIN/issues-fixture.json" <<'EOF'
 [
   {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71"},
   {"number": 74, "labels": [{"name":"type:bug"}], "body": "Зависит от: Blocked by #72"}
 ]
-EOF
-cat > "$RBIN_BOR_CHAIN/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BOR_CHAIN" "$RBIN_BOR_CHAIN/issues-fixture.json" "$RBIN_BOR_CHAIN/prs-fixture.json"
 claude_stub_one_pr "$RBIN_BOR_CHAIN" call '701' false 'issue-71-x'
@@ -4388,8 +4394,7 @@ assert_exit "issue #147: adk-ralph: журнал цепочки — #71 ready, #
 # класс бага, который чинит issue #147 ────────────────────────────────────
 RALPH_BOR_XITER="$TMP/ralph-bor-xiter-proj"
 RBIN_BOR_XITER="$TMP/ralph-bor-xiter-bin"
-mkdir -p "$RALPH_BOR_XITER" "$RBIN_BOR_XITER"
-(cd "$RALPH_BOR_XITER" && git_c init -q -b main)
+ralph_init "$RALPH_BOR_XITER" "$RBIN_BOR_XITER"
 cat > "$RBIN_BOR_XITER/issues-fixture.json" <<'EOF'
 [
   {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -4397,9 +4402,6 @@ cat > "$RBIN_BOR_XITER/issues-fixture.json" <<'EOF'
   {"number": 73, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 74, "labels": [{"name":"type:bug"}], "body": "Зависит от: Blocked by #72, #73"}
 ]
-EOF
-cat > "$RBIN_BOR_XITER/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BOR_XITER" "$RBIN_BOR_XITER/issues-fixture.json" "$RBIN_BOR_XITER/prs-fixture.json"
 claude_stub "$RBIN_BOR_XITER" <<'EOF'
@@ -4452,8 +4454,7 @@ assert_exit "issue #147: adk-ralph: журнал через границу ит�
 # уведомление») ─────────────────────────────────────────────────────────────
 RALPH_SYSGATE="$TMP/ralph-sysgate-proj"
 RBIN_SYSGATE="$TMP/ralph-sysgate-bin"
-mkdir -p "$RALPH_SYSGATE" "$RBIN_SYSGATE"
-(cd "$RALPH_SYSGATE" && git_c init -q -b main)
+ralph_init "$RALPH_SYSGATE" "$RBIN_SYSGATE"
 mkdir -p "$RALPH_SYSGATE/scripts"
 cat > "$RALPH_SYSGATE/scripts/check" <<'EOF'
 #!/usr/bin/env bash
@@ -4466,9 +4467,6 @@ cat > "$RBIN_SYSGATE/issues-fixture.json" <<'EOF'
 [
   {"number": 401, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SYSGATE/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_SYSGATE" "$RBIN_SYSGATE/issues-fixture.json" "$RBIN_SYSGATE/prs-fixture.json"
 claude_stub "$RBIN_SYSGATE" <<'EOF'
@@ -4508,8 +4506,7 @@ assert_exit "AC-5: adk-ralph: (issue #135) журнал — только run_sta
 # первой итерации → вторая не начинается») ─────────────────────────────────
 RALPH_SYSGATE2="$TMP/ralph-sysgate2-proj"
 RBIN_SYSGATE2="$TMP/ralph-sysgate2-bin"
-mkdir -p "$RALPH_SYSGATE2" "$RBIN_SYSGATE2"
-(cd "$RALPH_SYSGATE2" && git_c init -q -b main)
+ralph_init "$RALPH_SYSGATE2" "$RBIN_SYSGATE2"
 mkdir -p "$RALPH_SYSGATE2/scripts"
 # Стейтфул-стаб: первый вызов (гейт итерации 1) зелёный, начиная со второго
 # (гейт итерации 2, уже после обработки issue #402) — красный.
@@ -4532,9 +4529,6 @@ cat > "$RBIN_SYSGATE2/issues-fixture.json" <<'EOF'
   {"number": 403, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-cat > "$RBIN_SYSGATE2/prs-fixture.json" <<'EOF'
-[]
-EOF
 gh_ralph_stub "$RBIN_SYSGATE2" "$RBIN_SYSGATE2/issues-fixture.json" "$RBIN_SYSGATE2/prs-fixture.json"
 claude_stub_one_pr "$RBIN_SYSGATE2" call '501' false 'issue-402-x'
 
@@ -4555,16 +4549,12 @@ assert_not_contains "AC-5: adk-ralph: (issue #135) гейты краснеют �
 # штатный (DoD «проект без контрактных скриптов проходит штатно») ──────────
 RALPH_NOSCRIPTS="$TMP/ralph-noscripts-proj"
 RBIN_NOSCRIPTS="$TMP/ralph-noscripts-bin"
-mkdir -p "$RALPH_NOSCRIPTS" "$RBIN_NOSCRIPTS"
-(cd "$RALPH_NOSCRIPTS" && git_c init -q -b main)
+ralph_init "$RALPH_NOSCRIPTS" "$RBIN_NOSCRIPTS"
 
 cat > "$RBIN_NOSCRIPTS/issues-fixture.json" <<'EOF'
 [
   {"number": 411, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_NOSCRIPTS/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_NOSCRIPTS" "$RBIN_NOSCRIPTS/issues-fixture.json" "$RBIN_NOSCRIPTS/prs-fixture.json"
 claude_stub_one_pr "$RBIN_NOSCRIPTS" call '511' false 'issue-411-x'
@@ -4583,8 +4573,7 @@ assert_not_contains "AC-5: adk-ralph: (issue #135) без контрактных
 # отдельным тестом) ─────────────────────────────────────────────────────────
 RALPH_SYSGATE_TEST="$TMP/ralph-sysgate-test-proj"
 RBIN_SYSGATE_TEST="$TMP/ralph-sysgate-test-bin"
-mkdir -p "$RALPH_SYSGATE_TEST" "$RBIN_SYSGATE_TEST"
-(cd "$RALPH_SYSGATE_TEST" && git_c init -q -b main)
+ralph_init "$RALPH_SYSGATE_TEST" "$RBIN_SYSGATE_TEST"
 mkdir -p "$RALPH_SYSGATE_TEST/scripts"
 cat > "$RALPH_SYSGATE_TEST/scripts/test" <<'EOF'
 #!/usr/bin/env bash
@@ -4597,9 +4586,6 @@ cat > "$RBIN_SYSGATE_TEST/issues-fixture.json" <<'EOF'
 [
   {"number": 461, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SYSGATE_TEST/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_SYSGATE_TEST" "$RBIN_SYSGATE_TEST/issues-fixture.json" "$RBIN_SYSGATE_TEST/prs-fixture.json"
 claude_stub "$RBIN_SYSGATE_TEST" <<'EOF'
@@ -4622,16 +4608,12 @@ assert_exit "AC-5: adk-ralph: (issue #135) красный scripts/test — headl
 # DoD «принудительно сломанная запись журнала останавливает прогон») ───────
 RALPH_LOGFAIL="$TMP/ralph-logfail-proj"
 RBIN_LOGFAIL="$TMP/ralph-logfail-bin"
-mkdir -p "$RALPH_LOGFAIL" "$RBIN_LOGFAIL"
-(cd "$RALPH_LOGFAIL" && git_c init -q -b main)
+ralph_init "$RALPH_LOGFAIL" "$RBIN_LOGFAIL"
 
 cat > "$RBIN_LOGFAIL/issues-fixture.json" <<'EOF'
 [
   {"number": 421, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_LOGFAIL/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_LOGFAIL" "$RBIN_LOGFAIL/issues-fixture.json" "$RBIN_LOGFAIL/prs-fixture.json"
 claude_stub "$RBIN_LOGFAIL" <<'EOF'
@@ -4680,8 +4662,7 @@ assert_contains "AC-5: adk-ralph: (issue #135) уведомление об от�
 # на его место обычный файл) ────────────────────────────────────────────
 RALPH_MIDLOGFAIL="$TMP/ralph-midlogfail-proj"
 RBIN_MIDLOGFAIL="$TMP/ralph-midlogfail-bin"
-mkdir -p "$RALPH_MIDLOGFAIL" "$RBIN_MIDLOGFAIL"
-(cd "$RALPH_MIDLOGFAIL" && git_c init -q -b main)
+ralph_init "$RALPH_MIDLOGFAIL" "$RBIN_MIDLOGFAIL"
 mkdir -p "$RALPH_MIDLOGFAIL/scripts"
 RALPH_MIDLOGFAIL_LOGS="$TMP/ralph-midlogfail-logs"
 cat > "$RALPH_MIDLOGFAIL/scripts/check" <<EOF
@@ -4703,9 +4684,6 @@ cat > "$RBIN_MIDLOGFAIL/issues-fixture.json" <<'EOF'
   {"number": 482, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #481"},
   {"number": 483, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_MIDLOGFAIL/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_MIDLOGFAIL" "$RBIN_MIDLOGFAIL/issues-fixture.json" "$RBIN_MIDLOGFAIL/prs-fixture.json"
 claude_stub "$RBIN_MIDLOGFAIL" <<'EOF'
@@ -4776,15 +4754,12 @@ git_c clone -q "$RALPH_CONFLICT_ORIGIN" "$RALPH_CONFLICT"
 (cd "$RALPH_CONFLICT_ORIGIN" && echo origin-change > f.txt && git_c commit -qam "origin diverge")
 
 RBIN_CONFLICT="$TMP/ralph-conflict-bin"
-mkdir -p "$RBIN_CONFLICT"
+ralph_bin "$RBIN_CONFLICT"
 cat > "$RBIN_CONFLICT/issues-fixture.json" <<'EOF'
 [
   {"number": 431, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 432, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_CONFLICT/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_CONFLICT" "$RBIN_CONFLICT/issues-fixture.json" "$RBIN_CONFLICT/prs-fixture.json"
 claude_stub "$RBIN_CONFLICT" <<'EOF'
@@ -4829,8 +4804,7 @@ assert_exit "AC-5: adk-ralph: (issue #135) серия конфликтов ак�
 # останавливается, третий issue не берётся вовсе (DoD issue #134) ─────────
 RALPH_RB_STUCK="$TMP/ralph-rb-stuck-proj"
 RBIN_RB_STUCK="$TMP/ralph-rb-stuck-bin"
-mkdir -p "$RALPH_RB_STUCK" "$RBIN_RB_STUCK"
-(cd "$RALPH_RB_STUCK" && git_c init -q -b main)
+ralph_init "$RALPH_RB_STUCK" "$RBIN_RB_STUCK"
 
 cat > "$RBIN_RB_STUCK/issues-fixture.json" <<'EOF'
 [
@@ -4838,9 +4812,6 @@ cat > "$RBIN_RB_STUCK/issues-fixture.json" <<'EOF'
   {"number": 702, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 703, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_STUCK/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_STUCK" "$RBIN_RB_STUCK/issues-fixture.json" "$RBIN_RB_STUCK/prs-fixture.json"
 claude_stub "$RBIN_RB_STUCK" <<'EOF'
@@ -4890,8 +4861,7 @@ assert_contains "AC-5: adk-ralph: (issue #134) уведомление о сра�
 # независимого #715, который иначе стал бы следующим кандидатом ───────────
 RALPH_RB_SHARE="$TMP/ralph-rb-share-proj"
 RBIN_RB_SHARE="$TMP/ralph-rb-share-bin"
-mkdir -p "$RALPH_RB_SHARE" "$RBIN_RB_SHARE"
-(cd "$RALPH_RB_SHARE" && git_c init -q -b main)
+ralph_init "$RALPH_RB_SHARE" "$RBIN_RB_SHARE"
 
 cat > "$RBIN_RB_SHARE/issues-fixture.json" <<'EOF'
 [
@@ -4901,9 +4871,6 @@ cat > "$RBIN_RB_SHARE/issues-fixture.json" <<'EOF'
   {"number": 714, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #711"},
   {"number": 715, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_SHARE/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_SHARE" "$RBIN_RB_SHARE/issues-fixture.json" "$RBIN_RB_SHARE/prs-fixture.json"
 claude_stub "$RBIN_RB_SHARE" <<'EOF'
@@ -4955,8 +4922,7 @@ assert_contains "AC-5: adk-ralph: (issue #134) уведомление о сра�
 # доигрывает штатно до «очередь пуста», exit 0 ─────────────────────────────
 RALPH_RB_SMALLN="$TMP/ralph-rb-smalln-proj"
 RBIN_RB_SMALLN="$TMP/ralph-rb-smalln-bin"
-mkdir -p "$RALPH_RB_SMALLN" "$RBIN_RB_SMALLN"
-(cd "$RALPH_RB_SMALLN" && git_c init -q -b main)
+ralph_init "$RALPH_RB_SMALLN" "$RBIN_RB_SMALLN"
 
 cat > "$RBIN_RB_SMALLN/issues-fixture.json" <<'EOF'
 [
@@ -4964,9 +4930,6 @@ cat > "$RBIN_RB_SMALLN/issues-fixture.json" <<'EOF'
   {"number": 722, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #721"},
   {"number": 723, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #721"}
 ]
-EOF
-cat > "$RBIN_RB_SMALLN/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_SMALLN" "$RBIN_RB_SMALLN/issues-fixture.json" "$RBIN_RB_SMALLN/prs-fixture.json"
 claude_stub_one_pr "$RBIN_RB_SMALLN" args '9721' true 'issue-721-x'
@@ -4992,17 +4955,13 @@ assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаме�
 # застревания, раньше следующего select_next ────────────────────────────
 RALPH_RB_LASTTASK="$TMP/ralph-rb-lasttask-proj"
 RBIN_RB_LASTTASK="$TMP/ralph-rb-lasttask-bin"
-mkdir -p "$RALPH_RB_LASTTASK" "$RBIN_RB_LASTTASK"
-(cd "$RALPH_RB_LASTTASK" && git_c init -q -b main)
+ralph_init "$RALPH_RB_LASTTASK" "$RBIN_RB_LASTTASK"
 
 cat > "$RBIN_RB_LASTTASK/issues-fixture.json" <<'EOF'
 [
   {"number": 781, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 782, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_LASTTASK/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_LASTTASK" "$RBIN_RB_LASTTASK/issues-fixture.json" "$RBIN_RB_LASTTASK/prs-fixture.json"
 claude_stub "$RBIN_RB_LASTTASK" <<'EOF'
@@ -5041,17 +5000,13 @@ assert_exit "AC-5: adk-ralph: (issue #134) breaker на последней за�
 # прогона (ADR-016 §1) ───────────────────────────────────────────────────
 RALPH_RB_STUCKCFG="$TMP/ralph-rb-stuckcfg-proj"
 RBIN_RB_STUCKCFG="$TMP/ralph-rb-stuckcfg-bin"
-mkdir -p "$RALPH_RB_STUCKCFG" "$RBIN_RB_STUCKCFG"
-(cd "$RALPH_RB_STUCKCFG" && git_c init -q -b main)
+ralph_init "$RALPH_RB_STUCKCFG" "$RBIN_RB_STUCKCFG"
 
 cat > "$RBIN_RB_STUCKCFG/issues-fixture.json" <<'EOF'
 [
   {"number": 771, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 772, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_STUCKCFG/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_STUCKCFG" "$RBIN_RB_STUCKCFG/issues-fixture.json" "$RBIN_RB_STUCKCFG/prs-fixture.json"
 claude_stub_one_pr "$RBIN_RB_STUCKCFG" args '9771' true 'issue-771-x'
@@ -5077,17 +5032,13 @@ assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=1 — headless-про�
 # §1) ──────────────────────────────────────────────────────────────────
 RALPH_RB_ZERO="$TMP/ralph-rb-zero-proj"
 RBIN_RB_ZERO="$TMP/ralph-rb-zero-bin"
-mkdir -p "$RALPH_RB_ZERO" "$RBIN_RB_ZERO"
-(cd "$RALPH_RB_ZERO" && git_c init -q -b main)
+ralph_init "$RALPH_RB_ZERO" "$RBIN_RB_ZERO"
 
 cat > "$RBIN_RB_ZERO/issues-fixture.json" <<'EOF'
 [
   {"number": 791, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 792, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_ZERO/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_ZERO" "$RBIN_RB_ZERO/issues-fixture.json" "$RBIN_RB_ZERO/prs-fixture.json"
 claude_stub_one_pr "$RBIN_RB_ZERO" args '9791' true 'issue-791-x'
@@ -5120,8 +5071,7 @@ assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=0 — headless-про�
 # сработать здесь же, не позже: независимый #765 не берётся вовсе ────────
 RALPH_RB_SHARECFG="$TMP/ralph-rb-sharecfg-proj"
 RBIN_RB_SHARECFG="$TMP/ralph-rb-sharecfg-bin"
-mkdir -p "$RALPH_RB_SHARECFG" "$RBIN_RB_SHARECFG"
-(cd "$RALPH_RB_SHARECFG" && git_c init -q -b main)
+ralph_init "$RALPH_RB_SHARECFG" "$RBIN_RB_SHARECFG"
 
 cat > "$RBIN_RB_SHARECFG/issues-fixture.json" <<'EOF'
 [
@@ -5131,9 +5081,6 @@ cat > "$RBIN_RB_SHARECFG/issues-fixture.json" <<'EOF'
   {"number": 764, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #761"},
   {"number": 765, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_SHARECFG/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_SHARECFG" "$RBIN_RB_SHARECFG/issues-fixture.json" "$RBIN_RB_SHARECFG/prs-fixture.json"
 claude_stub "$RBIN_RB_SHARECFG" <<'EOF'
@@ -5181,8 +5128,7 @@ assert_exit "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 — headless-пр
 # «>=» вместо строгого «>» в run_breaker_check_skipped_share ───────────────
 RALPH_RB_SHARE_BOUNDARY="$TMP/ralph-rb-share-boundary-proj"
 RBIN_RB_SHARE_BOUNDARY="$TMP/ralph-rb-share-boundary-bin"
-mkdir -p "$RALPH_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY"
-(cd "$RALPH_RB_SHARE_BOUNDARY" && git_c init -q -b main)
+ralph_init "$RALPH_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY"
 
 cat > "$RBIN_RB_SHARE_BOUNDARY/issues-fixture.json" <<'EOF'
 [
@@ -5192,9 +5138,6 @@ cat > "$RBIN_RB_SHARE_BOUNDARY/issues-fixture.json" <<'EOF'
   {"number": 764, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #761"},
   {"number": 765, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_RB_SHARE_BOUNDARY/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY/issues-fixture.json" "$RBIN_RB_SHARE_BOUNDARY/prs-fixture.json"
 claude_stub "$RBIN_RB_SHARE_BOUNDARY" <<'EOF'
@@ -5238,8 +5181,7 @@ assert_exit "AC-5: adk-ralph: (issue #134) доля на пороге — headle
 # обязан сработать; с багом прогон молча доигрывал до пустой очереди ───────
 RALPH_RB_NAN="$TMP/ralph-rb-nan-proj"
 RBIN_RB_NAN="$TMP/ralph-rb-nan-bin"
-mkdir -p "$RALPH_RB_NAN" "$RBIN_RB_NAN"
-(cd "$RALPH_RB_NAN" && git_c init -q -b main)
+ralph_init "$RALPH_RB_NAN" "$RBIN_RB_NAN"
 cat > "$RBIN_RB_NAN/issues-fixture.json" <<'EOF'
 [
   {"number": 781, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
@@ -5247,9 +5189,6 @@ cat > "$RBIN_RB_NAN/issues-fixture.json" <<'EOF'
   {"number": 783, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"},
   {"number": 784, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #781"}
 ]
-EOF
-cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_RB_NAN" "$RBIN_RB_NAN/issues-fixture.json" "$RBIN_RB_NAN/prs-fixture.json"
 claude_stub_one_pr "$RBIN_RB_NAN" args '9781' true 'issue-781-x'
@@ -5272,9 +5211,7 @@ assert_exit "issue #213: adk-ralph: nan — headless-процесс вызван
 # бы inf молча выключающим breaker — круг 1 ревью PR #226). Переиспользуем
 # фикстуру: чистые лог вызовов, prs и журнал, другой конфиг
 : > "$RBIN_RB_NAN/claude-calls.log"
-cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
-[]
-EOF
+printf '[]\n' > "$RBIN_RB_NAN/prs-fixture.json"
 RALPH_RB_INF_CFG="$TMP/ralph-rb-inf-config.json"
 cat > "$RALPH_RB_INF_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxSkippedShare": "inf"}}}}
@@ -5292,9 +5229,7 @@ assert_contains "issue #213: adk-ralph: inf отвергнут с предупр
 # (клампится молча), stuck-breaker недостижим, прогон останавливает
 # share-breaker (доля 0.75 > дефолта 0.5)
 : > "$RBIN_RB_NAN/claude-calls.log"
-cat > "$RBIN_RB_NAN/prs-fixture.json" <<'EOF'
-[]
-EOF
+printf '[]\n' > "$RBIN_RB_NAN/prs-fixture.json"
 RALPH_RB_BIGINT_CFG="$TMP/ralph-rb-bigint-config.json"
 cat > "$RALPH_RB_BIGINT_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 999999999999999999999999}}}}
@@ -5318,8 +5253,7 @@ assert_contains "issue #210: adk-ralph: причина остановки — д
 # claude, issue #1303 (третий доступный) не тронут и не залогирован ────────
 RALPH_STOP="$TMP/ralph-stop-proj"
 RBIN_STOP="$TMP/ralph-stop-bin"
-mkdir -p "$RALPH_STOP" "$RBIN_STOP"
-(cd "$RALPH_STOP" && git_c init -q -b main)
+ralph_init "$RALPH_STOP" "$RBIN_STOP"
 
 cat > "$RBIN_STOP/issues-fixture.json" <<'EOF'
 [
@@ -5327,9 +5261,6 @@ cat > "$RBIN_STOP/issues-fixture.json" <<'EOF'
   {"number": 1302, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 1303, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_STOP/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_STOP" "$RBIN_STOP/issues-fixture.json" "$RBIN_STOP/prs-fixture.json"
 claude_stub "$RBIN_STOP" <<EOF
@@ -5386,17 +5317,14 @@ assert_exit "AC-2: adk-ralph: стоп-файл остаётся на диске
 # прогон идёт штатно до пустой очереди ──────────────────────────────────────
 RALPH_STOP_PRE="$TMP/ralph-stop-pre-proj"
 RBIN_STOP_PRE="$TMP/ralph-stop-pre-bin"
-mkdir -p "$RALPH_STOP_PRE/.adk" "$RBIN_STOP_PRE"
-(cd "$RALPH_STOP_PRE" && git_c init -q -b main)
+ralph_init "$RALPH_STOP_PRE" "$RBIN_STOP_PRE"
+mkdir -p "$RALPH_STOP_PRE/.adk"
 touch "$RALPH_STOP_PRE/.adk/stop"
 
 cat > "$RBIN_STOP_PRE/issues-fixture.json" <<'EOF'
 [
   {"number": 1310, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_STOP_PRE/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_STOP_PRE" "$RBIN_STOP_PRE/issues-fixture.json" "$RBIN_STOP_PRE/prs-fixture.json"
 claude_stub_one_pr "$RBIN_STOP_PRE" args '9910' false 'issue-1310-x'
@@ -5423,16 +5351,12 @@ assert_exit "AC-2: adk-ralph: стоп-файл, лежавший до стар�
 # называть «стоп-файл», не «очередь пуста», хотя очередь и правда опустела ─
 RALPH_STOP_LAST="$TMP/ralph-stop-last-proj"
 RBIN_STOP_LAST="$TMP/ralph-stop-last-bin"
-mkdir -p "$RALPH_STOP_LAST" "$RBIN_STOP_LAST"
-(cd "$RALPH_STOP_LAST" && git_c init -q -b main)
+ralph_init "$RALPH_STOP_LAST" "$RBIN_STOP_LAST"
 
 cat > "$RBIN_STOP_LAST/issues-fixture.json" <<'EOF'
 [
   {"number": 1340, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_STOP_LAST/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_STOP_LAST" "$RBIN_STOP_LAST/issues-fixture.json" "$RBIN_STOP_LAST/prs-fixture.json"
 claude_stub "$RBIN_STOP_LAST" <<EOF
@@ -5465,8 +5389,7 @@ assert_exit "AC-2: adk-ralph: стоп-файл на последнем issue �
 # следующей итерации — сводка обязана называть breaker, не «стоп-файл» ─────
 RALPH_STOP_VS_BREAKER="$TMP/ralph-stop-vs-breaker-proj"
 RBIN_STOP_VS_BREAKER="$TMP/ralph-stop-vs-breaker-bin"
-mkdir -p "$RALPH_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER"
-(cd "$RALPH_STOP_VS_BREAKER" && git_c init -q -b main)
+ralph_init "$RALPH_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER"
 
 cat > "$RBIN_STOP_VS_BREAKER/issues-fixture.json" <<'EOF'
 [
@@ -5474,9 +5397,6 @@ cat > "$RBIN_STOP_VS_BREAKER/issues-fixture.json" <<'EOF'
   {"number": 1321, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 1322, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_STOP_VS_BREAKER/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER/issues-fixture.json" "$RBIN_STOP_VS_BREAKER/prs-fixture.json"
 claude_stub "$RBIN_STOP_VS_BREAKER" <<EOF
@@ -5518,8 +5438,7 @@ assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вы�
 # breaker ────────────────────────────────────────────────────────────────
 RALPH_STOP_VS_GATES="$TMP/ralph-stop-vs-gates-proj"
 RBIN_STOP_VS_GATES="$TMP/ralph-stop-vs-gates-bin"
-mkdir -p "$RALPH_STOP_VS_GATES" "$RBIN_STOP_VS_GATES"
-(cd "$RALPH_STOP_VS_GATES" && git_c init -q -b main)
+ralph_init "$RALPH_STOP_VS_GATES" "$RBIN_STOP_VS_GATES"
 mkdir -p "$RALPH_STOP_VS_GATES/scripts"
 cat > "$RALPH_STOP_VS_GATES/scripts/check" <<EOF
 #!/usr/bin/env bash
@@ -5539,9 +5458,6 @@ cat > "$RBIN_STOP_VS_GATES/issues-fixture.json" <<'EOF'
   {"number": 1330, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 1331, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_STOP_VS_GATES/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_STOP_VS_GATES" "$RBIN_STOP_VS_GATES/issues-fixture.json" "$RBIN_STOP_VS_GATES/prs-fixture.json"
 claude_stub "$RBIN_STOP_VS_GATES" <<EOF
@@ -5575,23 +5491,15 @@ assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вы�
 # получает команду merge с флагом из --merge-method (дефолт squash-merge →
 # --squash), в журнале result=merged, задача в разделе сводки «смержено».
 RALPH_MERGE_ORIGIN="$TMP/ralph-merge-origin"
-mkdir -p "$RALPH_MERGE_ORIGIN"
-(cd "$RALPH_MERGE_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_MERGE_ORIGIN" && git_c branch issue-2001-x)
-
 RALPH_MERGE="$TMP/ralph-merge-proj"
-git_c clone -q "$RALPH_MERGE_ORIGIN" "$RALPH_MERGE"
-(cd "$RALPH_MERGE" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_MERGE_ORIGIN" "$RALPH_MERGE" issue-2001-x
 
 RBIN_MERGE="$TMP/ralph-merge-bin"
-mkdir -p "$RBIN_MERGE"
+ralph_bin "$RBIN_MERGE"
 cat > "$RBIN_MERGE/issues-fixture.json" <<'EOF'
 [
   {"number": 2001, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_MERGE/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_MERGE" args '5001' false 'issue-2001-x'
 # merge-ветка resolve_ready_pr — pr view/pr merge через extra-параметр
@@ -5600,12 +5508,7 @@ gh_ralph_stub "$RBIN_MERGE" "$RBIN_MERGE/issues-fixture.json" "$RBIN_MERGE/prs-f
   '  "pr view") echo "MERGEABLE null issue-2001-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
-RALPH_MERGE_CFG="$TMP/ralph-merge-config.json"
-cat > "$RALPH_MERGE_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_merge_out=$(run_ralph "$RALPH_MERGE" "$RBIN_MERGE" "$TMP/ralph-merge-logs" "$TMP/ralph-merge-notify.log" "$RALPH_MERGE_CFG")
+ralph_merge_out=$(run_ralph "$RALPH_MERGE" "$RBIN_MERGE" "$TMP/ralph-merge-logs" "$TMP/ralph-merge-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) canMerge=true, актуальная ветка, ready-PR — прогон завершается штатно" \
   0 $?
 pr_merge_calls_log=$(cat "$RBIN_MERGE/pr-merge-calls.log" 2>/dev/null)
@@ -5629,23 +5532,15 @@ assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на 
 # squash=false + branchUpdate=rebase → rebase-merge → --rebase). Тот же
 # issue/PR-стенд, что (a) выше, отдельный экземпляр $TMP-каталогов.
 RALPH_MERGE2_ORIGIN="$TMP/ralph-merge2-origin"
-mkdir -p "$RALPH_MERGE2_ORIGIN"
-(cd "$RALPH_MERGE2_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_MERGE2_ORIGIN" && git_c branch issue-2002-x)
-
 RALPH_MERGE2="$TMP/ralph-merge2-proj"
-git_c clone -q "$RALPH_MERGE2_ORIGIN" "$RALPH_MERGE2"
-(cd "$RALPH_MERGE2" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_MERGE2_ORIGIN" "$RALPH_MERGE2" issue-2002-x
 
 RBIN_MERGE2="$TMP/ralph-merge2-bin"
-mkdir -p "$RBIN_MERGE2"
+ralph_bin "$RBIN_MERGE2"
 cat > "$RBIN_MERGE2/issues-fixture.json" <<'EOF'
 [
   {"number": 2002, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_MERGE2/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_MERGE2" args '5002' false 'issue-2002-x'
 gh_ralph_stub "$RBIN_MERGE2" "$RBIN_MERGE2/issues-fixture.json" "$RBIN_MERGE2/prs-fixture.json" log \
@@ -5670,15 +5565,11 @@ assert_not_contains "AC-1: adk-ralph: (issue #129) conventions.squash=false — 
 # громким "unexpected gh call"), PR в «ждут человека», result=ready.
 RALPH_HO="$TMP/ralph-ho-proj"
 RBIN_HO="$TMP/ralph-ho-bin"
-mkdir -p "$RALPH_HO" "$RBIN_HO"
-(cd "$RALPH_HO" && git_c init -q -b main)
+ralph_init "$RALPH_HO" "$RBIN_HO"
 cat > "$RBIN_HO/issues-fixture.json" <<'EOF'
 [
   {"number": 2010, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_HO/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_HO" "$RBIN_HO/issues-fixture.json" "$RBIN_HO/prs-fixture.json"
 claude_stub_one_pr "$RBIN_HO" args '5010' false 'issue-2010-x'
@@ -5705,15 +5596,11 @@ assert_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — PR 
 # молчаливый откат к разрешающему дефолту agent-after-approve.
 RALPH_MTYPO="$TMP/ralph-mtypo-proj"
 RBIN_MTYPO="$TMP/ralph-mtypo-bin"
-mkdir -p "$RALPH_MTYPO" "$RBIN_MTYPO"
-(cd "$RALPH_MTYPO" && git_c init -q -b main)
+ralph_init "$RALPH_MTYPO" "$RBIN_MTYPO"
 cat > "$RBIN_MTYPO/issues-fixture.json" <<'EOF'
 [
   {"number": 2011, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_MTYPO/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_MTYPO" "$RBIN_MTYPO/issues-fixture.json" "$RBIN_MTYPO/prs-fixture.json"
 claude_stub_one_pr "$RBIN_MTYPO" args '5011' false 'issue-2011-x'
@@ -5738,15 +5625,11 @@ assert_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестн
 # только policies.merge.
 RALPH_CMTYPO="$TMP/ralph-cmtypo-proj"
 RBIN_CMTYPO="$TMP/ralph-cmtypo-bin"
-mkdir -p "$RALPH_CMTYPO" "$RBIN_CMTYPO"
-(cd "$RALPH_CMTYPO" && git_c init -q -b main)
+ralph_init "$RALPH_CMTYPO" "$RBIN_CMTYPO"
 cat > "$RBIN_CMTYPO/issues-fixture.json" <<'EOF'
 [
   {"number": 2012, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_CMTYPO/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_CMTYPO" "$RBIN_CMTYPO/issues-fixture.json" "$RBIN_CMTYPO/prs-fixture.json"
 claude_stub_one_pr "$RBIN_CMTYPO" args '5012' false 'issue-2012-x'
@@ -5774,14 +5657,8 @@ assert_contains "AC-1: adk-ralph: (issue #129) canMerge неизвестное �
 # красных гейтов main перед итерацией — обязан быть зелёным) от второго
 # (перегон гейтов после актуализации ветки issue #2020 — намеренно красный).
 RALPH_BEHIND_ORIGIN="$TMP/ralph-behind-origin"
-mkdir -p "$RALPH_BEHIND_ORIGIN"
-(cd "$RALPH_BEHIND_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_BEHIND_ORIGIN" && git_c branch issue-2020-x)
-(cd "$RALPH_BEHIND_ORIGIN" && echo more > g.txt && git add g.txt && git_c commit -qm "advance main")
-
 RALPH_BEHIND="$TMP/ralph-behind-proj"
-git_c clone -q "$RALPH_BEHIND_ORIGIN" "$RALPH_BEHIND"
-(cd "$RALPH_BEHIND" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_BEHIND_ORIGIN" "$RALPH_BEHIND" --advance "advance main" issue-2020-x
 mkdir -p "$RALPH_BEHIND/scripts"
 cat > "$RALPH_BEHIND/scripts/check" <<EOF
 #!/usr/bin/env bash
@@ -5797,14 +5674,11 @@ EOF
 chmod +x "$RALPH_BEHIND/scripts/check"
 
 RBIN_BEHIND="$TMP/ralph-behind-bin"
-mkdir -p "$RBIN_BEHIND"
+ralph_bin "$RBIN_BEHIND"
 cat > "$RBIN_BEHIND/issues-fixture.json" <<'EOF'
 [
   {"number": 2020, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_BEHIND/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_BEHIND" args '5020' false 'issue-2020-x'
 IFS= read -r -d '' behind_gh_extra <<EXTRA || true
@@ -5814,12 +5688,7 @@ IFS= read -r -d '' behind_gh_extra <<EXTRA || true
 EXTRA
 gh_ralph_stub "$RBIN_BEHIND" "$RBIN_BEHIND/issues-fixture.json" "$RBIN_BEHIND/prs-fixture.json" log "${behind_gh_extra}"
 
-RALPH_BEHIND_CFG="$TMP/ralph-behind-config.json"
-cat > "$RALPH_BEHIND_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_behind_out=$(run_ralph "$RALPH_BEHIND" "$RBIN_BEHIND" "$TMP/ralph-behind-logs" "$TMP/ralph-behind-notify.log" "$RALPH_BEHIND_CFG")
+ralph_behind_out=$(run_ralph "$RALPH_BEHIND" "$RBIN_BEHIND" "$TMP/ralph-behind-logs" "$TMP/ralph-behind-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) отставшая ветка + красные гейты после актуализации — прогон завершается штатно (задача застревает, не прогон)" \
   0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) отставшая ветка — причина остановки «очередь пуста» (не системный breaker, не полный стоп)" \
@@ -5839,24 +5708,16 @@ assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на 
 # мержит, без approve — остаётся в «ждут человека» (result=ready). Тот же
 # признак approve, что канон /autopilot и bash-guard.sh.
 RALPH_HRR_ORIGIN="$TMP/ralph-hrr-origin"
-mkdir -p "$RALPH_HRR_ORIGIN"
-(cd "$RALPH_HRR_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_HRR_ORIGIN" && git_c branch issue-2030-x && git_c branch issue-2031-x)
-
 RALPH_HRR="$TMP/ralph-hrr-proj"
-git_c clone -q "$RALPH_HRR_ORIGIN" "$RALPH_HRR"
-(cd "$RALPH_HRR" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_HRR_ORIGIN" "$RALPH_HRR" issue-2030-x issue-2031-x
 
 RBIN_HRR="$TMP/ralph-hrr-bin"
-mkdir -p "$RBIN_HRR"
+ralph_bin "$RBIN_HRR"
 cat > "$RBIN_HRR/issues-fixture.json" <<'EOF'
 [
   {"number": 2030, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 2031, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_HRR/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub "$RBIN_HRR" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
@@ -5906,23 +5767,15 @@ assert_contains "AC-1: adk-ralph: (issue #129) human-review-required — сво�
 # запрос»); ADR-019 §2 — до 3 попыток с паузой 1с. Здесь вторая попытка уже
 # отвечает MERGEABLE — merge проходит.
 RALPH_UNK_ORIGIN="$TMP/ralph-unk-origin"
-mkdir -p "$RALPH_UNK_ORIGIN"
-(cd "$RALPH_UNK_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_UNK_ORIGIN" && git_c branch issue-2040-x)
-
 RALPH_UNK="$TMP/ralph-unk-proj"
-git_c clone -q "$RALPH_UNK_ORIGIN" "$RALPH_UNK"
-(cd "$RALPH_UNK" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_UNK_ORIGIN" "$RALPH_UNK" issue-2040-x
 
 RBIN_UNK="$TMP/ralph-unk-bin"
-mkdir -p "$RBIN_UNK"
+ralph_bin "$RBIN_UNK"
 cat > "$RBIN_UNK/issues-fixture.json" <<'EOF'
 [
   {"number": 2040, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_UNK/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_UNK" args '5040' false 'issue-2040-x'
 gh_ralph_stub "$RBIN_UNK" "$RBIN_UNK/issues-fixture.json" "$RBIN_UNK/prs-fixture.json" log \
@@ -5937,12 +5790,7 @@ gh_ralph_stub "$RBIN_UNK" "$RBIN_UNK/issues-fixture.json" "$RBIN_UNK/prs-fixture
     exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
-RALPH_UNK_CFG="$TMP/ralph-unk-config.json"
-cat > "$RALPH_UNK_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_unk_out=$(run_ralph "$RALPH_UNK" "$RBIN_UNK" "$TMP/ralph-unk-logs" "$TMP/ralph-unk-notify.log" "$RALPH_UNK_CFG")
+ralph_unk_out=$(run_ralph "$RALPH_UNK" "$RBIN_UNK" "$TMP/ralph-unk-logs" "$TMP/ralph-unk-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на первой попытке — прогон завершается штатно" 0 $?
 pr_view_calls_unk=$(cat "$RBIN_UNK/pr-view-calls" 2>/dev/null || echo 0)
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN — gh pr view вызван дважды (ретрай), не один раз" \
@@ -5956,15 +5804,11 @@ assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN — после ре
 # не доходит.
 RALPH_UNK2="$TMP/ralph-unk-exhausted-proj"
 RBIN_UNK2="$TMP/ralph-unk-exhausted-bin"
-mkdir -p "$RALPH_UNK2" "$RBIN_UNK2"
-(cd "$RALPH_UNK2" && git_c init -q -b main)
+ralph_init "$RALPH_UNK2" "$RBIN_UNK2"
 cat > "$RBIN_UNK2/issues-fixture.json" <<'EOF'
 [
   {"number": 2050, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_UNK2/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_UNK2" args '5050' false 'issue-2050-x'
 gh_ralph_stub "$RBIN_UNK2" "$RBIN_UNK2/issues-fixture.json" "$RBIN_UNK2/prs-fixture.json" log \
@@ -5974,12 +5818,7 @@ gh_ralph_stub "$RBIN_UNK2" "$RBIN_UNK2/issues-fixture.json" "$RBIN_UNK2/prs-fixt
     echo "UNKNOWN null issue-2050-x"
     exit 0 ;;'
 
-RALPH_UNK2_CFG="$TMP/ralph-unk-exhausted-config.json"
-cat > "$RALPH_UNK2_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_unk2_out=$(run_ralph "$RALPH_UNK2" "$RBIN_UNK2" "$TMP/ralph-unk-exhausted-logs" "$TMP/ralph-unk-exhausted-notify.log" "$RALPH_UNK2_CFG")
+ralph_unk2_out=$(run_ralph "$RALPH_UNK2" "$RBIN_UNK2" "$TMP/ralph-unk-exhausted-logs" "$TMP/ralph-unk-exhausted-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на всех попытках — прогон завершается штатно (задача застревает, не бесконечный ретрай)" \
   0 $?
 pr_view_calls_unk2=$(cat "$RBIN_UNK2/pr-view-calls" 2>/dev/null || echo 0)
@@ -5999,14 +5838,8 @@ assert_contains "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN исчерпа�
 # ветка → rebase на актуальный default branch → зелёные гейты → push →
 # merge), а не только красный путь (e) выше.
 RALPH_TRUNK_ORIGIN="$TMP/ralph-trunk-origin"
-mkdir -p "$RALPH_TRUNK_ORIGIN"
-(cd "$RALPH_TRUNK_ORIGIN" && git_c init -q -b trunk && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_TRUNK_ORIGIN" && git_c branch issue-2060-x)
-(cd "$RALPH_TRUNK_ORIGIN" && echo more > g.txt && git add g.txt && git_c commit -qm "advance trunk")
-
 RALPH_TRUNK="$TMP/ralph-trunk-proj"
-git_c clone -q "$RALPH_TRUNK_ORIGIN" "$RALPH_TRUNK"
-(cd "$RALPH_TRUNK" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_TRUNK_ORIGIN" "$RALPH_TRUNK" --branch trunk --advance "advance trunk" issue-2060-x
 # scripts/check со счётчиком (круг 2 ревью PR #195, тот же приём, что
 # фикстура (e) выше) — без него отсутствие исполняемого файла молча
 # пропускает гейт (run_main_gates), и позитивный путь этой фикстуры не
@@ -6023,14 +5856,11 @@ EOF
 chmod +x "$RALPH_TRUNK/scripts/check"
 
 RBIN_TRUNK="$TMP/ralph-trunk-bin"
-mkdir -p "$RBIN_TRUNK"
+ralph_bin "$RBIN_TRUNK"
 cat > "$RBIN_TRUNK/issues-fixture.json" <<'EOF'
 [
   {"number": 2060, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_TRUNK/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_TRUNK" args '5060' false 'issue-2060-x'
 IFS= read -r -d '' trunk_gh_extra <<EXTRA || true
@@ -6040,12 +5870,7 @@ IFS= read -r -d '' trunk_gh_extra <<EXTRA || true
 EXTRA
 gh_ralph_stub "$RBIN_TRUNK" "$RBIN_TRUNK/issues-fixture.json" "$RBIN_TRUNK/prs-fixture.json" log "${trunk_gh_extra}"
 
-RALPH_TRUNK_CFG="$TMP/ralph-trunk-config.json"
-cat > "$RALPH_TRUNK_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_trunk_out=$(run_ralph "$RALPH_TRUNK" "$RBIN_TRUNK" "$TMP/ralph-trunk-logs" "$TMP/ralph-trunk-notify.log" "$RALPH_TRUNK_CFG")
+ralph_trunk_out=$(run_ralph "$RALPH_TRUNK" "$RBIN_TRUNK" "$TMP/ralph-trunk-logs" "$TMP/ralph-trunk-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) default branch trunk, отставшая ветка — актуализация на origin/trunk, не origin/main, потом merge" \
   0 $?
 trunk_merge_log=$(cat "$RBIN_TRUNK/pr-merge-calls.log" 2>/dev/null)
@@ -6073,26 +5898,17 @@ assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на 
 # «конфликт с main», gh pr merge не вызывается.
 RALPH_CONFPR="$TMP/ralph-confpr-proj"
 RBIN_CONFPR="$TMP/ralph-confpr-bin"
-mkdir -p "$RALPH_CONFPR" "$RBIN_CONFPR"
-(cd "$RALPH_CONFPR" && git_c init -q -b main)
+ralph_init "$RALPH_CONFPR" "$RBIN_CONFPR"
 cat > "$RBIN_CONFPR/issues-fixture.json" <<'EOF'
 [
   {"number": 2090, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
 EOF
-cat > "$RBIN_CONFPR/prs-fixture.json" <<'EOF'
-[]
-EOF
 claude_stub_one_pr "$RBIN_CONFPR" args '5090' false 'issue-2090-x'
 gh_ralph_stub "$RBIN_CONFPR" "$RBIN_CONFPR/issues-fixture.json" "$RBIN_CONFPR/prs-fixture.json" log \
   '  "pr view") echo "CONFLICTING null issue-2090-x"; exit 0 ;;'
 
-RALPH_CONFPR_CFG="$TMP/ralph-confpr-config.json"
-cat > "$RALPH_CONFPR_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_confpr_out=$(run_ralph "$RALPH_CONFPR" "$RBIN_CONFPR" "$TMP/ralph-confpr-logs" "$TMP/ralph-confpr-notify.log" "$RALPH_CONFPR_CFG")
+ralph_confpr_out=$(run_ralph "$RALPH_CONFPR" "$RBIN_CONFPR" "$TMP/ralph-confpr-logs" "$TMP/ralph-confpr-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — прогон завершается штатно (задача застревает)" 0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — застревание с причиной «конфликт с main»" \
   "$ralph_confpr_out" "#2090 (конфликт с main)"
@@ -6115,14 +5931,11 @@ git_c clone -q "$RALPH_ACTCONFLICT_ORIGIN" "$RALPH_ACTCONFLICT"
 (cd "$RALPH_ACTCONFLICT" && git_c config user.email t@t && git_c config user.name t)
 
 RBIN_ACTCONFLICT="$TMP/ralph-actconflict-bin"
-mkdir -p "$RBIN_ACTCONFLICT"
+ralph_bin "$RBIN_ACTCONFLICT"
 cat > "$RBIN_ACTCONFLICT/issues-fixture.json" <<'EOF'
 [
   {"number": 2070, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_ACTCONFLICT/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub_one_pr "$RBIN_ACTCONFLICT" args '5070' false 'issue-2070-x'
 IFS= read -r -d '' actconflict_gh_extra <<EXTRA || true
@@ -6131,12 +5944,7 @@ IFS= read -r -d '' actconflict_gh_extra <<EXTRA || true
 EXTRA
 gh_ralph_stub "$RBIN_ACTCONFLICT" "$RBIN_ACTCONFLICT/issues-fixture.json" "$RBIN_ACTCONFLICT/prs-fixture.json" log "${actconflict_gh_extra}"
 
-RALPH_ACTCONFLICT_CFG="$TMP/ralph-actconflict-config.json"
-cat > "$RALPH_ACTCONFLICT_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_actconflict_out=$(run_ralph "$RALPH_ACTCONFLICT" "$RBIN_ACTCONFLICT" "$TMP/ralph-actconflict-logs" "$TMP/ralph-actconflict-notify.log" "$RALPH_ACTCONFLICT_CFG")
+ralph_actconflict_out=$(run_ralph "$RALPH_ACTCONFLICT" "$RBIN_ACTCONFLICT" "$TMP/ralph-actconflict-logs" "$TMP/ralph-actconflict-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) конфликт при rebase-актуализации — прогон завершается штатно" 0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) конфликт при актуализации — застревание с этой причиной" \
   "$ralph_actconflict_out" "#2070 (конфликт при актуализации)"
@@ -6158,24 +5966,16 @@ assert_exit "AC-1: adk-ralph: (issue #129) дерево вернулось на 
 # процесс вызывается по ней тоже (оставляем её PR черновиком — не самоцель
 # этого теста, чтобы не тащить второй origin/branch).
 RALPH_MB_ORIGIN="$TMP/ralph-mb-origin"
-mkdir -p "$RALPH_MB_ORIGIN"
-(cd "$RALPH_MB_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_MB_ORIGIN" && git_c branch issue-2080-x)
-
 RALPH_MB="$TMP/ralph-mb-proj"
-git_c clone -q "$RALPH_MB_ORIGIN" "$RALPH_MB"
-(cd "$RALPH_MB" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_MB_ORIGIN" "$RALPH_MB" issue-2080-x
 
 RBIN_MB="$TMP/ralph-mb-bin"
-mkdir -p "$RBIN_MB"
+ralph_bin "$RBIN_MB"
 cat > "$RBIN_MB/issues-fixture.json" <<'EOF'
 [
   {"number": 2080, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 2081, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #2080"}
 ]
-EOF
-cat > "$RBIN_MB/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub "$RBIN_MB" <<'EOF'
 echo "call $issue_num" >> "$d/claude-calls.log"
@@ -6197,12 +5997,7 @@ gh_ralph_stub "$RBIN_MB" "$RBIN_MB/issues-fixture.json" "$RBIN_MB/prs-fixture.js
   '  "pr view") echo "MERGEABLE null issue-2080-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
-RALPH_MB_CFG="$TMP/ralph-mb-config.json"
-cat > "$RALPH_MB_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
-ralph_mb_out=$(run_ralph "$RALPH_MB" "$RBIN_MB" "$TMP/ralph-mb-logs" "$TMP/ralph-mb-notify.log" "$RALPH_MB_CFG")
+ralph_mb_out=$(run_ralph "$RALPH_MB" "$RBIN_MB" "$TMP/ralph-mb-logs" "$TMP/ralph-mb-notify.log" "$RALPH_MERGE_ON_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) смерженный блокер снимается с зависимой задачи — прогон завершается штатно" \
   0 $?
 mb_call_count=$(cat "$RBIN_MB/claude-calls.log" 2>/dev/null | grep -c "^call")
@@ -6229,17 +6024,13 @@ assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит з�
 # не реализует (рёбейз PR #193 поверх #129, круг 3 ревью) ─────────────────
 RALPH_BUDGET_TASK="$TMP/ralph-budget-task-proj"
 RBIN_BUDGET_TASK="$TMP/ralph-budget-task-bin"
-mkdir -p "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK"
-(cd "$RALPH_BUDGET_TASK" && git_c init -q -b main)
+ralph_init "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK"
 
 cat > "$RBIN_BUDGET_TASK/issues-fixture.json" <<'EOF'
 [
   {"number": 911, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 912, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_BUDGET_TASK/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BUDGET_TASK" "$RBIN_BUDGET_TASK/issues-fixture.json" "$RBIN_BUDGET_TASK/prs-fixture.json"
 claude_stub "$RBIN_BUDGET_TASK" <<'EOF'
@@ -6327,16 +6118,12 @@ assert_exit "AC-3: adk-ralph: (issue #131) журнал — #911 stuck с при
 # перенаправление стабом), и он погибает вместе с лидером ─────────────────
 RALPH_BUDGET_GROUPKILL="$TMP/ralph-budget-groupkill-proj"
 RBIN_BUDGET_GROUPKILL="$TMP/ralph-budget-groupkill-bin"
-mkdir -p "$RALPH_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL"
-(cd "$RALPH_BUDGET_GROUPKILL" && git_c init -q -b main)
+ralph_init "$RALPH_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL"
 
 cat > "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" <<'EOF'
 [
   {"number": 971, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_BUDGET_GROUPKILL/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BUDGET_GROUPKILL" "$RBIN_BUDGET_GROUPKILL/issues-fixture.json" "$RBIN_BUDGET_GROUPKILL/prs-fixture.json"
 claude_stub "$RBIN_BUDGET_GROUPKILL" <<'EOF'
@@ -6383,17 +6170,13 @@ assert_exit "AC-3: adk-ralph: (issue #131, важное круга 2 ревью 
 # СЛЕДУЮЩАЯ (#922) не начинается вовсе ─────────────────────────────────────
 RALPH_BUDGET_RUN="$TMP/ralph-budget-run-proj"
 RBIN_BUDGET_RUN="$TMP/ralph-budget-run-bin"
-mkdir -p "$RALPH_BUDGET_RUN" "$RBIN_BUDGET_RUN"
-(cd "$RALPH_BUDGET_RUN" && git_c init -q -b main)
+ralph_init "$RALPH_BUDGET_RUN" "$RBIN_BUDGET_RUN"
 
 cat > "$RBIN_BUDGET_RUN/issues-fixture.json" <<'EOF'
 [
   {"number": 921, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 922, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_BUDGET_RUN/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BUDGET_RUN" "$RBIN_BUDGET_RUN/issues-fixture.json" "$RBIN_BUDGET_RUN/prs-fixture.json"
 claude_stub "$RBIN_BUDGET_RUN" <<'EOF'
@@ -6453,16 +6236,12 @@ assert_exit "AC-3: adk-ralph: (issue #131) журнал — #921 доведён 
 # доигрывает штатно, не «застревает мгновенно» ──────────────────────────────
 RALPH_BUDGET_ZERO="$TMP/ralph-budget-zero-proj"
 RBIN_BUDGET_ZERO="$TMP/ralph-budget-zero-bin"
-mkdir -p "$RALPH_BUDGET_ZERO" "$RBIN_BUDGET_ZERO"
-(cd "$RALPH_BUDGET_ZERO" && git_c init -q -b main)
+ralph_init "$RALPH_BUDGET_ZERO" "$RBIN_BUDGET_ZERO"
 
 cat > "$RBIN_BUDGET_ZERO/issues-fixture.json" <<'EOF'
 [
   {"number": 931, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_BUDGET_ZERO/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_BUDGET_ZERO" "$RBIN_BUDGET_ZERO/issues-fixture.json" "$RBIN_BUDGET_ZERO/prs-fixture.json"
 claude_stub_one_pr "$RBIN_BUDGET_ZERO" args '9931' false 'issue-931-x'
@@ -6595,7 +6374,6 @@ dirty_valid=$(jsonl_check "$dirty_log_file" 3 "$dirty_spec")
 assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — журнал: #961 залогирован обычным event=task result=stuck (не пропущен), run_end с причиной грязного дерева" \
   1 "$dirty_valid"
 
-
 # ── issue #132, AC-3/AC-6: расход токенов — снятие usage headless-процесса,
 # запись в event=task (duration + tokens: input+output+cache_creation, БЕЗ
 # cache_read), токеновая половина жёстких бюджетов (задача → stuck, прогон →
@@ -6604,16 +6382,12 @@ assert_exit "AC-3: adk-ralph: (issue #131) грязное дерево — жу�
 # перехватывает stdout per-итерации в файл и парсит usage после завершения ──
 RALPH_TOK="$TMP/ralph-tokens-proj"
 RBIN_TOK="$TMP/ralph-tokens-bin"
-mkdir -p "$RALPH_TOK" "$RBIN_TOK"
-(cd "$RALPH_TOK" && git_c init -q -b main)
+ralph_init "$RALPH_TOK" "$RBIN_TOK"
 cat > "$RBIN_TOK/issues-fixture.json" <<'EOF'
 [
   {"number": 971, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 976, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_TOK/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_TOK" "$RBIN_TOK/issues-fixture.json" "$RBIN_TOK/prs-fixture.json"
 claude_stub "$RBIN_TOK" <<'EOF'
@@ -6635,12 +6409,8 @@ PRJSON
 esac
 exit 0
 EOF
-RALPH_TOK_CFG="$TMP/ralph-tokens-config.json"
-cat > "$RALPH_TOK_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": false}}}
-EOF
 RALPH_TOK_LOGS="$TMP/ralph-tokens-logs"
-ralph_tok_out=$(run_ralph "$RALPH_TOK" "$RBIN_TOK" "$RALPH_TOK_LOGS" "$TMP/ralph-tokens-notify.log" "$RALPH_TOK_CFG")
+ralph_tok_out=$(run_ralph "$RALPH_TOK" "$RBIN_TOK" "$RALPH_TOK_LOGS" "$TMP/ralph-tokens-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-6: adk-ralph: (issue #132) прогон с usage и без usage завершается штатно" 0 $?
 ralph_tok_log="$(ralph_journal "$RALPH_TOK_LOGS")"
 ralph_tok_spec=$(printf '%s\n%s\n%s\n%s' \
@@ -6665,22 +6435,15 @@ assert_contains "AC-6: adk-ralph: (issue #132, круг 2 ревью PR #197) ф
 # токены, цикл продолжается (вторая задача исполняется); merge не вызывается
 # даже при ready-PR превысившей задачи (жёсткий бюджет, DoD issue #132)
 RALPH_TOKB_ORIGIN="$TMP/ralph-tokbudget-origin"
-mkdir -p "$RALPH_TOKB_ORIGIN"
-(cd "$RALPH_TOKB_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_TOKB_ORIGIN" && git_c branch issue-973-x)
 RALPH_TOKB="$TMP/ralph-tokbudget-proj"
 RBIN_TOKB="$TMP/ralph-tokbudget-bin"
-mkdir -p "$RBIN_TOKB"
-git_c clone -q "$RALPH_TOKB_ORIGIN" "$RALPH_TOKB"
-(cd "$RALPH_TOKB" && git_c config user.email t@t && git_c config user.name t)
+ralph_bin "$RBIN_TOKB"
+ralph_clone "$RALPH_TOKB_ORIGIN" "$RALPH_TOKB" issue-973-x
 cat > "$RBIN_TOKB/issues-fixture.json" <<'EOF'
 [
   {"number": 972, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 973, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_TOKB/prs-fixture.json" <<'EOF'
-[]
 EOF
 # canMerge=true ведёт ready-исход #973 через реальную merge-ветку
 # resolve_ready_pr → pr view/pr merge через extra (приём RALPH_MB выше)
@@ -6738,16 +6501,12 @@ assert_exit "AC-3: adk-ralph: (issue #132) журнал — #972 stuck по то
 # задача не берётся (headless вызван один раз)
 RALPH_TOKR="$TMP/ralph-tokrun-proj"
 RBIN_TOKR="$TMP/ralph-tokrun-bin"
-mkdir -p "$RALPH_TOKR" "$RBIN_TOKR"
-(cd "$RALPH_TOKR" && git_c init -q -b main)
+ralph_init "$RALPH_TOKR" "$RBIN_TOKR"
 cat > "$RBIN_TOKR/issues-fixture.json" <<'EOF'
 [
   {"number": 974, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 975, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_TOKR/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_TOKR" "$RBIN_TOKR/issues-fixture.json" "$RBIN_TOKR/prs-fixture.json"
 claude_stub "$RBIN_TOKR" <<'EOF'
@@ -6784,17 +6543,16 @@ assert_exit "AC-3: adk-ralph: (issue #132) журнал — #974 доведен�
   1 "$ralph_tokr_valid"
 
 # документация: config.md и ADR-001
-budget_tokens_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+budget_tokens_doc=$(doc_text "$KIT/docs/config.md")
 assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.task.maxTokens = 300000" \
   "$budget_tokens_doc" '| `policies.autopilot.budget.task.maxTokens` | число (положительное, токены) | `300000` |'
 assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.run.maxTokens = 2000000" \
   "$budget_tokens_doc" '| `policies.autopilot.budget.run.maxTokens` | число (положительное, токены) | `2000000` |'
-adr001_text=$(tr '\n' ' ' < "$KIT/docs/adr/001-journal-event-schema.md" | tr -s ' ')
+adr001_text=$(doc_text "$KIT/docs/adr/001-journal-event-schema.md")
 assert_contains "AC-6: ADR-001 фиксирует состав токен-счётчика (input + output + cache_creation)" \
   "$adr001_text" "input + output + cache_creation"
 assert_contains "AC-6: ADR-001 явно исключает cache_read из счётчика" \
   "$adr001_text" "БЕЗ cache_read"
-
 
 # ── issue #133, AC-4: множитель бюджета для задач с label size:large —
 # оба бюджета задачи (минуты и токены) умножаются на
@@ -6805,17 +6563,13 @@ assert_contains "AC-6: ADR-001 явно исключает cache_read из сч�
 # застревает по токенам ─────────────────────────────────────────────────────
 RALPH_SZ="$TMP/ralph-sized-proj"
 RBIN_SZ="$TMP/ralph-sized-bin"
-mkdir -p "$RALPH_SZ" "$RBIN_SZ"
-(cd "$RALPH_SZ" && git_c init -q -b main)
+ralph_init "$RALPH_SZ" "$RBIN_SZ"
 cat > "$RBIN_SZ/issues-fixture.json" <<'EOF'
 [
   {"number": 981, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"},
   {"number": 982, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 985, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SZ/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_SZ" "$RBIN_SZ/issues-fixture.json" "$RBIN_SZ/prs-fixture.json"
 claude_stub "$RBIN_SZ" <<'EOF'
@@ -6875,15 +6629,11 @@ assert_contains "AC-4: adk-ralph: (issue #133) sized-задача с расхо�
 # 4500 между базой (1000) и базой×5 — sized-задача проходит
 RALPH_SZ5="$TMP/ralph-sized5-proj"
 RBIN_SZ5="$TMP/ralph-sized5-bin"
-mkdir -p "$RALPH_SZ5" "$RBIN_SZ5"
-(cd "$RALPH_SZ5" && git_c init -q -b main)
+ralph_init "$RALPH_SZ5" "$RBIN_SZ5"
 cat > "$RBIN_SZ5/issues-fixture.json" <<'EOF'
 [
   {"number": 983, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SZ5/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_SZ5" "$RBIN_SZ5/issues-fixture.json" "$RBIN_SZ5/prs-fixture.json"
 claude_stub "$RBIN_SZ5" <<'EOF'
@@ -6914,16 +6664,12 @@ assert_exit "AC-4: adk-ralph: (issue #133) журнал — #983 ready при р
 # у остальных бюджет-атрибутов): расход 1500 < 1000×2 — sized-задача проходит
 RALPH_SZ0="$TMP/ralph-sized0-proj"
 RBIN_SZ0="$TMP/ralph-sized0-bin"
-mkdir -p "$RALPH_SZ0" "$RBIN_SZ0"
-(cd "$RALPH_SZ0" && git_c init -q -b main)
+ralph_init "$RALPH_SZ0" "$RBIN_SZ0"
 cat > "$RBIN_SZ0/issues-fixture.json" <<'EOF'
 [
   {"number": 984, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"},
   {"number": 986, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SZ0/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_SZ0" "$RBIN_SZ0/issues-fixture.json" "$RBIN_SZ0/prs-fixture.json"
 claude_stub "$RBIN_SZ0" <<'EOF'
@@ -6975,15 +6721,11 @@ assert_exit "AC-4: adk-ralph: (issue #133) журнал — дефолтный �
 # бюджете она была бы ready).
 RALPH_SZC="$TMP/ralph-sizedclamp-proj"
 RBIN_SZC="$TMP/ralph-sizedclamp-bin"
-mkdir -p "$RALPH_SZC" "$RBIN_SZC"
-(cd "$RALPH_SZC" && git_c init -q -b main)
+ralph_init "$RALPH_SZC" "$RBIN_SZC"
 cat > "$RBIN_SZC/issues-fixture.json" <<'EOF'
 [
   {"number": 987, "labels": [{"name":"type:task"}, {"name":"size:large"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SZC/prs-fixture.json" <<'EOF'
-[]
 EOF
 gh_ralph_stub "$RBIN_SZC" "$RBIN_SZC/issues-fixture.json" "$RBIN_SZC/prs-fixture.json"
 claude_stub "$RBIN_SZC" <<'EOF'
@@ -7013,7 +6755,7 @@ assert_exit "AC-4: adk-ralph: (issue #133, круг 2) журнал — #987 stu
   1 "$ralph_szc_valid"
 
 # документация: config.md, планировщик ставит label (plan.md + skills/decompose)
-sz_config_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+sz_config_doc=$(doc_text "$KIT/docs/config.md")
 assert_contains "AC-4: docs/config.md документирует дефолт policies.autopilot.budget.sizeLargeMultiplier = 2" \
   "$sz_config_doc" '| `policies.autopilot.budget.sizeLargeMultiplier` | число (>= 1) | `2` |'
 check_ac_doc AC-4 "commands/plan.md: планировщик помечает заметно крупные задачи label size:large" \
@@ -7032,7 +6774,7 @@ check_ac_doc AC-4 "skills/decompose: правило label size:large для за
 # с задокументированным в таблице docs/config.md (расхождение = таблица
 # лжёт потребителю или код ушёл от спеки)
 ralph_src=$(cat "$KIT/hooks/scripts/adk-ralph.sh")
-config_doc=$(tr '\n' ' ' < "$KIT/docs/config.md" | tr -s ' ')
+config_doc=$(doc_text "$KIT/docs/config.md")
 assert_contains "AC-8: дефолт task.maxMinutes в коде — 45" "$ralph_src" '"policies.autopilot.budget.task.maxMinutes" "45"'
 assert_contains "AC-8: дефолт task.maxMinutes в docs/config.md — 45" "$config_doc" '| `policies.autopilot.budget.task.maxMinutes` | число (положительное, минуты) | `45` |'
 assert_contains "AC-8: дефолт run.maxMinutes в коде — 240" "$ralph_src" '"policies.autopilot.budget.run.maxMinutes" "240"'
@@ -7081,22 +6823,15 @@ assert_contains "AC-8: autopilot.md сохраняет предохраните�
 
 # ralph: полный цикл на проекте ВООБЩЕ без adk.config.json — дефолты
 RALPH_NC_ORIGIN="$TMP/ralph-noconfig-origin"
-mkdir -p "$RALPH_NC_ORIGIN"
-(cd "$RALPH_NC_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_NC_ORIGIN" && git_c branch issue-991-x && git_c branch issue-992-x)
 RALPH_NC="$TMP/ralph-noconfig-proj"
 RBIN_NC="$TMP/ralph-noconfig-bin"
-mkdir -p "$RBIN_NC"
-git_c clone -q "$RALPH_NC_ORIGIN" "$RALPH_NC"
-(cd "$RALPH_NC" && git_c config user.email t@t && git_c config user.name t)
+ralph_bin "$RBIN_NC"
+ralph_clone "$RALPH_NC_ORIGIN" "$RALPH_NC" issue-991-x issue-992-x
 cat > "$RBIN_NC/issues-fixture.json" <<'EOF'
 [
   {"number": 991, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 992, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
-[]
 EOF
 # дефолтная политика (canMerge=true) ведёт ready через merge-ветку —
 # pr view/pr merge через extra; pr view отвечает веткой по номеру PR
@@ -7131,16 +6866,9 @@ assert_contains "AC-8: adk-ralph: (issue #138) прогон без конфиг�
   "$ralph_nc_out" "очередь пуста"
 
 # ralph: конфиг есть, но БЕЗ блоков budget/breaker — те же дефолты
-RALPH_NB_CFG="$TMP/ralph-noblocks-config.json"
-cat > "$RALPH_NB_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": false}}}
-EOF
-rm -rf "$TMP/ralph-noblocks-logs"
 : > "$RBIN_NC/claude-calls.log"
-cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
-[]
-EOF
-ralph_nb_out=$(run_ralph "$RALPH_NC" "$RBIN_NC" "$TMP/ralph-noblocks-logs" "$TMP/ralph-noblocks-notify.log" "$RALPH_NB_CFG")
+printf '[]\n' > "$RBIN_NC/prs-fixture.json"
+ralph_nb_out=$(run_ralph "$RALPH_NC" "$RBIN_NC" "$TMP/ralph-noblocks-logs" "$TMP/ralph-noblocks-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-8: adk-ralph: (issue #138) конфиг без блоков budget/breaker — полный цикл на дефолтах, exit 0" 0 $?
 assert_not_contains "AC-8: adk-ralph: (issue #138) отсутствие блоков не рождает предупреждений (отсутствие атрибута = дефолт, не опечатка)" \
   "$ralph_nb_out" "использован дефолт"
@@ -7164,24 +6892,16 @@ assert_contains "AC-8: adk-ralph: (issue #138) без блоков обе зад
 # сигналом TERM" (значение внесено в реестр ADR-007 §3 / ADR-001 этим же
 # кругом) ──────────────────────────────────────────────────────────────────
 RALPH_SIGNAL_ORIGIN="$TMP/ralph-signal-origin"
-mkdir -p "$RALPH_SIGNAL_ORIGIN"
-(cd "$RALPH_SIGNAL_ORIGIN" && git_c init -q -b main && echo base > f.txt && git add f.txt && git_c commit -qm base)
-(cd "$RALPH_SIGNAL_ORIGIN" && git_c branch issue-3001-x)
-
 RALPH_SIGNAL="$TMP/ralph-signal-proj"
-git_c clone -q "$RALPH_SIGNAL_ORIGIN" "$RALPH_SIGNAL"
-(cd "$RALPH_SIGNAL" && git_c config user.email t@t && git_c config user.name t)
+ralph_clone "$RALPH_SIGNAL_ORIGIN" "$RALPH_SIGNAL" issue-3001-x
 
 RBIN_SIGNAL="$TMP/ralph-signal-bin"
-mkdir -p "$RBIN_SIGNAL"
+ralph_bin "$RBIN_SIGNAL"
 cat > "$RBIN_SIGNAL/issues-fixture.json" <<'EOF'
 [
   {"number": 3001, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
   {"number": 3002, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}
 ]
-EOF
-cat > "$RBIN_SIGNAL/prs-fixture.json" <<'EOF'
-[]
 EOF
 claude_stub "$RBIN_SIGNAL" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
@@ -7215,11 +6935,6 @@ gh_ralph_stub "$RBIN_SIGNAL" "$RBIN_SIGNAL/issues-fixture.json" "$RBIN_SIGNAL/pr
   '  "pr view") echo "MERGEABLE null issue-3001-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
 
-RALPH_SIGNAL_CFG="$TMP/ralph-signal-config.json"
-cat > "$RALPH_SIGNAL_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": true}}}
-EOF
-
 RALPH_SIGNAL_LOGS="$TMP/ralph-signal-logs"
 RALPH_SIGNAL_NOTIFY="$TMP/ralph-signal-notify.log"
 RALPH_SIGNAL_OUT="$TMP/ralph-signal-out.log"
@@ -7231,7 +6946,7 @@ RALPH_SIGNAL_OUT="$TMP/ralph-signal-out.log"
 (
   cd "$RALPH_SIGNAL" || exit 1
   PATH="$RBIN_SIGNAL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SIGNAL" \
-    ADK_LOGS_DIR="$RALPH_SIGNAL_LOGS" ADK_CONFIG_FILE="$RALPH_SIGNAL_CFG" \
+    ADK_LOGS_DIR="$RALPH_SIGNAL_LOGS" ADK_CONFIG_FILE="$RALPH_MERGE_ON_CFG" \
     ADK_NOTIFY_FILE="$RALPH_SIGNAL_NOTIFY" \
     CLAUDE_PLUGIN_ROOT="$KIT" exec "$HOOKS/adk-ralph.sh"
 ) >"$RALPH_SIGNAL_OUT" 2>&1 &
@@ -7670,7 +7385,7 @@ assert_contains "issue #158: autopilot.md шаг 1 называет owner:human 
 assert_contains "issue #158: autopilot.md шаг 1 — owner:human пропускается молча, не как застревание/skip" \
   "$autopilot_step1" "пропускай молча"
 
-readme_full=$(tr '\n' ' ' < "$KIT/README.md" | tr -s ' ')
+readme_full=$(doc_text "$KIT/README.md")
 assert_contains "issue #158: README описывает режим «Делегирование»" "$readme_full" "Делегирование"
 assert_contains "issue #158: README описывает режим «Пара в сессии»" "$readme_full" "Пара в сессии"
 assert_contains "issue #158: README описывает режим «Самостоятельно»" "$readme_full" "Самостоятельно"
