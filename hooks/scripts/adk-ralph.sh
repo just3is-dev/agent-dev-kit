@@ -53,6 +53,7 @@ set -u
 # по бюджету задачи; там же явный `</dev/null` фоновому job'у.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/config.sh" # sourcing lib/config.sh тянет lib/paths.sh следом
+. "$SCRIPT_DIR/lib/plugin-version.sh" # adk_plugin_version — issue #154, ADR-021
 
 root=$(adk_project_root)
 plugin_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
@@ -297,7 +298,16 @@ work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 issues_file="$work_dir/issues.json"
 
-if ! "$logger" "$run_unit" event=run_start; then
+# Версия плагина на event=run_start (issue #154, SPEC-004 AC-5, ADR-021):
+# поле опционально дописывается только когда непусто (как duration/tokens
+# на event=task ниже, issue #132) — plugin.json не найден/битый не должен
+# портить сам запуск, run_start пишется без поля, ADR-001 «Расширения
+# схемы» трактует строку без поля как прежде.
+plugin_version=$(adk_plugin_version)
+run_start_extra=""
+[ -n "$plugin_version" ] && run_start_extra="version=$plugin_version"
+
+if ! "$logger" "$run_unit" event=run_start $run_start_extra; then
   journal_break
 fi
 

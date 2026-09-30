@@ -53,9 +53,11 @@ argument-hint: "[лимит задач за прогон, по умолчани�
 ## Цикл (повторяй, пока не исчерпан лимит и есть доступные задачи)
 
 Перед первой итерацией залогируй старт прогона (схема ADR-001,
-docs/adr/001-journal-event-schema.md; журнал — наблюдаемость, не гейт):
-`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh autopilot-$(date
-+%Y-%m-%d) event=run_start || true`.
+docs/adr/001-journal-event-schema.md; журнал — наблюдаемость, не гейт).
+Версия плагина — общим хелпером (issue #154, ADR-021), не отдельным
+разбором `plugin.json`: `version=$(${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-plugin-version.sh)`,
+затем `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh autopilot-$(date
++%Y-%m-%d) event=run_start version="$version" || true`.
 
 1. **Выбор задачи**: `gh issue list --state open` текущего milestone;
    возьми первый issue без метки `needs-human` и без метки `owner:human`
