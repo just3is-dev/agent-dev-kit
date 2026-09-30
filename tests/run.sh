@@ -8304,6 +8304,58 @@ assert_exit "AC-5: adk-stats: (issue #154) каталог со смесью ст
 assert_contains "AC-5: adk-stats: (issue #154) смешанный каталог — агрегаты задач по-прежнему считаются (Всего задач: 1)" \
   "$stats_vermix_out" "Всего задач: 1"
 
+# ── Контракт /plan + /work для окна «merge спеки заблокирован
+# policies.merge» (issue #218): issues вехи уже созданы (/plan шаг 4), но
+# файл спеки ещё не в main, пока policies.merge=human-review-required|
+# human-only не даёт агенту смержить PR спеки (/plan шаг 5, ADR-009).
+# Решение (вариант б из issue #218, ADR-021): /work не берёт issue вехи,
+# пока файла спеки нет в main — тот же класс, что незакрытая
+# «Blocked by #N». Переиспользуем уже нарезанные срезы команд:
+# $work_type_step1 (работа шаг 1), $plan_step4/$plan_landing (план шаги
+# 4/5), $autopilot_step1 (автопилот шаг 1) — все объявлены выше по файлу.
+check_ac_doc "issue #218" "work.md шаг 1 называет литеральный формат ссылки на спеку, который пишет /plan" \
+  "$WORKMD" 'Спека: docs/specs/NNN-<слаг>.md'
+assert_contains "issue #218: work.md шаг 1 проверяет файл спеки в main через git cat-file -e origin/main" \
+  "$work_type_step1" 'git cat-file -e'
+assert_contains "issue #218: work.md шаг 1 проверяет именно origin/main, не локальный main" \
+  "$work_type_step1" 'origin/main:docs/specs/NNN-<слаг>\.md'
+check_ac_doc "issue #218" "work.md шаг 1 трактует отсутствующий файл спеки как ту же категорию, что незакрытая Blocked by #N" \
+  "$WORKMD" "то же состояние, что и незакрытая «Blocked by #N»"
+assert_contains "issue #218: work.md шаг 1 — при авто-выборе такой issue пропускается, не берётся" \
+  "$work_type_step1" 'авто-выборе.*пропусти'
+assert_contains "issue #218: work.md шаг 1 — номер задан явно, остановка с объяснением, а не тихий пропуск" \
+  "$work_type_step1" 'номер задан явно — остановись'
+check_ac_doc "issue #218" "work.md шаг 1 — issue без ссылки на спеку проверке не подлежит" \
+  "$WORKMD" "Issue без строки «Спека:»"
+
+check_ac_doc "issue #218" "plan.md шаг 4 фиксирует литеральный формат строки со спекой в теле issue" \
+  "$PLANMD" 'литерально `Спека: docs/specs/NNN-<слаг>.md`'
+check_ac_doc "issue #218" "plan.md шаг 4 объясняет, что формат не декоративный — по нему work.md механически проверяет main" \
+  "$PLANMD" "Формат не декоративный"
+assert_contains "issue #218: plan.md шаг 4 ссылается на issue #218 у правила формата спеки" \
+  "$plan_step4" 'issue #218'
+
+check_ac_doc "issue #218" "plan.md шаг 5 явно говорит, что issues вехи не стартуют раньше merge спеки" \
+  "$PLANMD" "ни один из них не стартует раньше её merge"
+check_ac_doc "issue #218" "plan.md шаг 5 называет ожидание merge спеки легальным, не застреванием" \
+  "$PLANMD" "легальное ожидание человека, а не застревание"
+assert_contains "issue #218: plan.md шаг 5 ссылается на issue #218 в объяснении ожидания" \
+  "$plan_landing" 'issue #218'
+
+assert_contains "issue #218: autopilot.md шаг 1 требует файл спеки в main наравне с закрытыми Blocked by #N" \
+  "$autopilot_step1" 'все «Blocked by #N» закрыты и, если issue'
+assert_contains "issue #218: autopilot.md шаг 1 ссылается на канонический шаг 1 /work" \
+  "$autopilot_step1" 'та же, что шаг 1 `/work`'
+check_ac_doc "issue #218" "autopilot.md шаг 1 объясняет, почему отдавать такой issue субагенту ошибочно (ложное застревание)" \
+  "$KIT/commands/autopilot.md" "ошибочно прочтёт это как застревание"
+
+# ADR-021 фиксирует решение и осознанно не трогает adk-ralph.sh в этой
+# задаче (объём отдельного фикса — вне атомарной задачи, см. ADR). Файла
+# нет — check_ac_doc красный на пустом doc_text, отдельная проверка
+# существования не нужна.
+check_ac_doc "issue #218" "ADR-021 объясняет, почему adk-ralph.sh не меняется в этой задаче" \
+  "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "не меняется в этой задаче"
+
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
 if [ "$fails" -eq 0 ]; then
