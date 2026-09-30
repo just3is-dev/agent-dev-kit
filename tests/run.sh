@@ -2206,6 +2206,14 @@ echo "AC_CHECK_CALLED"
 exit 0
 EOF
 chmod +x "$KCHK/hooks/scripts/ac-check.sh"
+# frontmatter-check.sh (issue #201) — scripts/check зовёт его безусловно,
+# вне $#-guard'а, который здесь проверяется для ac-check.sh: стаб, чтобы
+# изолированная фикстура не падала на отсутствующем файле.
+cat > "$KCHK/hooks/scripts/frontmatter-check.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$KCHK/hooks/scripts/frontmatter-check.sh"
 cat > "$KCHK/tests/run.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -8579,6 +8587,156 @@ check_ac_doc "issue #218" "adk-ralph.sh header упоминает issue #218 в 
 
 check_ac_doc "issue #218" "ADR-021 описывает spec_missing() в select_next как симметричную owner:human проверку" \
   "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"
+
+# ── Гейт: фронтматтер commands/*.md, agents/*.md, skills/*/SKILL.md
+# (issue #201, hooks/scripts/frontmatter-check.sh) ───────────────────────────
+FM="$TMP/frontmatter"
+rm -rf "$FM"
+mkdir -p "$FM/commands" "$FM/agents" "$FM/skills/demo"
+
+# Все текущие файлы кита проходят молча (DoD issue #201): включая
+# commands/autopilot.md и commands/work.md, чьи description содержат
+# «: » внутри текста (не strict-YAML, но валидны по минимальному
+# парсеру кита — ADR-021).
+fm_kit_out=$("$HOOKS/frontmatter-check.sh" "$KIT" 2>&1)
+assert_exit "issue #201: frontmatter-check проходит все текущие файлы кита" 0 $?
+if [ -z "$fm_kit_out" ]; then fm_kit_silent=0; else fm_kit_silent=1; fi
+assert_exit "issue #201: frontmatter-check не печатает ничего на успех" 0 "$fm_kit_silent"
+
+# Фикстура DoD №1: строка продолжения с колонки 0 (класс бага PR #199,
+# commands/stats.md) — красный check с именем файла.
+cat > "$FM/commands/broken-continuation.md" <<'EOF'
+---
+description: первая строка описания
+продолжение с колонки 0, а не с отступа
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+fm_st=$?
+assert_exit "issue #201: строка-продолжение с колонки 0 — красный check" 1 "$fm_st"
+assert_contains "issue #201: ошибка называет файл со сломанным продолжением" "$fm_out" "broken-continuation.md"
+rm -f "$FM/commands/broken-continuation.md"
+
+# Фикстура DoD №2: отсутствующий description — красный check с именем файла.
+cat > "$FM/commands/missing-description.md" <<'EOF'
+---
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: отсутствующий description у команды — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл без description" "$fm_out" "missing-description.md"
+assert_contains "issue #201: ошибка называет отсутствующий ключ description" "$fm_out" "description"
+rm -f "$FM/commands/missing-description.md"
+
+# Отсутствующий argument-hint у команды — тот же класс, другой ключ.
+cat > "$FM/commands/missing-hint.md" <<'EOF'
+---
+description: есть описание, нет подсказки аргументов
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: отсутствующий argument-hint у команды — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ argument-hint" "$fm_out" "argument-hint"
+rm -f "$FM/commands/missing-hint.md"
+
+# Валидная команда — зелёный check.
+cat > "$FM/commands/ok.md" <<'EOF'
+---
+description: валидная команда
+argument-hint: "[x]"
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201: валидная команда проходит" 0 $?
+rm -f "$FM/commands/ok.md"
+
+# Агент без обязательного tools — красный check.
+cat > "$FM/agents/no-tools.md" <<'EOF'
+---
+name: demo
+description: демо-агент без tools
+model: opus
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: агент без tools — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ tools" "$fm_out" "tools"
+rm -f "$FM/agents/no-tools.md"
+
+# Агент без обязательного model — красный check.
+cat > "$FM/agents/no-model.md" <<'EOF'
+---
+name: demo
+description: демо-агент без model
+tools: Read
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: агент без model — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ model" "$fm_out" "model"
+rm -f "$FM/agents/no-model.md"
+
+# Валидный агент — зелёный check.
+cat > "$FM/agents/ok.md" <<'EOF'
+---
+name: demo
+description: валидный агент
+tools: Read, Grep
+model: opus
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201: валидный агент проходит" 0 $?
+rm -f "$FM/agents/ok.md"
+
+# skill без name — красный check.
+cat > "$FM/skills/demo/SKILL.md" <<'EOF'
+---
+description: скилл без name
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: skill без name — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл skills/demo/SKILL.md" "$fm_out" "skills/demo/SKILL.md"
+assert_contains "issue #201: ошибка называет отсутствующий ключ name" "$fm_out" "'name'"
+
+# Валидный skill — зелёный check.
+cat > "$FM/skills/demo/SKILL.md" <<'EOF'
+---
+name: demo
+description: валидный скилл
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201: валидный skill проходит" 0 $?
+
+# Незакрытый фронтматтер (нет второго ---) — красный check с именем файла,
+# не молчаливая потеря ключей.
+cat > "$FM/commands/unterminated.md" <<'EOF'
+---
+description: без закрывающего разделителя
+argument-hint: "[x]"
+тело без ---
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: незакрытый фронтматтер — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с незакрытым фронтматтером" "$fm_out" "unterminated.md"
+rm -f "$FM/commands/unterminated.md"
+
+# scripts/check кита зовёт frontmatter-check.sh и падает вместе с ним.
+(cd "$KIT" && ./scripts/check >/dev/null 2>&1)
+assert_exit "issue #201: scripts/check кита зелёный (включает frontmatter-check)" 0 $?
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
