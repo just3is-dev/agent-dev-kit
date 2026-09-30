@@ -3019,6 +3019,37 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
   chmod +x "$bindir/gh"
 }
 
+# run_ralph <proj> <bin> <logs> <notify> [config] — единый запуск
+# adk-ralph.sh для фикстур (issue #206, до него 70+ вызовов дублировали
+# 3-4 строки окружения). Код возврата прогона — код возврата функции.
+# Когда config не передан, ADK_CONFIG_FILE не выставляется ВОВСЕ (две
+# явные ветки, не `${cfg:+NAME=…}` — результат подстановки bash парсит
+# командой, а не префикс-присваиванием). Сейчас все вызовы передают
+# конфиг (фикстуры «конфига нет» дают заведомо несуществующий файл ЯВНО
+# — защита от конфига из окружения разработчика, блок NC issue #138),
+# ветка без cfg — задел сигнатуры issue #206 на будущие фикстуры.
+run_ralph() {
+  local proj="$1" bin="$2" logs="$3" notify="$4" cfg="${5:-}"
+  if [ -n "$cfg" ]; then
+    (cd "$proj" && PATH="$bin:$PATH" CLAUDE_PROJECT_DIR="$proj" \
+      ADK_LOGS_DIR="$logs" ADK_CONFIG_FILE="$cfg" \
+      ADK_NOTIFY_FILE="$notify" \
+      CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+  else
+    (cd "$proj" && PATH="$bin:$PATH" CLAUDE_PROJECT_DIR="$proj" \
+      ADK_LOGS_DIR="$logs" \
+      ADK_NOTIFY_FILE="$notify" \
+      CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+  fi
+}
+
+# ralph_journal <logs> — путь журнала прогона за сегодня (issue #206:
+# ~60 ручных повторов пути). Дата по-прежнему вычисляется в момент вызова
+# — латентный полночь-флейк вынесен в issue #217, здесь только дедуп.
+ralph_journal() {
+  printf '%s/autopilot-%s.jsonl' "$1" "$(date +%Y-%m-%d)"
+}
+
 # ── adk-ralph.sh: ralph-цикл SPEC-003, цикл по очереди issues свежим
 # headless-процессом, без --dangerously-skip-permissions (issue #139,
 # AC-1, AC-7) ──────────────────────────────────────────────────────────────
@@ -3030,21 +3061,19 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
 # этого раздела ДО блока issue #129 написаны для проверки самого цикла
 # (SKIP/BLOCKED_ON_READY/breaker/стоп-файл), не merge, и не заготавливают
 # ни gh-стаб для `pr view`/`pr merge`, ни git remote "origin" — реальный
-# merge на них упал бы на первом же незаготовленном вызове gh/git. Экспорт
-# ниже отключает merge (`canMerge=false`) на весь этот раздел одной
-# точкой, не трогая ~40 существующих вызовов `adk-ralph.sh`; `unset` перед
-# разделом issue #129 возвращает поведение по умолчанию для новых фикстур,
-# которые как раз и проверяют merge. Фикстуры, уже задающие свой
-# ADK_CONFIG_FILE явно в вызове (RALPH_OFF/RALPH_TYPO/RALPH_RB_STUCKCFG/
-# RALPH_RB_ZERO), переопределяют этот экспорт для себя и не реализуют
-# ready-исход вовсе (см. их фикстуры) — merge их не касается; RALPH_RB_SHARECFG
-# — единственное исключение, реализующее ready-исход при собственном
-# ADK_CONFIG_FILE, поэтому её конфиг ниже отдельно включает canMerge=false.
+# merge на них упал бы на первом же незаготовленном вызове gh/git. Поэтому
+# фикстуры этого раздела передают общий $RALPH_NOMERGE_CFG (canMerge=false)
+# пятым аргументом run_ralph ЯВНО — ambient-экспорта ADK_CONFIG_FILE больше
+# нет (issue #206: скрытое глобальное состояние с ручным списком исключений
+# делало блоки несамодостаточными), каждый вызов самодостаточен. Фикстуры
+# с собственным конфигом (RALPH_OFF/RALPH_TYPO/RALPH_RB_STUCKCFG/
+# RALPH_RB_ZERO) не реализуют ready-исход вовсе — merge их не касается;
+# RALPH_RB_SHARECFG — единственная, реализующая ready-исход при собственном
+# конфиге, поэтому он отдельно включает canMerge=false.
 RALPH_NOMERGE_CFG="$TMP/ralph-nomerge-config.json"
 cat > "$RALPH_NOMERGE_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false}}}
 EOF
-export ADK_CONFIG_FILE="$RALPH_NOMERGE_CFG"
 
 RALPH="$TMP/ralph-proj"
 RBIN="$TMP/ralph-bin"
@@ -3099,9 +3128,7 @@ chmod +x "$RBIN/claude"
 RALPH_LOGS="$TMP/ralph-logs"
 RALPH_NOTIFY="$TMP/ralph-notify.log"
 
-ralph_out=$(cd "$RALPH" && PATH="$RBIN:$PATH" CLAUDE_PROJECT_DIR="$RALPH" \
-  ADK_LOGS_DIR="$RALPH_LOGS" ADK_NOTIFY_FILE="$RALPH_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_out=$(run_ralph "$RALPH" "$RBIN" "$RALPH_LOGS" "$RALPH_NOTIFY" "$RALPH_NOMERGE_CFG")
 ralph_st=$?
 
 assert_exit "AC-1: adk-ralph: три доступных issue — прогон завершается штатно (exit 0)" 0 "$ralph_st"
@@ -3110,7 +3137,7 @@ assert_contains "AC-1: adk-ralph: сводка перечисляет ready-за
 assert_contains "AC-1: adk-ralph: сводка перечисляет застрявшую задачу с причиной" "$ralph_out" "#1 (PR остался черновиком)"
 assert_contains "AC-1: adk-ralph: сводка перечисляет пропущенную зависимую задачу" "$ralph_out" "#2"
 
-ralph_log="$RALPH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_log="$(ralph_journal "$RALPH_LOGS")"
 [ -f "$ralph_log" ]
 assert_exit "AC-1: adk-ralph: журнал прогона создан" 0 $?
 assert_exit "AC-1: adk-ralph: журнал содержит ровно run_start + 3×event=task + run_end" 5 "$(count_lines "$ralph_log")"
@@ -3229,7 +3256,8 @@ chmod +x "$RBIN_ROOTENV/claude"
 RALPH_ROOTENV_LOGS="$TMP/ralph-rootenv-logs"
 
 ralph_rootenv_out=$(cd "$RALPH_ROOTENV" && unset CLAUDE_PLUGIN_ROOT && PATH="$RBIN_ROOTENV:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ROOTENV" \
-  ADK_LOGS_DIR="$RALPH_ROOTENV_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-rootenv-notify.log" \
+  ADK_LOGS_DIR="$RALPH_ROOTENV_LOGS" ADK_CONFIG_FILE="$RALPH_NOMERGE_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-rootenv-notify.log" \
   "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-1: adk-ralph: без CLAUDE_PLUGIN_ROOT в окружении запуска — прогон всё равно завершается штатно (блокер круга 4 ревью PR #141)" \
   0 $?
@@ -3258,10 +3286,7 @@ cat > "$RALPH_OFF_CFG" <<'EOF'
 {"policies": {"autopilot": {"enabled": false}}}
 EOF
 
-ralph_off_out=$(cd "$RALPH_OFF" && PATH="$RBIN_OFF:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OFF" \
-  ADK_LOGS_DIR="$RALPH_OFF_LOGS" ADK_CONFIG_FILE="$RALPH_OFF_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-off-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_off_out=$(run_ralph "$RALPH_OFF" "$RBIN_OFF" "$RALPH_OFF_LOGS" "$TMP/ralph-off-notify.log" "$RALPH_OFF_CFG")
 assert_exit "AC-1: adk-ralph: policies.autopilot.enabled=false — отказ старта, exit != 0" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение отказа называет policies.autopilot.enabled=false" \
   "$ralph_off_out" "policies.autopilot.enabled=false"
@@ -3276,10 +3301,7 @@ RALPH_TYPO_CFG="$TMP/ralph-typo-config.json"
 cat > "$RALPH_TYPO_CFG" <<'EOF'
 {"policies": {"autopilot": {"enabled": "yes"}}}
 EOF
-ralph_typo_out=$(cd "$RALPH_OFF" && PATH="$RBIN_OFF:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OFF" \
-  ADK_LOGS_DIR="$TMP/ralph-typo-logs" ADK_CONFIG_FILE="$RALPH_TYPO_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-typo-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_typo_out=$(run_ralph "$RALPH_OFF" "$RBIN_OFF" "$TMP/ralph-typo-logs" "$TMP/ralph-typo-notify.log" "$RALPH_TYPO_CFG")
 assert_exit "AC-1: adk-ralph: policies.autopilot.enabled=\"yes\" (опечатка) — fail-closed, отказ старта" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение отказа называет fail-closed на неизвестном значении" \
   "$ralph_typo_out" "fail-closed"
@@ -3306,15 +3328,13 @@ chmod +x "$RBIN_ERR/claude"
 RALPH_ERR_LOGS="$TMP/ralph-err-logs"
 RALPH_ERR_NOTIFY="$TMP/ralph-err-notify.log"
 
-ralph_err_out=$(cd "$RALPH_ERR" && PATH="$RBIN_ERR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ERR" \
-  ADK_LOGS_DIR="$RALPH_ERR_LOGS" ADK_NOTIFY_FILE="$RALPH_ERR_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_err_out=$(run_ralph "$RALPH_ERR" "$RBIN_ERR" "$RALPH_ERR_LOGS" "$RALPH_ERR_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: gh pr list падает — прогон завершается с ошибкой (exit != 0)" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение об ошибке называет причину и номер issue — gh pr list не удался при разборе issue #9" \
   "$ralph_err_out" "gh pr list не удался при разборе issue #9"
 [ ! -f "$RBIN_ERR/issue-edit.log" ]
 assert_exit "AC-1: adk-ralph: gh pr list падает — issue #9 НЕ штампуется needs-human вслепую" 0 $?
-ralph_err_log=$(cat "$RALPH_ERR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_err_log=$(cat "$(ralph_journal "$RALPH_ERR_LOGS")" 2>/dev/null)
 assert_not_contains "AC-1: adk-ralph: gh pr list падает — issue #9 не залогирован как обработанный" \
   "$ralph_err_log" '"issue": "9"'
 assert_contains "AC-1: adk-ralph: run_end фиксирует причину сбоя gh pr list" \
@@ -3372,15 +3392,13 @@ chmod +x "$RBIN3/claude"
 RALPH3_LOGS="$TMP/ralph-three-logs"
 RALPH3_NOTIFY="$TMP/ralph-three-notify.log"
 
-ralph3_out=$(cd "$RALPH3" && PATH="$RBIN3:$PATH" CLAUDE_PROJECT_DIR="$RALPH3" \
-  ADK_LOGS_DIR="$RALPH3_LOGS" ADK_NOTIFY_FILE="$RALPH3_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph3_out=$(run_ralph "$RALPH3" "$RBIN3" "$RALPH3_LOGS" "$RALPH3_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: три независимых issue, все ready — прогон завершается штатно" 0 $?
 assert_exit "AC-1: adk-ralph: три независимых ready-задачи — headless-процесс запущен трижды" \
   3 "$(count_lines "$RBIN3/claude-calls.log")"
-ralph3_log=$(cat "$RALPH3_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph3_log=$(cat "$(ralph_journal "$RALPH3_LOGS")" 2>/dev/null)
 assert_exit "AC-1: adk-ralph: журнал — run_start + 3×event=task(ready) + run_end" \
-  5 "$(count_lines "$RALPH3_LOGS/autopilot-$(date +%Y-%m-%d).jsonl")"
+  5 "$(count_lines "$(ralph_journal "$RALPH3_LOGS")")"
 assert_contains "AC-1: adk-ralph: run_end трёх независимых ready-задач — ready=3" "$ralph3_log" '"ready": "3"'
 ralph3_notify=$(cat "$RALPH3_NOTIFY" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: три независимые ready-задачи — итог прогона тоже дублируется уведомлением" \
@@ -3408,7 +3426,8 @@ chmod +x "$RBIN_NOCLAUDE/gh"
 RALPH_NOCLAUDE_LOGS="$TMP/ralph-noclaude-logs"
 
 ralph_noclaude_out=$(cd "$RALPH_NOCLAUDE" && PATH="$RBIN_NOCLAUDE:/usr/bin:/bin" CLAUDE_PROJECT_DIR="$RALPH_NOCLAUDE" \
-  ADK_LOGS_DIR="$RALPH_NOCLAUDE_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-noclaude-notify.log" \
+  ADK_LOGS_DIR="$RALPH_NOCLAUDE_LOGS" ADK_CONFIG_FILE="$RALPH_NOMERGE_CFG" \
+  ADK_NOTIFY_FILE="$TMP/ralph-noclaude-notify.log" \
   CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
 assert_exit "AC-1: adk-ralph: claude не в PATH — отказ старта (exit != 0)" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение отказа называет отсутствие бинаря claude" \
@@ -3460,9 +3479,7 @@ chmod +x "$RBIN_CFAIL/claude"
 RALPH_CFAIL_LOGS="$TMP/ralph-cfail-logs"
 RALPH_CFAIL_NOTIFY="$TMP/ralph-cfail-notify.log"
 
-ralph_cfail_out=$(cd "$RALPH_CFAIL" && PATH="$RBIN_CFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CFAIL" \
-  ADK_LOGS_DIR="$RALPH_CFAIL_LOGS" ADK_NOTIFY_FILE="$RALPH_CFAIL_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_cfail_out=$(run_ralph "$RALPH_CFAIL" "$RBIN_CFAIL" "$RALPH_CFAIL_LOGS" "$RALPH_CFAIL_NOTIFY" "$RALPH_NOMERGE_CFG")
 ralph_cfail_st=$?
 assert_exit "AC-1: adk-ralph: claude -p падает (exit!=0) — прогон завершается с ошибкой" 1 "$ralph_cfail_st"
 assert_contains "AC-1: adk-ralph: сообщение об ошибке называет issue и причину (не путается со сбоем gh pr list)" \
@@ -3478,13 +3495,13 @@ assert_exit "AC-1: adk-ralph: claude -p падает — gh issue edit needs-hum
 claude_cfail_calls=$(printf '%s' "$(cat "$RBIN_CFAIL/claude-calls.log" 2>/dev/null)" | grep -c "call")
 assert_exit "AC-1: adk-ralph: claude -p падает на первом issue — headless-процесс запущен ровно один раз (не по всей очереди из двух issues)" \
   1 "$claude_cfail_calls"
-ralph_cfail_log=$(cat "$RALPH_CFAIL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_cfail_log=$(cat "$(ralph_journal "$RALPH_CFAIL_LOGS")" 2>/dev/null)
 assert_not_contains "AC-1: adk-ralph: claude -p падает — issue #41 не залогирован как обработанный" \
   "$ralph_cfail_log" '"issue": "41"'
 cfail_spec=$(printf '%s\n%s' \
   'event=run_start' \
   'event=run_end|reason=claude -p завершился с ошибкой (exit 1) при issue #41')
-cfail_valid=$(jsonl_check "$RALPH_CFAIL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2 "$cfail_spec")
+cfail_valid=$(jsonl_check "$(ralph_journal "$RALPH_CFAIL_LOGS")" 2 "$cfail_spec")
 assert_exit "AC-1: adk-ralph: журнал — run_start + run_end с честной причиной сбоя claude -p (не сирота без исхода)" \
   1 "$cfail_valid"
 ralph_cfail_notify=$(cat "$RALPH_CFAIL_NOTIFY" 2>/dev/null)
@@ -3515,9 +3532,7 @@ EOF
 chmod +x "$RBIN_EDITFAIL/claude"
 RALPH_EDITFAIL_LOGS="$TMP/ralph-editfail-logs"
 
-ralph_editfail_out=$(cd "$RALPH_EDITFAIL" && PATH="$RBIN_EDITFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_EDITFAIL" \
-  ADK_LOGS_DIR="$RALPH_EDITFAIL_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-editfail-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_editfail_out=$(run_ralph "$RALPH_EDITFAIL" "$RBIN_EDITFAIL" "$RALPH_EDITFAIL_LOGS" "$TMP/ralph-editfail-notify.log" "$RALPH_NOMERGE_CFG")
 ralph_editfail_st=$?
 assert_exit "AC-1: adk-ralph: gh issue edit needs-human падает — прогон всё равно завершается штатно (громкое предупреждение, не блокер)" \
   0 "$ralph_editfail_st"
@@ -3557,16 +3572,14 @@ EOF
 chmod +x "$RBIN_NH/claude"
 RALPH_NH_LOGS="$TMP/ralph-nh-logs"
 
-ralph_nh_out=$(cd "$RALPH_NH" && PATH="$RBIN_NH:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NH" \
-  ADK_LOGS_DIR="$RALPH_NH_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-nh-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_nh_out=$(run_ralph "$RALPH_NH" "$RBIN_NH" "$RALPH_NH_LOGS" "$TMP/ralph-nh-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: needs-human-каскад — прогон завершается штатно" 0 $?
 assert_contains "AC-1: adk-ralph: needs-human-каскад — сводка перечисляет застрявшую #70" \
   "$ralph_nh_out" "#70 (PR остался черновиком)"
 assert_contains "AC-1: adk-ralph: needs-human-каскад — сводка перечисляет ready #72" "$ralph_nh_out" "#72"
 assert_not_contains "AC-1: adk-ralph: needs-human-каскад — сводка не упоминает уже-needs-human #71 (не в очереди этого прогона)" \
   "$ralph_nh_out" "#71"
-ralph_nh_log=$(cat "$RALPH_NH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_nh_log=$(cat "$(ralph_journal "$RALPH_NH_LOGS")" 2>/dev/null)
 assert_not_contains "AC-1: adk-ralph: needs-human-каскад — журнал не содержит записи по issue #71" \
   "$ralph_nh_log" '"issue": "71"'
 assert_contains "AC-1: adk-ralph: needs-human-каскад — run_end: skipped=0 (needs-human issue не завышает счётчик пропущенных)" \
@@ -3618,9 +3631,7 @@ EOF
 chmod +x "$RBIN_OH/claude"
 RALPH_OH_LOGS="$TMP/ralph-oh-logs"
 
-ralph_oh_out=$(cd "$RALPH_OH" && PATH="$RBIN_OH:$PATH" CLAUDE_PROJECT_DIR="$RALPH_OH" \
-  ADK_LOGS_DIR="$RALPH_OH_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-oh-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_oh_out=$(run_ralph "$RALPH_OH" "$RBIN_OH" "$RALPH_OH_LOGS" "$TMP/ralph-oh-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1 (issue #158): adk-ralph: owner:human — прогон завершается штатно" 0 $?
 assert_contains "AC-1 (issue #158): adk-ralph: owner:human — сводка перечисляет ready #91 (второй issue взят)" \
   "$ralph_oh_out" "#91"
@@ -3629,12 +3640,12 @@ assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — сводка 
 assert_contains "AC-1 (issue #158): adk-ralph: owner:human — сводка называет отдельной строкой число зарезервированных человеком" \
   "$ralph_oh_out" "Зарезервировано человеком: 1"
 
-ralph_oh_log=$(cat "$RALPH_OH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_oh_log=$(cat "$(ralph_journal "$RALPH_OH_LOGS")" 2>/dev/null)
 oh_spec=$(printf '%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=91|type=bug|result=ready' \
   'event=run_end|done=0|ready=1|stuck=0|skipped=0|reason=очередь пуста')
-oh_valid=$(jsonl_check "$RALPH_OH_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 3 "$oh_spec")
+oh_valid=$(jsonl_check "$(ralph_journal "$RALPH_OH_LOGS")" 3 "$oh_spec")
 assert_exit "AC-1 (issue #158): adk-ralph: owner:human — журнал содержит ровно run_start + issue #91 ready + run_end, ничего по #90" \
   1 "$oh_valid"
 assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — журнал не содержит ни одной записи по issue #90" \
@@ -3690,9 +3701,7 @@ EOF
 chmod +x "$RBIN_BLK/claude"
 RALPH_BLK_LOGS="$TMP/ralph-blk-logs"
 
-ralph_blk_out=$(cd "$RALPH_BLK" && PATH="$RBIN_BLK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BLK" \
-  ADK_LOGS_DIR="$RALPH_BLK_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-blk-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_blk_out=$(run_ralph "$RALPH_BLK" "$RBIN_BLK" "$RALPH_BLK_LOGS" "$TMP/ralph-blk-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #146: adk-ralph: словесный разделитель в «Blocked by» — прогон завершается штатно" 0 $?
 assert_contains "issue #146: adk-ralph: очередь берёт независимые #700-#702" \
   "$ralph_blk_out" "#700"
@@ -3732,7 +3741,7 @@ blk_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
   'event=task|issue=702|type=task|result=ready|reused=true' \
   'event=task|issue=502|type=task|result=blocked-on-ready' \
   'event=run_end|done=0|ready=3|stuck=0|skipped=0|blocked_on_ready=3')
-blk_valid=$(jsonl_check "$RALPH_BLK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 8 "$blk_spec")
+blk_valid=$(jsonl_check "$(ralph_journal "$RALPH_BLK_LOGS")" 8 "$blk_spec")
 assert_exit "issue #146: adk-ralph: журнал — #700/#701/#702 ready(reused), #500/#501/#502 blocked-on-ready каждый сразу за своим блокером, run_end без stuck/skipped, blocked_on_ready=3" \
   1 "$blk_valid"
 
@@ -3771,9 +3780,7 @@ exit 0
 EOF
 chmod +x "$RBIN_TRUNC/claude"
 
-ralph_trunc_out=$(cd "$RALPH_TRUNC" && PATH="$RBIN_TRUNC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TRUNC" \
-  ADK_LOGS_DIR="$TMP/ralph-trunc-logs" ADK_NOTIFY_FILE="$TMP/ralph-trunc-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_trunc_out=$(run_ralph "$RALPH_TRUNC" "$RBIN_TRUNC" "$TMP/ralph-trunc-logs" "$TMP/ralph-trunc-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: gh pr list вернул ровно 200 PR на всех трёх итерациях — прогон всё равно завершается штатно (предупреждение, не отказ)" \
   0 $?
 assert_contains "AC-1: adk-ralph: gh pr list вернул ровно 200 — предупреждение об усечении лимитом" \
@@ -3799,9 +3806,7 @@ chmod +x "$RBIN_ILFAIL/claude"
 RALPH_ILFAIL_LOGS="$TMP/ralph-ilfail-logs"
 RALPH_ILFAIL_NOTIFY="$TMP/ralph-ilfail-notify.log"
 
-ralph_ilfail_out=$(cd "$RALPH_ILFAIL" && PATH="$RBIN_ILFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ILFAIL" \
-  ADK_LOGS_DIR="$RALPH_ILFAIL_LOGS" ADK_NOTIFY_FILE="$RALPH_ILFAIL_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_ilfail_out=$(run_ralph "$RALPH_ILFAIL" "$RBIN_ILFAIL" "$RALPH_ILFAIL_LOGS" "$RALPH_ILFAIL_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: gh issue list падает — прогон завершается с ошибкой" 1 $?
 assert_contains "AC-1: adk-ralph: сообщение об ошибке называет сбой gh issue list" \
   "$ralph_ilfail_out" "gh issue list не удался"
@@ -3810,7 +3815,7 @@ assert_not_contains "AC-1: adk-ralph: gh issue list падает — claude ни
 ilfail_spec=$(printf '%s\n%s' \
   'event=run_start' \
   'event=run_end|reason=gh issue list не удался')
-ilfail_valid=$(jsonl_check "$RALPH_ILFAIL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2 "$ilfail_spec")
+ilfail_valid=$(jsonl_check "$(ralph_journal "$RALPH_ILFAIL_LOGS")" 2 "$ilfail_spec")
 assert_exit "AC-1: adk-ralph: gh issue list падает — журнал не сирота: run_start + run_end с причиной" \
   1 "$ilfail_valid"
 ralph_ilfail_notify=$(cat "$RALPH_ILFAIL_NOTIFY" 2>/dev/null)
@@ -3873,9 +3878,7 @@ exit 0
 EOF
 chmod +x "$RBIN_GITSTATE/claude"
 
-ralph_gitstate_out=$(cd "$RALPH_GITSTATE" && PATH="$RBIN_GITSTATE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_GITSTATE" \
-  ADK_LOGS_DIR="$TMP/ralph-gitstate-logs" ADK_NOTIFY_FILE="$TMP/ralph-gitstate-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_gitstate_out=$(run_ralph "$RALPH_GITSTATE" "$RBIN_GITSTATE" "$TMP/ralph-gitstate-logs" "$TMP/ralph-gitstate-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-1: adk-ralph: два независимых issue в настоящем git-репозитории — прогон завершается штатно" 0 $?
 assert_exit "AC-1: adk-ralph: headless-процесс реального git-репозитория запущен дважды" \
   2 "$(count_lines "$RBIN_GITSTATE/claude-start-branch.log")"
@@ -3935,9 +3938,7 @@ exit 0
 EOF
 chmod +x "$RBIN_CHECKOUTFAIL/claude"
 
-ralph_checkoutfail_out=$(cd "$RALPH_CHECKOUTFAIL" && PATH="$RBIN_CHECKOUTFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CHECKOUTFAIL" \
-  ADK_LOGS_DIR="$TMP/ralph-checkoutfail-logs" ADK_NOTIFY_FILE="$TMP/ralph-checkoutfail-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_checkoutfail_out=$(run_ralph "$RALPH_CHECKOUTFAIL" "$RBIN_CHECKOUTFAIL" "$TMP/ralph-checkoutfail-logs" "$TMP/ralph-checkoutfail-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: git checkout main отказывает (дерево грязное) — прогон останавливается с честной причиной (exit != 0), не тихо" \
   1 $?
 assert_contains "issue #144: git checkout main отказывает — громкое предупреждение в stderr называет причину" \
@@ -3951,7 +3952,7 @@ checkoutfail_claude_calls=$(printf '%s' "$(cat "$RBIN_CHECKOUTFAIL/claude-calls.
 assert_exit "issue #144: git checkout main отказывает — вторая задача (#802) НЕ исполняется молча на чужой ветке (headless-процесс запущен ровно один раз)" \
   1 "$checkoutfail_claude_calls"
 
-checkoutfail_log=$(cat "$TMP/ralph-checkoutfail-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+checkoutfail_log=$(cat "$(ralph_journal "$TMP/ralph-checkoutfail-logs")" 2>/dev/null)
 assert_not_contains "issue #144: git checkout main отказывает — issue #802 не залогирован (не был взят в работу)" \
   "$checkoutfail_log" '"issue": "802"'
 
@@ -4002,9 +4003,7 @@ exit 0
 EOF
 chmod +x "$RBIN_CFAIL_MID/claude"
 
-ralph_cfail_mid_out=$(cd "$RALPH_CFAIL_MID" && PATH="$RBIN_CFAIL_MID:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CFAIL_MID" \
-  ADK_LOGS_DIR="$TMP/ralph-cfail-mid-logs" ADK_NOTIFY_FILE="$TMP/ralph-cfail-mid-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_cfail_mid_out=$(run_ralph "$RALPH_CFAIL_MID" "$RBIN_CFAIL_MID" "$TMP/ralph-cfail-mid-logs" "$TMP/ralph-cfail-mid-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: claude -p падает не на первом issue прогона — прогон завершается с ошибкой" \
   1 $?
 assert_contains "issue #144: claude -p падает не на первом issue — стоп-причина называет именно issue #602" \
@@ -4081,9 +4080,7 @@ exit 0
 EOF
 chmod +x "$RBIN_PRFAIL_MID/claude"
 
-ralph_prfail_mid_out=$(cd "$RALPH_PRFAIL_MID" && PATH="$RBIN_PRFAIL_MID:$PATH" CLAUDE_PROJECT_DIR="$RALPH_PRFAIL_MID" \
-  ADK_LOGS_DIR="$TMP/ralph-prfail-mid-logs" ADK_NOTIFY_FILE="$TMP/ralph-prfail-mid-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_prfail_mid_out=$(run_ralph "$RALPH_PRFAIL_MID" "$RBIN_PRFAIL_MID" "$TMP/ralph-prfail-mid-logs" "$TMP/ralph-prfail-mid-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: gh pr list падает не на первом issue прогона — прогон завершается с ошибкой" \
   1 $?
 assert_contains "issue #144: gh pr list падает не на первом issue — стоп-причина называет именно issue #612" \
@@ -4137,9 +4134,7 @@ exit 0
 EOF
 chmod +x "$RBIN_DEFBRANCH/claude"
 
-ralph_defbranch_out=$(cd "$RALPH_DEFBRANCH" && PATH="$RBIN_DEFBRANCH:$PATH" CLAUDE_PROJECT_DIR="$RALPH_DEFBRANCH" \
-  ADK_LOGS_DIR="$TMP/ralph-defbranch-logs" ADK_NOTIFY_FILE="$TMP/ralph-defbranch-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_defbranch_out=$(run_ralph "$RALPH_DEFBRANCH" "$RBIN_DEFBRANCH" "$TMP/ralph-defbranch-logs" "$TMP/ralph-defbranch-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #144: adk-ralph: default branch — trunk (не main) — прогон завершается штатно" 0 $?
 
 defbranch_second_start=$(sed -n '2p' "$RBIN_DEFBRANCH/claude-start-branch.log")
@@ -4203,9 +4198,7 @@ EOF
 chmod +x "$RBIN_AR/claude"
 RALPH_AR_LOGS="$TMP/ralph-already-ready-logs"
 
-ralph_ar_run1=$(cd "$RALPH_AR" && PATH="$RBIN_AR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_AR" \
-  ADK_LOGS_DIR="$RALPH_AR_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-already-ready-notify1.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_ar_run1=$(run_ralph "$RALPH_AR" "$RBIN_AR" "$RALPH_AR_LOGS" "$TMP/ralph-already-ready-notify1.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: первый прогон — issue #61 без PR обрабатывается и становится ready" 0 $?
 assert_contains "issue #147: adk-ralph: первый прогон — сводка перечисляет ready #61" \
   "$ralph_ar_run1" "#61"
@@ -4213,9 +4206,7 @@ assert_contains "issue #147: adk-ralph: первый прогон — сводк
 # Второй, полностью отдельный запуск скрипта (новый процесс, `handled`
 # первого прогона не переживает завершение скрипта) — та же фикстура issues/
 # PR: issue #61 всё ещё в `gh issue list --state open`, PR всё ещё ready.
-ralph_ar_run2=$(cd "$RALPH_AR" && PATH="$RBIN_AR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_AR" \
-  ADK_LOGS_DIR="$RALPH_AR_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-already-ready-notify2.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_ar_run2=$(run_ralph "$RALPH_AR" "$RBIN_AR" "$RALPH_AR_LOGS" "$TMP/ralph-already-ready-notify2.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: второй, отдельный прогон на той же фикстуре — завершается штатно" 0 $?
 assert_contains "issue #147: adk-ralph: второй прогон — сводка всё равно перечисляет ready #61 (не потерян)" \
   "$ralph_ar_run2" "#61"
@@ -4224,7 +4215,7 @@ claude_ar_calls=$(count_lines "$RBIN_AR/claude-calls.log")
 assert_exit "issue #147: adk-ralph: headless-процесс запущен только один раз за оба прогона (второй прогон не повторяет полное исполнение issue #61)" \
   1 "$claude_ar_calls"
 
-ralph_ar_log=$(cat "$RALPH_AR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_ar_log=$(cat "$(ralph_journal "$RALPH_AR_LOGS")" 2>/dev/null)
 ar_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=61|type=task|result=ready' \
@@ -4232,7 +4223,7 @@ ar_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=61|type=task|result=ready|reused=true' \
   'event=run_end|ready=1|stuck=0|skipped=0')
-ar_valid=$(jsonl_check "$RALPH_AR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 6 "$ar_spec")
+ar_valid=$(jsonl_check "$(ralph_journal "$RALPH_AR_LOGS")" 6 "$ar_spec")
 assert_exit "issue #147: adk-ralph: журнал различает первый ready (реальное исполнение) и второй прогон, где issue #61 уже был ready (reused=true) — не полное повторное исполнение" \
   1 "$ar_valid"
 reused_count=$(printf '%s' "$ralph_ar_log" | grep -c '"reused": "true"')
@@ -4272,9 +4263,7 @@ EOF
 chmod +x "$RBIN_BOR/claude"
 RALPH_BOR_LOGS="$TMP/ralph-blocked-on-ready-logs"
 
-ralph_bor_out=$(cd "$RALPH_BOR" && PATH="$RBIN_BOR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR" \
-  ADK_LOGS_DIR="$RALPH_BOR_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-blocked-on-ready-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_bor_out=$(run_ralph "$RALPH_BOR" "$RBIN_BOR" "$RALPH_BOR_LOGS" "$TMP/ralph-blocked-on-ready-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: issue #72 заблокирован ready-но-не-смерженным #71 — прогон завершается штатно" 0 $?
 assert_contains "issue #147: adk-ralph: сводка перечисляет ready #71" "$ralph_bor_out" "#71"
 assert_contains "issue #147: adk-ralph: сводка называет отдельной строкой заблокированный ready-PR блокера #72" \
@@ -4291,13 +4280,13 @@ assert_exit "issue #147: adk-ralph: headless-процесс запущен ро�
 assert_exit "issue #147: adk-ralph: issue #72 не помечается needs-human (не застрял — блокер не решён, а не отказ)" \
   0 $?
 
-ralph_bor_log=$(cat "$RALPH_BOR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_bor_log=$(cat "$(ralph_journal "$RALPH_BOR_LOGS")" 2>/dev/null)
 bor_spec=$(printf '%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=71|type=task|result=ready' \
   'event=task|issue=72|type=task|result=blocked-on-ready' \
   'event=run_end|ready=1|stuck=0|skipped=0|blocked_on_ready=1')
-bor_valid=$(jsonl_check "$RALPH_BOR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 4 "$bor_spec")
+bor_valid=$(jsonl_check "$(ralph_journal "$RALPH_BOR_LOGS")" 4 "$bor_spec")
 assert_exit "issue #147: adk-ralph: журнал — run_start, #71 ready, #72 blocked-on-ready, run_end с blocked_on_ready=1" \
   1 "$bor_valid"
 
@@ -4343,15 +4332,13 @@ EOF
 chmod +x "$RBIN_BOR_MIX/claude"
 RALPH_BOR_MIX_LOGS="$TMP/ralph-bor-mixed-logs"
 
-ralph_bor_mix_out=$(cd "$RALPH_BOR_MIX" && PATH="$RBIN_BOR_MIX:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_MIX" \
-  ADK_LOGS_DIR="$RALPH_BOR_MIX_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-mixed-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_bor_mix_out=$(run_ralph "$RALPH_BOR_MIX" "$RBIN_BOR_MIX" "$RALPH_BOR_MIX_LOGS" "$TMP/ralph-bor-mixed-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: смешанные блокеры (один ready, другой застрял) — прогон завершается штатно" 0 $?
 assert_contains "issue #147: adk-ralph: смешанные блокеры — #72 идёт в обычный каскад SKIP, не blocked-on-ready" \
   "$ralph_bor_mix_out" "Пропущено (зависимость от застрявшей задачи):  #72"
 assert_not_contains "issue #147: adk-ralph: смешанные блокеры — #72 НЕ попадает в бакет blocked-on-ready (не все блокеры ready)" \
   "$ralph_bor_mix_out" "Заблокировано ready-PR блокера:  #72"
-ralph_bor_mix_log=$(cat "$RALPH_BOR_MIX_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_bor_mix_log=$(cat "$(ralph_journal "$RALPH_BOR_MIX_LOGS")" 2>/dev/null)
 assert_contains "issue #147: adk-ralph: смешанные блокеры — журнал: #72 result=skipped" \
   "$ralph_bor_mix_log" '"issue": "72", "type": "task", "result": "skipped"'
 assert_contains "issue #147: adk-ralph: смешанные блокеры — run_end: blocked_on_ready=0" \
@@ -4389,9 +4376,7 @@ EOF
 chmod +x "$RBIN_BOR_CHAIN/claude"
 RALPH_BOR_CHAIN_LOGS="$TMP/ralph-bor-chain-logs"
 
-ralph_bor_chain_out=$(cd "$RALPH_BOR_CHAIN" && PATH="$RBIN_BOR_CHAIN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_CHAIN" \
-  ADK_LOGS_DIR="$RALPH_BOR_CHAIN_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-chain-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_bor_chain_out=$(run_ralph "$RALPH_BOR_CHAIN" "$RBIN_BOR_CHAIN" "$RALPH_BOR_CHAIN_LOGS" "$TMP/ralph-bor-chain-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: цепочка blocked-on-ready (#74 зависит от #72, #72 от ready #71) — прогон завершается штатно" 0 $?
 assert_contains "issue #147: adk-ralph: цепочка — #72 в бакете blocked-on-ready" \
   "$ralph_bor_chain_out" "Заблокировано ready-PR блокера:  #72 #74"
@@ -4400,14 +4385,14 @@ assert_not_contains "issue #147: adk-ralph: цепочка — прогон не
 claude_bor_chain_calls=$(cat "$RBIN_BOR_CHAIN/claude-calls.log" 2>/dev/null | grep -c "call")
 assert_exit "issue #147: adk-ralph: цепочка — headless-процесс запущен ровно один раз (#72 и #74 не исполнялись, оба не кандидаты)" \
   1 "$claude_bor_chain_calls"
-ralph_bor_chain_log=$(cat "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_bor_chain_log=$(cat "$(ralph_journal "$RALPH_BOR_CHAIN_LOGS")" 2>/dev/null)
 bor_chain_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=71|type=task|result=ready' \
   'event=task|issue=72|type=task|result=blocked-on-ready' \
   'event=task|issue=74|type=bug|result=blocked-on-ready' \
   'event=run_end|ready=1|stuck=0|skipped=0|blocked_on_ready=2')
-bor_chain_valid=$(jsonl_check "$RALPH_BOR_CHAIN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 5 "$bor_chain_spec")
+bor_chain_valid=$(jsonl_check "$(ralph_journal "$RALPH_BOR_CHAIN_LOGS")" 5 "$bor_chain_spec")
 assert_exit "issue #147: adk-ralph: журнал цепочки — #71 ready, #72 и #74 blocked-on-ready, run_end blocked_on_ready=2" \
   1 "$bor_chain_valid"
 
@@ -4461,9 +4446,7 @@ EOF
 chmod +x "$RBIN_BOR_XITER/claude"
 RALPH_BOR_XITER_LOGS="$TMP/ralph-bor-xiter-logs"
 
-ralph_bor_xiter_out=$(cd "$RALPH_BOR_XITER" && PATH="$RBIN_BOR_XITER:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BOR_XITER" \
-  ADK_LOGS_DIR="$RALPH_BOR_XITER_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-bor-xiter-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_bor_xiter_out=$(run_ralph "$RALPH_BOR_XITER" "$RBIN_BOR_XITER" "$RALPH_BOR_XITER_LOGS" "$TMP/ralph-bor-xiter-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: неподвижная точка через границу итераций — прогон завершается штатно" 0 $?
 assert_contains "issue #147: adk-ralph: через границу итераций — сводка перечисляет ready #71 и #73" \
   "$ralph_bor_xiter_out" "Ready (ждут человека):  #71 #73"
@@ -4476,7 +4459,7 @@ claude_bor_xiter_calls=$(cat "$RBIN_BOR_XITER/claude-calls.log" 2>/dev/null | gr
 assert_exit "issue #147: adk-ralph: через границу итераций — headless-процесс запущен ровно дважды (#71 и #73; #72 и #74 не исполнялись)" \
   2 "$claude_bor_xiter_calls"
 
-ralph_bor_xiter_log=$(cat "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_bor_xiter_log=$(cat "$(ralph_journal "$RALPH_BOR_XITER_LOGS")" 2>/dev/null)
 bor_xiter_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=71|type=task|result=ready' \
@@ -4484,7 +4467,7 @@ bor_xiter_spec=$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
   'event=task|issue=73|type=task|result=ready' \
   'event=task|issue=74|type=bug|result=blocked-on-ready' \
   'event=run_end|ready=2|stuck=0|skipped=0|blocked_on_ready=2')
-bor_xiter_valid=$(jsonl_check "$RALPH_BOR_XITER_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 6 "$bor_xiter_spec")
+bor_xiter_valid=$(jsonl_check "$(ralph_journal "$RALPH_BOR_XITER_LOGS")" 6 "$bor_xiter_spec")
 assert_exit "issue #147: adk-ralph: журнал через границу итераций — #71/#73 ready, #72/#74 blocked-on-ready, run_end blocked_on_ready=2" \
   1 "$bor_xiter_valid"
 
@@ -4524,9 +4507,7 @@ chmod +x "$RBIN_SYSGATE/claude"
 RALPH_SYSGATE_LOGS="$TMP/ralph-sysgate-logs"
 RALPH_SYSGATE_NOTIFY="$TMP/ralph-sysgate-notify.log"
 
-ralph_sysgate_out=$(cd "$RALPH_SYSGATE" && PATH="$RBIN_SYSGATE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SYSGATE" \
-  ADK_LOGS_DIR="$RALPH_SYSGATE_LOGS" ADK_NOTIFY_FILE="$RALPH_SYSGATE_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_sysgate_out=$(run_ralph "$RALPH_SYSGATE" "$RBIN_SYSGATE" "$RALPH_SYSGATE_LOGS" "$RALPH_SYSGATE_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) красный scripts/check на main — прогон завершается с ошибкой (exit != 0)" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #135) сводка называет причину «системный breaker: красные гейты main»" \
@@ -4540,13 +4521,13 @@ sysgate_notify=$(cat "$RALPH_SYSGATE_NOTIFY" 2>/dev/null)
 assert_contains "AC-5: adk-ralph: (issue #135) уведомление о системном breaker (красные гейты main)" \
   "$sysgate_notify" "системный breaker: красные гейты main"
 
-sysgate_log=$(cat "$RALPH_SYSGATE_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+sysgate_log=$(cat "$(ralph_journal "$RALPH_SYSGATE_LOGS")" 2>/dev/null)
 assert_not_contains "AC-5: adk-ralph: (issue #135) красный scripts/check на main — прогон не начат вовсе, ни одной строки event=task" \
   "$sysgate_log" '"event": "task"'
 sysgate_spec=$(printf '%s\n%s' \
   'event=run_start' \
   'event=run_end|reason=системный breaker: красные гейты main')
-sysgate_valid=$(jsonl_check "$RALPH_SYSGATE_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2 "$sysgate_spec")
+sysgate_valid=$(jsonl_check "$(ralph_journal "$RALPH_SYSGATE_LOGS")" 2 "$sysgate_spec")
 assert_exit "AC-5: adk-ralph: (issue #135) журнал — только run_start + run_end с честной причиной, задач не было" \
   1 "$sysgate_valid"
 
@@ -4593,9 +4574,7 @@ exit 0
 EOF
 chmod +x "$RBIN_SYSGATE2/claude"
 
-ralph_sysgate2_out=$(cd "$RALPH_SYSGATE2" && PATH="$RBIN_SYSGATE2:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SYSGATE2" \
-  ADK_LOGS_DIR="$TMP/ralph-sysgate2-logs" ADK_NOTIFY_FILE="$TMP/ralph-sysgate2-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_sysgate2_out=$(run_ralph "$RALPH_SYSGATE2" "$RBIN_SYSGATE2" "$TMP/ralph-sysgate2-logs" "$TMP/ralph-sysgate2-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) гейты краснеют после первой итерации — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #135) гейты краснеют после первой итерации — сводка называет системный breaker" \
@@ -4605,7 +4584,7 @@ sysgate2_call_count=$(cat "$RBIN_SYSGATE2/claude-calls.log" 2>/dev/null | grep -
 assert_exit "AC-5: adk-ralph: (issue #135) гейты краснеют после первой итерации — headless-процесс вызван ровно один раз (issue #403 не тронут)" \
   1 "$sysgate2_call_count"
 assert_not_contains "AC-5: adk-ralph: (issue #135) гейты краснеют после первой итерации — issue #403 не залогирован" \
-  "$(cat "$TMP/ralph-sysgate2-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)" '"issue": "403"'
+  "$(cat "$(ralph_journal "$TMP/ralph-sysgate2-logs")" 2>/dev/null)" '"issue": "403"'
 
 # ── issue #135: проект вовсе без scripts/check и scripts/test — переходное
 # состояние (docs/contract.md), не ошибка: гейт молча пропускается, прогон
@@ -4634,9 +4613,7 @@ exit 0
 EOF
 chmod +x "$RBIN_NOSCRIPTS/claude"
 
-ralph_noscripts_out=$(cd "$RALPH_NOSCRIPTS" && PATH="$RBIN_NOSCRIPTS:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NOSCRIPTS" \
-  ADK_LOGS_DIR="$TMP/ralph-noscripts-logs" ADK_NOTIFY_FILE="$TMP/ralph-noscripts-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_noscripts_out=$(run_ralph "$RALPH_NOSCRIPTS" "$RBIN_NOSCRIPTS" "$TMP/ralph-noscripts-logs" "$TMP/ralph-noscripts-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) проект без scripts/check и scripts/test — гейт молча пропускается, прогон штатный (exit 0)" \
   0 $?
 assert_contains "AC-5: adk-ralph: (issue #135) без контрактных скриптов — сводка называет «очередь пуста», не breaker" \
@@ -4676,9 +4653,7 @@ exit 0
 EOF
 chmod +x "$RBIN_SYSGATE_TEST/claude"
 
-ralph_sysgate_test_out=$(cd "$RALPH_SYSGATE_TEST" && PATH="$RBIN_SYSGATE_TEST:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SYSGATE_TEST" \
-  ADK_LOGS_DIR="$TMP/ralph-sysgate-test-logs" ADK_NOTIFY_FILE="$TMP/ralph-sysgate-test-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_sysgate_test_out=$(run_ralph "$RALPH_SYSGATE_TEST" "$RBIN_SYSGATE_TEST" "$TMP/ralph-sysgate-test-logs" "$TMP/ralph-sysgate-test-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) красный scripts/test (без scripts/check) — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #135) красный scripts/test — сводка называет системный breaker" \
@@ -4721,9 +4696,7 @@ RALPH_LOGFAIL_BROKEN_DIR="$TMP/ralph-logfail-notadir"
 : > "$RALPH_LOGFAIL_BROKEN_DIR"
 RALPH_LOGFAIL_NOTIFY="$TMP/ralph-logfail-notify.log"
 
-ralph_logfail_out=$(cd "$RALPH_LOGFAIL" && PATH="$RBIN_LOGFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_LOGFAIL" \
-  ADK_LOGS_DIR="$RALPH_LOGFAIL_BROKEN_DIR" ADK_NOTIFY_FILE="$RALPH_LOGFAIL_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_logfail_out=$(run_ralph "$RALPH_LOGFAIL" "$RBIN_LOGFAIL" "$RALPH_LOGFAIL_BROKEN_DIR" "$RALPH_LOGFAIL_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) сломанная запись журнала — прогон завершается с ошибкой (exit != 0)" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #135) сводка называет причину «системный breaker: отказ записи журнала»" \
@@ -4791,9 +4764,7 @@ exit 0
 EOF
 chmod +x "$RBIN_MIDLOGFAIL/claude"
 
-ralph_midlogfail_out=$(cd "$RALPH_MIDLOGFAIL" && PATH="$RBIN_MIDLOGFAIL:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MIDLOGFAIL" \
-  ADK_LOGS_DIR="$RALPH_MIDLOGFAIL_LOGS" ADK_NOTIFY_FILE="$TMP/ralph-midlogfail-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_midlogfail_out=$(run_ralph "$RALPH_MIDLOGFAIL" "$RBIN_MIDLOGFAIL" "$RALPH_MIDLOGFAIL_LOGS" "$TMP/ralph-midlogfail-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла (не на run_start) — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла — сводка называет системный breaker" \
@@ -4806,7 +4777,7 @@ assert_exit "AC-5: adk-ralph: (issue #135) отказ журнала внутр�
 assert_contains "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла — #481 успел исполниться до отказа" \
   "$midlogfail_calls" "call 481"
 
-midlogfail_preserved_log=$(cat "${RALPH_MIDLOGFAIL_LOGS}.bak/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+midlogfail_preserved_log=$(cat "$(ralph_journal "${RALPH_MIDLOGFAIL_LOGS}.bak")" 2>/dev/null)
 assert_contains "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла — #481 успел залогироваться (журнал был ещё жив)" \
   "$midlogfail_preserved_log" '"issue": "481"'
 assert_not_contains "AC-5: adk-ralph: (issue #135) отказ журнала внутри цикла — #482 (SKIP, отказавшая запись) не залогирован" \
@@ -4887,9 +4858,7 @@ exit 0
 EOF
 chmod +x "$RBIN_CONFLICT/claude"
 
-ralph_conflict_out=$(cd "$RALPH_CONFLICT" && PATH="$RBIN_CONFLICT:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CONFLICT" \
-  ADK_LOGS_DIR="$TMP/ralph-conflict-logs" ADK_NOTIFY_FILE="$TMP/ralph-conflict-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_conflict_out=$(run_ralph "$RALPH_CONFLICT" "$RBIN_CONFLICT" "$TMP/ralph-conflict-logs" "$TMP/ralph-conflict-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #135) серия из 2 конфликтов актуализации подряд — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #135) серия конфликтов актуализации — сводка называет системный breaker" \
@@ -4950,9 +4919,7 @@ chmod +x "$RBIN_RB_STUCK/claude"
 
 RALPH_RB_STUCK_LOGS="$TMP/ralph-rb-stuck-logs"
 RALPH_RB_STUCK_NOTIFY="$TMP/ralph-rb-stuck-notify.log"
-ralph_rb_stuck_out=$(cd "$RALPH_RB_STUCK" && PATH="$RBIN_RB_STUCK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_STUCK" \
-  ADK_LOGS_DIR="$RALPH_RB_STUCK_LOGS" ADK_NOTIFY_FILE="$RALPH_RB_STUCK_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_stuck_out=$(run_ralph "$RALPH_RB_STUCK" "$RBIN_RB_STUCK" "$RALPH_RB_STUCK_LOGS" "$RALPH_RB_STUCK_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) 2 застревания за прогон (дефолт maxStuckPerRun) — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #134) сводка называет причину «breaker: застревания за прогон»" \
@@ -4962,7 +4929,7 @@ rb_stuck_call_count=$(cat "$RBIN_RB_STUCK/claude-calls.log" 2>/dev/null | grep -
 assert_exit "AC-5: adk-ralph: (issue #134) headless-процесс вызван ровно дважды — issue #703 не берётся после breaker" \
   2 "$rb_stuck_call_count"
 
-rb_stuck_log=$(cat "$RALPH_RB_STUCK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+rb_stuck_log=$(cat "$(ralph_journal "$RALPH_RB_STUCK_LOGS")" 2>/dev/null)
 assert_contains "AC-5: adk-ralph: (issue #134) run_end фиксирует причину breaker'а застреваний" \
   "$rb_stuck_log" '"reason": "breaker: застревания за прогон"'
 assert_not_contains "AC-5: adk-ralph: (issue #134) issue #703 не залогирован вовсе" \
@@ -5018,9 +4985,7 @@ chmod +x "$RBIN_RB_SHARE/claude"
 
 RALPH_RB_SHARE_LOGS="$TMP/ralph-rb-share-logs"
 RALPH_RB_SHARE_NOTIFY="$TMP/ralph-rb-share-notify.log"
-ralph_rb_share_out=$(cd "$RALPH_RB_SHARE" && PATH="$RBIN_RB_SHARE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARE" \
-  ADK_LOGS_DIR="$RALPH_RB_SHARE_LOGS" ADK_NOTIFY_FILE="$RALPH_RB_SHARE_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_share_out=$(run_ralph "$RALPH_RB_SHARE" "$RBIN_RB_SHARE" "$RALPH_RB_SHARE_LOGS" "$RALPH_RB_SHARE_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) доля пропущенных 3/4=0.75 выше дефолтного maxSkippedShare — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #134) сводка называет причину «breaker: доля пропущенных за прогон»" \
@@ -5030,7 +4995,7 @@ rb_share_call_count=$(cat "$RBIN_RB_SHARE/claude-calls.log" 2>/dev/null | grep -
 assert_exit "AC-5: adk-ralph: (issue #134) headless-процесс вызван ровно один раз — issue #715 не берётся после breaker" \
   1 "$rb_share_call_count"
 
-rb_share_log=$(cat "$RALPH_RB_SHARE_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+rb_share_log=$(cat "$(ralph_journal "$RALPH_RB_SHARE_LOGS")" 2>/dev/null)
 assert_contains "AC-5: adk-ralph: (issue #134) run_end фиксирует причину breaker'а доли пропущенных" \
   "$rb_share_log" '"reason": "breaker: доля пропущенных за прогон"'
 assert_not_contains "AC-5: adk-ralph: (issue #134) issue #715 не залогирован вовсе" \
@@ -5074,9 +5039,7 @@ exit 0
 EOF
 chmod +x "$RBIN_RB_SMALLN/claude"
 
-ralph_rb_smalln_out=$(cd "$RALPH_RB_SMALLN" && PATH="$RBIN_RB_SMALLN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SMALLN" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-smalln-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-smalln-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_smalln_out=$(run_ralph "$RALPH_RB_SMALLN" "$RBIN_RB_SMALLN" "$TMP/ralph-rb-smalln-logs" "$TMP/ralph-rb-smalln-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) прогон короче знаменателя (3 задачи < 4) — не останавливается (exit 0)" \
   0 $?
 assert_contains "AC-5: adk-ralph: (issue #134) прогон короче знаменателя — доигрывает до «очередь пуста»" \
@@ -5130,9 +5093,7 @@ exit 0
 EOF
 chmod +x "$RBIN_RB_LASTTASK/claude"
 
-ralph_rb_lasttask_out=$(cd "$RALPH_RB_LASTTASK" && PATH="$RBIN_RB_LASTTASK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_LASTTASK" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-lasttask-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-lasttask-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_lasttask_out=$(run_ralph "$RALPH_RB_LASTTASK" "$RBIN_RB_LASTTASK" "$TMP/ralph-rb-lasttask-logs" "$TMP/ralph-rb-lasttask-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) breaker на последней доступной задаче — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #134) breaker на последней задаче — причина «breaker: застревания за прогон», не «очередь пуста»" \
@@ -5179,10 +5140,7 @@ cat > "$RALPH_RB_STUCKCFG_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 1}}}}
 EOF
 
-ralph_rb_stuckcfg_out=$(cd "$RALPH_RB_STUCKCFG" && PATH="$RBIN_RB_STUCKCFG:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_STUCKCFG" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-stuckcfg-logs" ADK_CONFIG_FILE="$RALPH_RB_STUCKCFG_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-rb-stuckcfg-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_stuckcfg_out=$(run_ralph "$RALPH_RB_STUCKCFG" "$RBIN_RB_STUCKCFG" "$TMP/ralph-rb-stuckcfg-logs" "$TMP/ralph-rb-stuckcfg-notify.log" "$RALPH_RB_STUCKCFG_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=1 из конфига — прогон завершается с ошибкой после первого застревания" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #134) maxStuckPerRun=1 — сводка называет breaker застреваний" \
@@ -5226,10 +5184,7 @@ cat > "$RALPH_RB_ZERO_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 0}}}}
 EOF
 
-ralph_rb_zero_out=$(cd "$RALPH_RB_ZERO" && PATH="$RBIN_RB_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_ZERO" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-zero-logs" ADK_CONFIG_FILE="$RALPH_RB_ZERO_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-rb-zero-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_zero_out=$(run_ralph "$RALPH_RB_ZERO" "$RBIN_RB_ZERO" "$TMP/ralph-rb-zero-logs" "$TMP/ralph-rb-zero-notify.log" "$RALPH_RB_ZERO_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) maxStuckPerRun=0 из конфига — останавливается после первого (не до старта прогона)" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #134) maxStuckPerRun=0 — сводка называет breaker застреваний" \
@@ -5290,8 +5245,8 @@ chmod +x "$RBIN_RB_SHARECFG/claude"
 
 RALPH_RB_SHARECFG_CFG="$TMP/ralph-rb-sharecfg-config.json"
 # canMerge:false — эта фикстура (в отличие от RALPH_RB_STUCKCFG/RALPH_RB_ZERO
-# рядом) реализует ready-исход (#762) и задаёт свой ADK_CONFIG_FILE, поэтому
-# не подхватывает общий RALPH_NOMERGE_CFG выше (issue #129): без этого
+# рядом) реализует ready-исход (#762) со своим конфигом вместо общего
+# $RALPH_NOMERGE_CFG (issue #129): без явного
 # ключа #762 попал бы в merge-ветку без стаба gh на pr view/pr merge и
 # сломал бы расчёт доли (denominator ready+merged+stuck+skipped, ADR-019 §9),
 # который проверяет именно этот тест.
@@ -5299,10 +5254,7 @@ cat > "$RALPH_RB_SHARECFG_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxSkippedShare": 0.3}, "canMerge": false}}}
 EOF
 
-ralph_rb_sharecfg_out=$(cd "$RALPH_RB_SHARECFG" && PATH="$RBIN_RB_SHARECFG:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARECFG" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-sharecfg-logs" ADK_CONFIG_FILE="$RALPH_RB_SHARECFG_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-rb-sharecfg-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_sharecfg_out=$(run_ralph "$RALPH_RB_SHARECFG" "$RBIN_RB_SHARECFG" "$TMP/ralph-rb-sharecfg-logs" "$TMP/ralph-rb-sharecfg-notify.log" "$RALPH_RB_SHARECFG_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 из конфига — доля РОВНО 0.5 (не превышает дефолт 0.5) останавливает прогон" \
   1 $?
 assert_contains "AC-5: adk-ralph: (issue #134) maxSkippedShare=0.3 — сводка называет breaker доли пропущенных" \
@@ -5360,9 +5312,7 @@ exit 0
 EOF
 chmod +x "$RBIN_RB_SHARE_BOUNDARY/claude"
 
-ralph_rb_share_boundary_out=$(cd "$RALPH_RB_SHARE_BOUNDARY" && PATH="$RBIN_RB_SHARE_BOUNDARY:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_SHARE_BOUNDARY" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-share-boundary-logs" ADK_NOTIFY_FILE="$TMP/ralph-rb-share-boundary-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_share_boundary_out=$(run_ralph "$RALPH_RB_SHARE_BOUNDARY" "$RBIN_RB_SHARE_BOUNDARY" "$TMP/ralph-rb-share-boundary-logs" "$TMP/ralph-rb-share-boundary-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-5: adk-ralph: (issue #134) доля РОВНО на дефолтном пороге 0.5 (строгое «>») — прогон НЕ останавливается (exit 0)" \
   0 $?
 assert_contains "AC-5: adk-ralph: (issue #134) доля на пороге — доигрывает до «очередь пуста»" \
@@ -5408,10 +5358,7 @@ RALPH_RB_NAN_CFG="$TMP/ralph-rb-nan-config.json"
 cat > "$RALPH_RB_NAN_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxSkippedShare": "nan"}}}}
 EOF
-ralph_rb_nan_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-nan-logs" ADK_CONFIG_FILE="$RALPH_RB_NAN_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-rb-nan-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_nan_out=$(run_ralph "$RALPH_RB_NAN" "$RBIN_RB_NAN" "$TMP/ralph-rb-nan-logs" "$TMP/ralph-rb-nan-notify.log" "$RALPH_RB_NAN_CFG")
 assert_exit "issue #213: adk-ralph: maxSkippedShare=\"nan\" — breaker жив, прогон остановлен (exit != 0)" \
   1 $?
 assert_contains "issue #213: adk-ralph: nan отвергнут валидатором с предупреждением и дефолтом 0.5" \
@@ -5433,10 +5380,7 @@ RALPH_RB_INF_CFG="$TMP/ralph-rb-inf-config.json"
 cat > "$RALPH_RB_INF_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxSkippedShare": "inf"}}}}
 EOF
-ralph_rb_inf_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-inf-logs" ADK_CONFIG_FILE="$RALPH_RB_INF_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-rb-inf-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_inf_out=$(run_ralph "$RALPH_RB_NAN" "$RBIN_RB_NAN" "$TMP/ralph-rb-inf-logs" "$TMP/ralph-rb-inf-notify.log" "$RALPH_RB_INF_CFG")
 assert_exit "issue #213: adk-ralph: maxSkippedShare=\"inf\" — тоже отвергнут, breaker жив (exit != 0)" \
   1 $?
 assert_contains "issue #213: adk-ralph: inf отвергнут с предупреждением и дефолтом (порог обязан быть конечным)" \
@@ -5456,10 +5400,7 @@ RALPH_RB_BIGINT_CFG="$TMP/ralph-rb-bigint-config.json"
 cat > "$RALPH_RB_BIGINT_CFG" <<'EOF'
 {"policies": {"autopilot": {"breaker": {"maxStuckPerRun": 999999999999999999999999}}}}
 EOF
-ralph_rb_bigint_out=$(cd "$RALPH_RB_NAN" && PATH="$RBIN_RB_NAN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_RB_NAN" \
-  ADK_LOGS_DIR="$TMP/ralph-rb-bigint-logs" ADK_CONFIG_FILE="$RALPH_RB_BIGINT_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-rb-bigint-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_rb_bigint_out=$(run_ralph "$RALPH_RB_NAN" "$RBIN_RB_NAN" "$TMP/ralph-rb-bigint-logs" "$TMP/ralph-rb-bigint-notify.log" "$RALPH_RB_BIGINT_CFG")
 ralph_rb_bigint_st=$?
 assert_not_contains "issue #210: adk-ralph: гигантский maxStuckPerRun не ломает bash-сравнение (нет «integer expression expected»)" \
   "$ralph_rb_bigint_out" "integer expression expected"
@@ -5509,9 +5450,7 @@ chmod +x "$RBIN_STOP/claude"
 
 RALPH_STOP_LOGS="$TMP/ralph-stop-logs"
 RALPH_STOP_NOTIFY="$TMP/ralph-stop-notify.log"
-ralph_stop_out=$(cd "$RALPH_STOP" && PATH="$RBIN_STOP:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP" \
-  ADK_LOGS_DIR="$RALPH_STOP_LOGS" ADK_NOTIFY_FILE="$RALPH_STOP_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_stop_out=$(run_ralph "$RALPH_STOP" "$RBIN_STOP" "$RALPH_STOP_LOGS" "$RALPH_STOP_NOTIFY" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: стоп-файл, созданный во время первой итерации, останавливает прогон (exit != 0)" \
   1 $?
 assert_contains "AC-2: adk-ralph: сводка называет причину «стоп-файл»" \
@@ -5525,7 +5464,7 @@ assert_exit "AC-2: adk-ralph: headless-процесс вызван ровно о
 assert_not_contains "AC-2: adk-ralph: issue #1302 не тронут вовсе" "$ralph_stop_out" "#1302"
 assert_not_contains "AC-2: adk-ralph: issue #1303 (третий доступный) не тронут вовсе" "$ralph_stop_out" "#1303"
 
-stop_log_file="$RALPH_STOP_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+stop_log_file="$(ralph_journal "$RALPH_STOP_LOGS")"
 stop_log=$(cat "$stop_log_file" 2>/dev/null)
 assert_not_contains "AC-2: adk-ralph: в журнале нет незавершённой записи по невзятому issue #1302" \
   "$stop_log" '"issue": "1302"'
@@ -5574,9 +5513,7 @@ exit 0
 EOF
 chmod +x "$RBIN_STOP_PRE/claude"
 
-ralph_stop_pre_out=$(cd "$RALPH_STOP_PRE" && PATH="$RBIN_STOP_PRE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_PRE" \
-  ADK_LOGS_DIR="$TMP/ralph-stop-pre-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-pre-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_stop_pre_out=$(run_ralph "$RALPH_STOP_PRE" "$RBIN_STOP_PRE" "$TMP/ralph-stop-pre-logs" "$TMP/ralph-stop-pre-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: стоп-файл, лежащий до старта, удаляется на старте — прогон завершается штатно (exit 0)" \
   0 $?
 assert_contains "AC-2: adk-ralph: прогон с файлом до старта доигрывает до «очередь пуста», не «стоп-файл»" \
@@ -5622,9 +5559,7 @@ exit 0
 EOF
 chmod +x "$RBIN_STOP_LAST/claude"
 
-ralph_stop_last_out=$(cd "$RALPH_STOP_LAST" && PATH="$RBIN_STOP_LAST:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_LAST" \
-  ADK_LOGS_DIR="$TMP/ralph-stop-last-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-last-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_stop_last_out=$(run_ralph "$RALPH_STOP_LAST" "$RBIN_STOP_LAST" "$TMP/ralph-stop-last-logs" "$TMP/ralph-stop-last-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: стоп-файл на последнем доступном issue — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-2: adk-ralph: стоп-файл на последнем issue — сводка называет причиной «стоп-файл»" \
@@ -5680,9 +5615,7 @@ exit 0
 EOF
 chmod +x "$RBIN_STOP_VS_BREAKER/claude"
 
-ralph_stop_vs_breaker_out=$(cd "$RALPH_STOP_VS_BREAKER" && PATH="$RBIN_STOP_VS_BREAKER:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_VS_BREAKER" \
-  ADK_LOGS_DIR="$TMP/ralph-stop-vs-breaker-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-vs-breaker-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_stop_vs_breaker_out=$(run_ralph "$RALPH_STOP_VS_BREAKER" "$RBIN_STOP_VS_BREAKER" "$TMP/ralph-stop-vs-breaker-logs" "$TMP/ralph-stop-vs-breaker-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: коллизия стоп-файл vs breaker застреваний — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-2: adk-ralph: коллизия — причина остановки breaker (обнаружен раньше), не «стоп-файл»" \
@@ -5740,9 +5673,7 @@ exit 0
 EOF
 chmod +x "$RBIN_STOP_VS_GATES/claude"
 
-ralph_stop_vs_gates_out=$(cd "$RALPH_STOP_VS_GATES" && PATH="$RBIN_STOP_VS_GATES:$PATH" CLAUDE_PROJECT_DIR="$RALPH_STOP_VS_GATES" \
-  ADK_LOGS_DIR="$TMP/ralph-stop-vs-gates-logs" ADK_NOTIFY_FILE="$TMP/ralph-stop-vs-gates-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_stop_vs_gates_out=$(run_ralph "$RALPH_STOP_VS_GATES" "$RBIN_STOP_VS_GATES" "$TMP/ralph-stop-vs-gates-logs" "$TMP/ralph-stop-vs-gates-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "AC-2: adk-ralph: коллизия стоп-файл vs красные гейты main — прогон завершается с ошибкой" \
   1 $?
 assert_contains "AC-2: adk-ralph: коллизия — причина остановки «стоп-файл» (проверяется раньше системного breaker'а)" \
@@ -5754,11 +5685,10 @@ assert_exit "AC-2: adk-ralph: коллизия — headless-процесс вы�
   1 "$svg_call_count"
 
 # ── issue #129 (SPEC-003 AC-1, ADR-019): merge ready-PR по policies.merge/
-# canMerge в adk-ralph.sh. Отсюда прогон больше не отключает merge —
-# unset возвращает поведение по умолчанию (canMerge=true,
-# policies.merge=agent-after-approve), каждая фикстура ниже задаёт
-# ADK_CONFIG_FILE явно, там, где нужны другие значения ──────────────────────
-unset ADK_CONFIG_FILE
+# canMerge в adk-ralph.sh. Фикстуры отсюда проверяют merge: общий
+# $RALPH_NOMERGE_CFG им не передаётся; дефолты (canMerge=true,
+# policies.merge=agent-after-approve) действуют сами, свой конфиг
+# передаётся только там, где нужны другие значения ──────────────────────────
 
 # (a) DoD-фикстура 1: canMerge=true, актуальная ветка, ready-PR → стаб
 # получает команду merge с флагом из --merge-method (дефолт squash-merge →
@@ -5814,16 +5744,13 @@ cat > "$RALPH_MERGE_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_merge_out=$(cd "$RALPH_MERGE" && PATH="$RBIN_MERGE:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MERGE" \
-  ADK_LOGS_DIR="$TMP/ralph-merge-logs" ADK_CONFIG_FILE="$RALPH_MERGE_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-merge-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_merge_out=$(run_ralph "$RALPH_MERGE" "$RBIN_MERGE" "$TMP/ralph-merge-logs" "$TMP/ralph-merge-notify.log" "$RALPH_MERGE_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) canMerge=true, актуальная ветка, ready-PR — прогон завершается штатно" \
   0 $?
 pr_merge_calls_log=$(cat "$RBIN_MERGE/pr-merge-calls.log" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) gh pr merge вызван с флагом из --merge-method (дефолт squash-merge → --squash), не жёстким хардкодом" \
   "$pr_merge_calls_log" "pr merge 5001 --squash --delete-branch"
-ralph_merge_log=$(cat "$TMP/ralph-merge-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_merge_log=$(cat "$(ralph_journal "$TMP/ralph-merge-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) журнал — issue #2001 result=merged" \
   "$ralph_merge_log" '"result": "merged"'
 assert_contains "AC-1: adk-ralph: (issue #129) журнал — run_end.done отражает число смерженных (было всегда 0 до этой задачи)" \
@@ -5888,10 +5815,7 @@ cat > "$RALPH_MERGE2_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}, "conventions": {"squash": false, "branchUpdate": "rebase"}}
 EOF
 
-ralph_merge2_out=$(cd "$RALPH_MERGE2" && PATH="$RBIN_MERGE2:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MERGE2" \
-  ADK_LOGS_DIR="$TMP/ralph-merge2-logs" ADK_CONFIG_FILE="$RALPH_MERGE2_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-merge2-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_merge2_out=$(run_ralph "$RALPH_MERGE2" "$RBIN_MERGE2" "$TMP/ralph-merge2-logs" "$TMP/ralph-merge2-notify.log" "$RALPH_MERGE2_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) conventions.squash=false — прогон завершается штатно" 0 $?
 merge2_log=$(cat "$RBIN_MERGE2/pr-merge-calls.log" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) conventions.squash=false + branchUpdate=rebase — флаг merge --rebase, взят из --merge-method, не зашитый --squash" \
@@ -5930,14 +5854,11 @@ cat > "$RALPH_HO_CFG" <<'EOF'
 {"policies": {"merge": "human-only"}}
 EOF
 
-ralph_ho_out=$(cd "$RALPH_HO" && PATH="$RBIN_HO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_HO" \
-  ADK_LOGS_DIR="$TMP/ralph-ho-logs" ADK_CONFIG_FILE="$RALPH_HO_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-ho-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_ho_out=$(run_ralph "$RALPH_HO" "$RBIN_HO" "$TMP/ralph-ho-logs" "$TMP/ralph-ho-notify.log" "$RALPH_HO_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) policies.merge=human-only — прогон завершается штатно" 0 $?
 assert_not_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — ни одного непредвиденного вызова gh (значит, ни pr view, ни pr merge не вызывались)" \
   "$ralph_ho_out" "unexpected gh call"
-ralph_ho_log=$(cat "$TMP/ralph-ho-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_ho_log=$(cat "$(ralph_journal "$TMP/ralph-ho-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — result=ready, не merged" \
   "$ralph_ho_log" '"result": "ready"'
 assert_contains "AC-1: adk-ralph: (issue #129) policies.merge=human-only — сводка «Смержено: нет»" \
@@ -5976,15 +5897,12 @@ cat > "$RALPH_MTYPO_CFG" <<'EOF'
 {"policies": {"merge": "bogus"}}
 EOF
 
-ralph_mtypo_out=$(cd "$RALPH_MTYPO" && PATH="$RBIN_MTYPO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MTYPO" \
-  ADK_LOGS_DIR="$TMP/ralph-mtypo-logs" ADK_CONFIG_FILE="$RALPH_MTYPO_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-mtypo-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_mtypo_out=$(run_ralph "$RALPH_MTYPO" "$RBIN_MTYPO" "$TMP/ralph-mtypo-logs" "$TMP/ralph-mtypo-notify.log" "$RALPH_MTYPO_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — прогон завершается штатно (fail-closed — не крэш)" \
   0 $?
 assert_not_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — ни одного непредвиденного вызова gh (merge не вызывается)" \
   "$ralph_mtypo_out" "unexpected gh call"
-ralph_mtypo_log=$(cat "$TMP/ralph-mtypo-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_mtypo_log=$(cat "$(ralph_journal "$TMP/ralph-mtypo-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) policies.merge неизвестное значение — result=ready (не молчаливый merge по дефолту)" \
   "$ralph_mtypo_log" '"result": "ready"'
 
@@ -6020,15 +5938,12 @@ cat > "$RALPH_CMTYPO_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": "yes"}}}
 EOF
 
-ralph_cmtypo_out=$(cd "$RALPH_CMTYPO" && PATH="$RBIN_CMTYPO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CMTYPO" \
-  ADK_LOGS_DIR="$TMP/ralph-cmtypo-logs" ADK_CONFIG_FILE="$RALPH_CMTYPO_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-cmtypo-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_cmtypo_out=$(run_ralph "$RALPH_CMTYPO" "$RBIN_CMTYPO" "$TMP/ralph-cmtypo-logs" "$TMP/ralph-cmtypo-notify.log" "$RALPH_CMTYPO_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) policies.autopilot.canMerge неизвестное значение — прогон завершается штатно" \
   0 $?
 assert_not_contains "AC-1: adk-ralph: (issue #129) canMerge неизвестное значение — ни одного непредвиденного вызова gh (merge не вызывается)" \
   "$ralph_cmtypo_out" "unexpected gh call"
-ralph_cmtypo_log=$(cat "$TMP/ralph-cmtypo-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_cmtypo_log=$(cat "$(ralph_journal "$TMP/ralph-cmtypo-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) canMerge неизвестное значение — result=ready" \
   "$ralph_cmtypo_log" '"result": "ready"'
 
@@ -6103,10 +6018,7 @@ cat > "$RALPH_BEHIND_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_behind_out=$(cd "$RALPH_BEHIND" && PATH="$RBIN_BEHIND:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BEHIND" \
-  ADK_LOGS_DIR="$TMP/ralph-behind-logs" ADK_CONFIG_FILE="$RALPH_BEHIND_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-behind-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_behind_out=$(run_ralph "$RALPH_BEHIND" "$RBIN_BEHIND" "$TMP/ralph-behind-logs" "$TMP/ralph-behind-notify.log" "$RALPH_BEHIND_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) отставшая ветка + красные гейты после актуализации — прогон завершается штатно (задача застревает, не прогон)" \
   0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) отставшая ветка — причина остановки «очередь пуста» (не системный breaker, не полный стоп)" \
@@ -6115,7 +6027,7 @@ assert_contains "AC-1: adk-ralph: (issue #129) красные гейты пос�
   "$ralph_behind_out" "#2020 (гейты красные после актуализации)"
 [ ! -f "$RBIN_BEHIND/pr-merge-calls.log" ]
 assert_exit "AC-1: adk-ralph: (issue #129) красные гейты после актуализации — gh pr merge ни разу не вызван" 0 $?
-ralph_behind_log=$(cat "$TMP/ralph-behind-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_behind_log=$(cat "$(ralph_journal "$TMP/ralph-behind-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) журнал — issue #2020 result=stuck с причиной актуализации" \
   "$ralph_behind_log" '"reason": "гейты красные после актуализации"'
 behind_final_branch=$(git -C "$RALPH_BEHIND" rev-parse --abbrev-ref HEAD)
@@ -6190,10 +6102,7 @@ cat > "$RALPH_HRR_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}, "merge": "human-review-required"}}
 EOF
 
-ralph_hrr_out=$(cd "$RALPH_HRR" && PATH="$RBIN_HRR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_HRR" \
-  ADK_LOGS_DIR="$TMP/ralph-hrr-logs" ADK_CONFIG_FILE="$RALPH_HRR_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-hrr-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_hrr_out=$(run_ralph "$RALPH_HRR" "$RBIN_HRR" "$TMP/ralph-hrr-logs" "$TMP/ralph-hrr-notify.log" "$RALPH_HRR_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) human-review-required — прогон завершается штатно" 0 $?
 hrr_merge_log=$(cat "$RBIN_HRR/pr-merge-calls.log" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) human-review-required — approved PR смержен" \
@@ -6265,10 +6174,7 @@ cat > "$RALPH_UNK_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_unk_out=$(cd "$RALPH_UNK" && PATH="$RBIN_UNK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_UNK" \
-  ADK_LOGS_DIR="$TMP/ralph-unk-logs" ADK_CONFIG_FILE="$RALPH_UNK_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-unk-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_unk_out=$(run_ralph "$RALPH_UNK" "$RBIN_UNK" "$TMP/ralph-unk-logs" "$TMP/ralph-unk-notify.log" "$RALPH_UNK_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на первой попытке — прогон завершается штатно" 0 $?
 pr_view_calls_unk=$(cat "$RBIN_UNK/pr-view-calls" 2>/dev/null || echo 0)
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN — gh pr view вызван дважды (ретрай), не один раз" \
@@ -6324,10 +6230,7 @@ cat > "$RALPH_UNK2_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_unk2_out=$(cd "$RALPH_UNK2" && PATH="$RBIN_UNK2:$PATH" CLAUDE_PROJECT_DIR="$RALPH_UNK2" \
-  ADK_LOGS_DIR="$TMP/ralph-unk-exhausted-logs" ADK_CONFIG_FILE="$RALPH_UNK2_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-unk-exhausted-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_unk2_out=$(run_ralph "$RALPH_UNK2" "$RBIN_UNK2" "$TMP/ralph-unk-exhausted-logs" "$TMP/ralph-unk-exhausted-notify.log" "$RALPH_UNK2_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=UNKNOWN на всех попытках — прогон завершается штатно (задача застревает, не бесконечный ретрай)" \
   0 $?
 pr_view_calls_unk2=$(cat "$RBIN_UNK2/pr-view-calls" 2>/dev/null || echo 0)
@@ -6410,10 +6313,7 @@ cat > "$RALPH_TRUNK_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_trunk_out=$(cd "$RALPH_TRUNK" && PATH="$RBIN_TRUNK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TRUNK" \
-  ADK_LOGS_DIR="$TMP/ralph-trunk-logs" ADK_CONFIG_FILE="$RALPH_TRUNK_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-trunk-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_trunk_out=$(run_ralph "$RALPH_TRUNK" "$RBIN_TRUNK" "$TMP/ralph-trunk-logs" "$TMP/ralph-trunk-notify.log" "$RALPH_TRUNK_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) default branch trunk, отставшая ветка — актуализация на origin/trunk, не origin/main, потом merge" \
   0 $?
 trunk_merge_log=$(cat "$RBIN_TRUNK/pr-merge-calls.log" 2>/dev/null)
@@ -6479,10 +6379,7 @@ cat > "$RALPH_CONFPR_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_confpr_out=$(cd "$RALPH_CONFPR" && PATH="$RBIN_CONFPR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_CONFPR" \
-  ADK_LOGS_DIR="$TMP/ralph-confpr-logs" ADK_CONFIG_FILE="$RALPH_CONFPR_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-confpr-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_confpr_out=$(run_ralph "$RALPH_CONFPR" "$RBIN_CONFPR" "$TMP/ralph-confpr-logs" "$TMP/ralph-confpr-notify.log" "$RALPH_CONFPR_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — прогон завершается штатно (задача застревает)" 0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) mergeable=CONFLICTING — застревание с причиной «конфликт с main»" \
   "$ralph_confpr_out" "#2090 (конфликт с main)"
@@ -6543,10 +6440,7 @@ cat > "$RALPH_ACTCONFLICT_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_actconflict_out=$(cd "$RALPH_ACTCONFLICT" && PATH="$RBIN_ACTCONFLICT:$PATH" CLAUDE_PROJECT_DIR="$RALPH_ACTCONFLICT" \
-  ADK_LOGS_DIR="$TMP/ralph-actconflict-logs" ADK_CONFIG_FILE="$RALPH_ACTCONFLICT_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-actconflict-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_actconflict_out=$(run_ralph "$RALPH_ACTCONFLICT" "$RBIN_ACTCONFLICT" "$TMP/ralph-actconflict-logs" "$TMP/ralph-actconflict-notify.log" "$RALPH_ACTCONFLICT_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) конфликт при rebase-актуализации — прогон завершается штатно" 0 $?
 assert_contains "AC-1: adk-ralph: (issue #129) конфликт при актуализации — застревание с этой причиной" \
   "$ralph_actconflict_out" "#2070 (конфликт при актуализации)"
@@ -6626,10 +6520,7 @@ cat > "$RALPH_MB_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": true}}}
 EOF
 
-ralph_mb_out=$(cd "$RALPH_MB" && PATH="$RBIN_MB:$PATH" CLAUDE_PROJECT_DIR="$RALPH_MB" \
-  ADK_LOGS_DIR="$TMP/ralph-mb-logs" ADK_CONFIG_FILE="$RALPH_MB_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-mb-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_mb_out=$(run_ralph "$RALPH_MB" "$RBIN_MB" "$TMP/ralph-mb-logs" "$TMP/ralph-mb-notify.log" "$RALPH_MB_CFG")
 assert_exit "AC-1: adk-ralph: (issue #129) смерженный блокер снимается с зависимой задачи — прогон завершается штатно" \
   0 $?
 mb_call_count=$(cat "$RBIN_MB/claude-calls.log" 2>/dev/null | grep -c "^call")
@@ -6637,7 +6528,7 @@ assert_exit "AC-1: adk-ralph: (issue #129) #2081 стала кандидатом
   2 "$mb_call_count"
 assert_not_contains "AC-1: adk-ralph: (issue #129) #2081 не осталась в «Заблокировано ready-PR блокера» (блокер смержен, не просто ready)" \
   "$ralph_mb_out" "Заблокировано ready-PR блокера:  #2081"
-ralph_mb_log=$(cat "$TMP/ralph-mb-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_mb_log=$(cat "$(ralph_journal "$TMP/ralph-mb-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит запись по #2081 (не пропала молча)" \
   "$ralph_mb_log" '"issue": "2081"'
 
@@ -6649,9 +6540,8 @@ assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит з�
 # под тем же бюджетом задачи, запас нужен, чтобы его быстрое, но не
 # мгновенное, завершение не задело порог под нагрузкой CI (круг 1 ревью
 # PR #193). Этот и следующие два блока (budget-run, budget-zero) задают
-# СВОЙ ADK_CONFIG_FILE на вызове adk-ralph.sh — тем самым перекрывают
-# ambient `export ADK_CONFIG_FILE=$RALPH_NOMERGE_CFG` секции ralph выше
-# (issue #129) для себя же: без явного `canMerge: false` в их собственном
+# СВОЙ конфиг пятым аргументом run_ralph (не общий $RALPH_NOMERGE_CFG):
+# без явного `canMerge: false` в их собственном
 # конфиге ready-исход (#912/#921/#931) шёл бы через реальную merge-ветку
 # (resolve_ready_pr → `gh pr view`), а общий `gh_ralph_stub` эту команду
 # не реализует (рёбейз PR #193 поверх #129, круг 3 ревью) ─────────────────
@@ -6701,10 +6591,7 @@ RALPH_BUDGET_TASK_LOGS="$TMP/ralph-budget-task-logs"
 RALPH_BUDGET_TASK_NOTIFY="$TMP/ralph-budget-task-notify.log"
 
 budget_task_start=$(date +%s)
-ralph_budget_task_out=$(cd "$RALPH_BUDGET_TASK" && PATH="$RBIN_BUDGET_TASK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_TASK" \
-  ADK_LOGS_DIR="$RALPH_BUDGET_TASK_LOGS" ADK_CONFIG_FILE="$RALPH_BUDGET_TASK_CFG" \
-  ADK_NOTIFY_FILE="$RALPH_BUDGET_TASK_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_budget_task_out=$(run_ralph "$RALPH_BUDGET_TASK" "$RBIN_BUDGET_TASK" "$RALPH_BUDGET_TASK_LOGS" "$RALPH_BUDGET_TASK_NOTIFY" "$RALPH_BUDGET_TASK_CFG")
 ralph_budget_task_rc=$?
 budget_task_elapsed=$(( $(date +%s) - budget_task_start ))
 assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи превышен — прогон всё равно доигрывает очередь до конца (exit 0)" \
@@ -6736,7 +6623,7 @@ budget_task_notify=$(cat "$RALPH_BUDGET_TASK_NOTIFY" 2>/dev/null)
 assert_contains "AC-3: adk-ralph: (issue #131) уведомление о застревании #911 называет бюджет задачи" \
   "$budget_task_notify" "issue #911 застрял: бюджет задачи по времени"
 
-budget_task_log="$RALPH_BUDGET_TASK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+budget_task_log="$(ralph_journal "$RALPH_BUDGET_TASK_LOGS")"
 budget_task_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=911|type=task|result=stuck|reason=бюджет задачи по времени' \
@@ -6864,10 +6751,7 @@ EOF
 RALPH_BUDGET_RUN_LOGS="$TMP/ralph-budget-run-logs"
 RALPH_BUDGET_RUN_NOTIFY="$TMP/ralph-budget-run-notify.log"
 
-ralph_budget_run_out=$(cd "$RALPH_BUDGET_RUN" && PATH="$RBIN_BUDGET_RUN:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_RUN" \
-  ADK_LOGS_DIR="$RALPH_BUDGET_RUN_LOGS" ADK_CONFIG_FILE="$RALPH_BUDGET_RUN_CFG" \
-  ADK_NOTIFY_FILE="$RALPH_BUDGET_RUN_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_budget_run_out=$(run_ralph "$RALPH_BUDGET_RUN" "$RBIN_BUDGET_RUN" "$RALPH_BUDGET_RUN_LOGS" "$RALPH_BUDGET_RUN_NOTIFY" "$RALPH_BUDGET_RUN_CFG")
 assert_exit "AC-3: adk-ralph: (issue #131) бюджет прогона исчерпан — прогон останавливается с ошибкой (exit 1)" \
   1 $?
 assert_contains "AC-3: adk-ralph: (issue #131) сводка называет причину «бюджет прогона по времени»" \
@@ -6881,7 +6765,7 @@ assert_exit "AC-3: adk-ralph: (issue #131) headless-процесс вызван 
 assert_not_contains "AC-3: adk-ralph: (issue #131) #922 не запущен — маркер стаба отсутствует в логе" \
   "$(cat "$RBIN_BUDGET_RUN/claude-calls.log" 2>/dev/null)" "922 NOT SUPPOSED TO RUN"
 
-budget_run_log="$RALPH_BUDGET_RUN_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+budget_run_log="$(ralph_journal "$RALPH_BUDGET_RUN_LOGS")"
 budget_run_spec=$(printf '%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=921|type=task|result=ready' \
@@ -6922,10 +6806,7 @@ cat > "$RALPH_BUDGET_ZERO_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"task": {"maxMinutes": 0}, "run": {"maxMinutes": 0}}}}}
 EOF
 
-ralph_budget_zero_out=$(cd "$RALPH_BUDGET_ZERO" && PATH="$RBIN_BUDGET_ZERO:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_ZERO" \
-  ADK_LOGS_DIR="$TMP/ralph-budget-zero-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_ZERO_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-budget-zero-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_budget_zero_out=$(run_ralph "$RALPH_BUDGET_ZERO" "$RBIN_BUDGET_ZERO" "$TMP/ralph-budget-zero-logs" "$TMP/ralph-budget-zero-notify.log" "$RALPH_BUDGET_ZERO_CFG")
 assert_exit "AC-3: adk-ralph: (issue #131) maxMinutes=0 — опечатка не ломает прогон (exit 0)" \
   0 $?
 assert_contains "AC-3: adk-ralph: (issue #131) maxMinutes=0 — предупреждение в stderr, использован дефолт" \
@@ -7000,10 +6881,7 @@ cat > "$RALPH_BUDGET_DIRTY_CFG" <<'EOF'
 EOF
 
 RALPH_BUDGET_DIRTY_NOTIFY="$TMP/ralph-budget-dirty-notify.log"
-ralph_budget_dirty_out=$(cd "$RALPH_BUDGET_DIRTY" && PATH="$RBIN_BUDGET_DIRTY:$PATH" CLAUDE_PROJECT_DIR="$RALPH_BUDGET_DIRTY" \
-  ADK_LOGS_DIR="$TMP/ralph-budget-dirty-logs" ADK_CONFIG_FILE="$RALPH_BUDGET_DIRTY_CFG" \
-  ADK_NOTIFY_FILE="$RALPH_BUDGET_DIRTY_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_budget_dirty_out=$(run_ralph "$RALPH_BUDGET_DIRTY" "$RBIN_BUDGET_DIRTY" "$TMP/ralph-budget-dirty-logs" "$RALPH_BUDGET_DIRTY_NOTIFY" "$RALPH_BUDGET_DIRTY_CFG")
 assert_exit "AC-3: adk-ralph: (issue #131) бюджет задачи + грязное дерево — прогон останавливается целиком (exit 1)" \
   1 $?
 assert_contains "AC-3: adk-ralph: (issue #131) причина называет грязное дерево после прерывания по бюджету" \
@@ -7045,7 +6923,7 @@ dirty_final_branch=$(cd "$RALPH_BUDGET_DIRTY" && git symbolic-ref --short HEAD 2
 assert_exit "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) грязное дерево — рабочее дерево ОСТАЛОСЬ на ветке задачи issue-961-x, НЕ переключилось на default branch" \
   0 $?
 
-dirty_log_file="$TMP/ralph-budget-dirty-logs/autopilot-$(date +%Y-%m-%d).jsonl"
+dirty_log_file="$(ralph_journal "$TMP/ralph-budget-dirty-logs")"
 dirty_spec=$(printf '%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=961|type=task|result=stuck|reason=бюджет задачи по времени' \
@@ -7102,12 +6980,9 @@ cat > "$RALPH_TOK_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false}}}
 EOF
 RALPH_TOK_LOGS="$TMP/ralph-tokens-logs"
-ralph_tok_out=$(cd "$RALPH_TOK" && PATH="$RBIN_TOK:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TOK" \
-  ADK_LOGS_DIR="$RALPH_TOK_LOGS" ADK_CONFIG_FILE="$RALPH_TOK_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-tokens-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_tok_out=$(run_ralph "$RALPH_TOK" "$RBIN_TOK" "$RALPH_TOK_LOGS" "$TMP/ralph-tokens-notify.log" "$RALPH_TOK_CFG")
 assert_exit "AC-6: adk-ralph: (issue #132) прогон с usage и без usage завершается штатно" 0 $?
-ralph_tok_log="$RALPH_TOK_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_tok_log="$(ralph_journal "$RALPH_TOK_LOGS")"
 ralph_tok_spec=$(printf '%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=971|result=ready|tokens=3500|duration?' \
@@ -7191,10 +7066,7 @@ cat > "$RALPH_TOKB_CFG" <<'EOF'
 EOF
 RALPH_TOKB_LOGS="$TMP/ralph-tokbudget-logs"
 RALPH_TOKB_NOTIFY="$TMP/ralph-tokbudget-notify.log"
-ralph_tokb_out=$(cd "$RALPH_TOKB" && PATH="$RBIN_TOKB:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TOKB" \
-  ADK_LOGS_DIR="$RALPH_TOKB_LOGS" ADK_CONFIG_FILE="$RALPH_TOKB_CFG" \
-  ADK_NOTIFY_FILE="$RALPH_TOKB_NOTIFY" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_tokb_out=$(run_ralph "$RALPH_TOKB" "$RBIN_TOKB" "$RALPH_TOKB_LOGS" "$RALPH_TOKB_NOTIFY" "$RALPH_TOKB_CFG")
 assert_exit "AC-3: adk-ralph: (issue #132) превышение токенового бюджета задачи не останавливает прогон (exit 0)" 0 $?
 tokb_edit_log=$(cat "$RBIN_TOKB/issue-edit.log" 2>/dev/null)
 assert_contains "AC-3: adk-ralph: (issue #132) #972 помечен needs-human по токеновому бюджету" \
@@ -7207,7 +7079,7 @@ assert_exit "AC-3: adk-ralph: (issue #132) merge превысившей зада
 tokb_call_count=$(cat "$RBIN_TOKB/claude-calls.log" 2>/dev/null | grep -c "Инструкция ралфа")
 assert_exit "AC-3: adk-ralph: (issue #132) цикл продолжился — обе задачи исполнены headless-процессом" \
   2 "$tokb_call_count"
-ralph_tokb_log="$RALPH_TOKB_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_tokb_log="$(ralph_journal "$RALPH_TOKB_LOGS")"
 ralph_tokb_spec=$(printf '%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=972|result=stuck|reason=бюджет задачи по токенам|tokens=3500' \
@@ -7251,10 +7123,7 @@ cat > "$RALPH_TOKR_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"run": {"maxTokens": 3000}}}}}
 EOF
 RALPH_TOKR_LOGS="$TMP/ralph-tokrun-logs"
-ralph_tokr_out=$(cd "$RALPH_TOKR" && PATH="$RBIN_TOKR:$PATH" CLAUDE_PROJECT_DIR="$RALPH_TOKR" \
-  ADK_LOGS_DIR="$RALPH_TOKR_LOGS" ADK_CONFIG_FILE="$RALPH_TOKR_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-tokrun-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_tokr_out=$(run_ralph "$RALPH_TOKR" "$RBIN_TOKR" "$RALPH_TOKR_LOGS" "$TMP/ralph-tokrun-notify.log" "$RALPH_TOKR_CFG")
 ralph_tokr_rc=$?
 assert_exit "AC-3: adk-ralph: (issue #132) исчерпанный токеновый бюджет прогона — остановка с ненулевым exit (как у временного)" \
   1 "$ralph_tokr_rc"
@@ -7263,7 +7132,7 @@ assert_exit "AC-3: adk-ralph: (issue #132) вторая задача не нач
   1 "$tokr_call_count"
 assert_contains "AC-3: adk-ralph: (issue #132) сводка называет причину «бюджет прогона по токенам»" \
   "$ralph_tokr_out" "бюджет прогона по токенам"
-ralph_tokr_log="$RALPH_TOKR_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_tokr_log="$(ralph_journal "$RALPH_TOKR_LOGS")"
 ralph_tokr_spec=$(printf '%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=974|result=ready|tokens=3500' \
@@ -7343,12 +7212,9 @@ cat > "$RALPH_SZ_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "breaker": {"maxStuckPerRun": 5}, "budget": {"task": {"maxMinutes": 0.05, "maxTokens": 1000}}}}}
 EOF
 RALPH_SZ_LOGS="$TMP/ralph-sized-logs"
-ralph_sz_out=$(cd "$RALPH_SZ" && PATH="$RBIN_SZ:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ" \
-  ADK_LOGS_DIR="$RALPH_SZ_LOGS" ADK_CONFIG_FILE="$RALPH_SZ_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-sized-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_sz_out=$(run_ralph "$RALPH_SZ" "$RBIN_SZ" "$RALPH_SZ_LOGS" "$TMP/ralph-sized-notify.log" "$RALPH_SZ_CFG")
 assert_exit "AC-4: adk-ralph: (issue #133) прогон с sized-задачей завершается штатно" 0 $?
-ralph_sz_log="$RALPH_SZ_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_sz_log="$(ralph_journal "$RALPH_SZ_LOGS")"
 ralph_sz_spec=$(printf '%s\n%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=981|result=ready|tokens=1500' \
@@ -7396,12 +7262,9 @@ cat > "$RALPH_SZ5_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 5, "task": {"maxTokens": 1000}}}}}
 EOF
 RALPH_SZ5_LOGS="$TMP/ralph-sized5-logs"
-ralph_sz5_out=$(cd "$RALPH_SZ5" && PATH="$RBIN_SZ5:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ5" \
-  ADK_LOGS_DIR="$RALPH_SZ5_LOGS" ADK_CONFIG_FILE="$RALPH_SZ5_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-sized5-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_sz5_out=$(run_ralph "$RALPH_SZ5" "$RBIN_SZ5" "$RALPH_SZ5_LOGS" "$TMP/ralph-sized5-notify.log" "$RALPH_SZ5_CFG")
 assert_exit "AC-4: adk-ralph: (issue #133) множитель из конфига (5) — прогон штатный" 0 $?
-ralph_sz5_log="$RALPH_SZ5_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_sz5_log="$(ralph_journal "$RALPH_SZ5_LOGS")"
 ralph_sz5_spec=$(printf '%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=983|result=ready|tokens=4500' \
@@ -7454,14 +7317,11 @@ cat > "$RALPH_SZ0_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 0, "task": {"maxTokens": 1000}}}}}
 EOF
 RALPH_SZ0_LOGS="$TMP/ralph-sized0-logs"
-ralph_sz0_out=$(cd "$RALPH_SZ0" && PATH="$RBIN_SZ0:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZ0" \
-  ADK_LOGS_DIR="$RALPH_SZ0_LOGS" ADK_CONFIG_FILE="$RALPH_SZ0_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-sized0-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_sz0_out=$(run_ralph "$RALPH_SZ0" "$RBIN_SZ0" "$RALPH_SZ0_LOGS" "$TMP/ralph-sized0-notify.log" "$RALPH_SZ0_CFG")
 assert_exit "AC-4: adk-ralph: (issue #133) невалидный множитель — прогон штатный на дефолте" 0 $?
 assert_contains "AC-4: adk-ralph: (issue #133) невалидный sizeLargeMultiplier — предупреждение с дефолтом 2" \
   "$ralph_sz0_out" "policies.autopilot.budget.sizeLargeMultiplier='0' — не число >= 1, использован дефолт 2"
-ralph_sz0_log="$RALPH_SZ0_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_sz0_log="$(ralph_journal "$RALPH_SZ0_LOGS")"
 ralph_sz0_spec=$(printf '%s\n%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=984|result=ready|tokens=1500' \
@@ -7507,14 +7367,11 @@ cat > "$RALPH_SZC_CFG" <<'EOF'
 {"policies": {"autopilot": {"canMerge": false, "budget": {"sizeLargeMultiplier": 1e308, "task": {"maxTokens": 1000}}}}}
 EOF
 RALPH_SZC_LOGS="$TMP/ralph-sizedclamp-logs"
-ralph_szc_out=$(cd "$RALPH_SZC" && PATH="$RBIN_SZC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_SZC" \
-  ADK_LOGS_DIR="$RALPH_SZC_LOGS" ADK_CONFIG_FILE="$RALPH_SZC_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-sizedclamp-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_szc_out=$(run_ralph "$RALPH_SZC" "$RBIN_SZC" "$RALPH_SZC_LOGS" "$TMP/ralph-sizedclamp-notify.log" "$RALPH_SZC_CFG")
 assert_exit "AC-4: adk-ralph: (issue #133, круг 2) множитель 1e308 — расход учтён и в бюджете прогона (остановка, exit 1)" 1 $?
 assert_contains "AC-4: adk-ralph: (issue #133, круг 2) расход выше клампа 10**15 застревает — бюджет не выключен переполнением" \
   "$ralph_szc_out" "превысил бюджет задачи (1000000000000000)"
-ralph_szc_log="$RALPH_SZC_LOGS/autopilot-$(date +%Y-%m-%d).jsonl"
+ralph_szc_log="$(ralph_journal "$RALPH_SZC_LOGS")"
 ralph_szc_spec=$(printf '%s\n%s\n%s' \
   'event=run_start' \
   'event=task|issue=987|result=stuck|reason=бюджет задачи по токенам' \
@@ -7639,15 +7496,12 @@ chmod +x "$RBIN_NC/claude"
 # ADK_CONFIG_FILE указывает на заведомо несуществующий файл: adk_config_get
 # трактует отсутствие файла как «конфига нет» (это и проверяем), а явное
 # переопределение защищает фикстуру от конфига из окружения разработчика
-ralph_nc_out=$(cd "$RALPH_NC" && PATH="$RBIN_NC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NC" \
-  ADK_LOGS_DIR="$TMP/ralph-noconfig-logs" ADK_CONFIG_FILE="$TMP/ralph-noconfig-absent.json" \
-  ADK_NOTIFY_FILE="$TMP/ralph-noconfig-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_nc_out=$(run_ralph "$RALPH_NC" "$RBIN_NC" "$TMP/ralph-noconfig-logs" "$TMP/ralph-noconfig-notify.log" "$TMP/ralph-noconfig-absent.json")
 ralph_nc_st=$?
 assert_exit "AC-8: adk-ralph: (issue #138) проект вовсе без adk.config.json — полный цикл на дефолтах, exit 0" 0 "$ralph_nc_st"
 assert_not_contains "AC-8: adk-ralph: (issue #138) без конфига нет ни одного предупреждения о невалидных значениях (дефолты применены молча)" \
   "$ralph_nc_out" "использован дефолт"
-ralph_nc_log=$(cat "$TMP/ralph-noconfig-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_nc_log=$(cat "$(ralph_journal "$TMP/ralph-noconfig-logs")" 2>/dev/null)
 assert_contains "AC-8: adk-ralph: (issue #138) без конфига обе задачи доиграны — исход записан и по второй" \
   "$ralph_nc_log" '"issue": "992"'
 nc_merge_log=$(cat "$RBIN_NC/pr-merge-calls.log" 2>/dev/null)
@@ -7668,16 +7522,13 @@ rm -rf "$TMP/ralph-noblocks-logs"
 cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
 []
 EOF
-ralph_nb_out=$(cd "$RALPH_NC" && PATH="$RBIN_NC:$PATH" CLAUDE_PROJECT_DIR="$RALPH_NC" \
-  ADK_LOGS_DIR="$TMP/ralph-noblocks-logs" ADK_CONFIG_FILE="$RALPH_NB_CFG" \
-  ADK_NOTIFY_FILE="$TMP/ralph-noblocks-notify.log" \
-  CLAUDE_PLUGIN_ROOT="$KIT" "$HOOKS/adk-ralph.sh" 2>&1)
+ralph_nb_out=$(run_ralph "$RALPH_NC" "$RBIN_NC" "$TMP/ralph-noblocks-logs" "$TMP/ralph-noblocks-notify.log" "$RALPH_NB_CFG")
 assert_exit "AC-8: adk-ralph: (issue #138) конфиг без блоков budget/breaker — полный цикл на дефолтах, exit 0" 0 $?
 assert_not_contains "AC-8: adk-ralph: (issue #138) отсутствие блоков не рождает предупреждений (отсутствие атрибута = дефолт, не опечатка)" \
   "$ralph_nb_out" "использован дефолт"
 assert_contains "AC-8: adk-ralph: (issue #138) прогон с конфигом без блоков дошёл до пустой очереди" \
   "$ralph_nb_out" "очередь пуста"
-ralph_nb_log=$(cat "$TMP/ralph-noblocks-logs/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_nb_log=$(cat "$(ralph_journal "$TMP/ralph-noblocks-logs")" 2>/dev/null)
 assert_contains "AC-8: adk-ralph: (issue #138) без блоков обе задачи доиграны до ready (canMerge=false — merge не для агента)" \
   "$ralph_nb_log" '"ready": "2"'
 
@@ -7814,7 +7665,7 @@ fi
 assert_exit "AC-3: adk-ralph: (issue #131, важное №1 круга 4 ревью PR #193) SIGTERM ralph — claude -p (#3002, стаб-сирота) реально убит, не остаётся жить после сигнала" \
   0 "$task2_alive"
 
-ralph_signal_log=$(cat "$RALPH_SIGNAL_LOGS/autopilot-$(date +%Y-%m-%d).jsonl" 2>/dev/null)
+ralph_signal_log=$(cat "$(ralph_journal "$RALPH_SIGNAL_LOGS")" 2>/dev/null)
 assert_contains "AC-3: adk-ralph: (issue #131) SIGTERM — журнал: #3001 result=merged ДО сигнала" \
   "$ralph_signal_log" '"result": "merged"'
 assert_contains "AC-3: adk-ralph: (issue #131, важное круга 4 ревью PR #193) SIGTERM — event=run_end.done отражает реально смерженное этим прогоном (1), не безусловный литеральный 0" \
