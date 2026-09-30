@@ -7985,6 +7985,22 @@ assert_contains "issue #158: README документирует label-резер�
 assert_contains "issue #158: README показывает идемпотентную команду создания label" "$readme_full" "gh label create owner:human"
 assert_contains "issue #158: README показывает снятие резерва" "$readme_full" "gh issue edit <N> --remove-label owner:human"
 
+# ── issue #220 п.3: README пример создания label owner:human не глушит
+# gh label create вслепую (issue #158 требовал этот приём от commands/plan.md
+# шаг 4 — тот же паттерн, только пример README до этой задачи ему не
+# следовал: `2>/dev/null` перед `;` скрывал и «already exists», и настоящую
+# ошибку одинаково) ───────────────────────────────────────────────────────
+assert_contains "issue #220 п.3: README label owner:human перехватывает stderr gh label create (не глушит 2>/dev/null)" \
+  "$readme_full" 'gh label create owner:human.*2>&1'
+assert_contains "issue #220 п.3: README label owner:human считает успехом идемпотентный случай «label уже есть» (already exists)" \
+  "$readme_full" 'already exists'
+assert_contains "issue #220 п.3: README label owner:human не глушит прочие ошибки — показывает их явно" \
+  "$readme_full" 'failed'
+assert_contains "issue #220 п.3: README label owner:human ссылается на тот же паттерн, что commands/plan.md" \
+  "$readme_full" 'commands/plan\.md'
+assert_not_contains "issue #220 п.3: README label owner:human больше не глушит gh label create слепым 2>/dev/null" \
+  "$readme_full" 'gh label create owner:human 2>/dev/null'
+
 readme_sostav=$(md_section "$KIT/README.md" '^## Состав репозитория' '^## Статус')
 assert_contains "issue #148: README называет adk-ralph.sh среди точек входа hooks/" "$readme_sostav" "adk-ralph.sh"
 assert_contains "issue #148: README описывает adk-ralph.sh как headless-цикл по очереди issues" "$readme_sostav" "headless-цикл по очереди issues"
