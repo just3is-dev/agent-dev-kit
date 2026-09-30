@@ -163,15 +163,21 @@ for path in paths:
                     file=sys.stderr,
                 )
                 continue
-            valid_any = True
             event = ev.get("event")
             if event == "review":
-                rounds += 1
                 try:
-                    max_round = max(max_round, int(ev.get("round", 0)))
-                except (TypeError, ValueError):
-                    pass
-            elif event == "outcome":
+                    round_value = int(ev.get("round", 0))
+                except (TypeError, ValueError, OverflowError):
+                    print(
+                        f"adk-stats: {os.path.basename(path)}:{lineno}: "
+                        "битая строка пропущена (невалидное поле round)",
+                        file=sys.stderr,
+                    )
+                    continue
+                rounds += 1
+                max_round = max(max_round, round_value)
+            valid_any = True
+            if event == "outcome":
                 outcome = ev
             ev_type = ev.get("type")
             if isinstance(ev_type, str) and ev_type:
