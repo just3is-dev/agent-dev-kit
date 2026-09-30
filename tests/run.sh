@@ -2992,26 +2992,20 @@ claude_stub() {
 # — самое частое тело (22 фикстуры, issue #207): залогировать вызов и
 # записать в prs-fixture.json ровно один PR. Формат строки лога
 # сохраняется («$*» или «call») — на нём держатся счётчики вызовов.
-# number/head могут ссылаться на $issue_num из guard-пролога — подстановка
-# происходит при выполнении стаба (маркер PRJSON без кавычек).
+# Маркер PRJSON в кавычках, как в исходных телах: number/head — литералы,
+# runtime-подстановок в JSON нет.
 claude_stub_one_pr() {
   local bindir="$1" log="$2" number="$3" draft="$4" head="$5"
   claude_stub_guard "$bindir"
   {
     if [ "$log" = call ]; then
-      printf '%s
-' 'echo "call" >> "$d/claude-calls.log"'
+      printf '%s\n' 'echo "call" >> "$d/claude-calls.log"'
     else
-      printf '%s
-' 'echo "$*" >> "$d/claude-calls.log"'
+      printf '%s\n' 'echo "$*" >> "$d/claude-calls.log"'
     fi
-    printf 'cat > "$d/prs-fixture.json" <<PRJSON
-'
-    printf '[{"number": %s, "isDraft": %s, "headRefName": "%s"}]
-' "$number" "$draft" "$head"
-    printf 'PRJSON
-exit 0
-'
+    printf '%s\n' "cat > \"\$d/prs-fixture.json\" <<'PRJSON'"
+    printf '[{"number": %s, "isDraft": %s, "headRefName": "%s"}]\n' "$number" "$draft" "$head"
+    printf '%s\n' 'PRJSON' 'exit 0'
   } >> "$bindir/claude"
   chmod +x "$bindir/claude"
 }
@@ -3029,7 +3023,7 @@ EOF
   chmod +x "$1/gh"
 }
 
-gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
+gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] [extra] — общий
   # каркас стаба gh для ralph-фикстур ниже (issue #149, по образцу
   # claude_stub_guard выше, issue #139): пишет "$bindir/gh" целиком, без
   # cat >> — параметры целиком определяют поведение, поэтому порядок веток
@@ -3046,9 +3040,11 @@ gh_ralph_stub() { # gh_ralph_stub <bindir> <issues> <prs> [edit] — общий
   # merge-фикстуры дописывали pr view/pr merge/pr checkout, копируя весь
   # каркас — 13 ручных стабов мимо хелпера). Печатается перед общим
   # default `*)` как есть (printf '%s'), поэтому runtime-переменные стаба
-  # ($d, $*, $3) в extra пишутся в одинарных bash-кавычках фикстуры, а
-  # generation-time подстановки (пути $RALPH_X) — в двойных с \$-экраном
-  # для runtime-части.
+  # ($d, $*, $3) в extra пишутся в одинарных bash-кавычках фикстуры;
+  # extra с generation-time подстановками (пути $RALPH_X) собирается через
+  # `IFS= read -r -d '' … <<EXTRA || true` с \$-экраном runtime-части —
+  # не `$(cat <<…)`: bash 3.2 macOS не разбирает «)» внутри такой
+  # подстановки (см. checkout-тройку BEHIND/TRUNK/ACTCONFLICT).
   # gh label create всегда no-op: adk-ralph.sh сам глушит её результат
   # (`>/dev/null 2>&1 || true`), варьировать эту ветку не нужно ни одной
   # существующей ralph-фикстуре.
@@ -3160,14 +3156,12 @@ cat > "$RBIN/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN" "$RBIN/issues-fixture.json" "$RBIN/prs-fixture.json"
-claude_stub_guard "$RBIN"
-cat >> "$RBIN/claude" <<'EOF'
+claude_stub "$RBIN" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
-# Номер обрабатываемого issue — только из хвостового маркера ("для задачи
-# issue #N."), не голым `case "$*" in *"issue #1"*)`: сам текст-инструкция
-# ралфа безусловно содержит "issue #139" (ссылка на issue, которым заведён
-# adk-ralph.sh) — это ложно совпадает с шаблоном "issue #1" как префикс
-# любого запуска, независимо от реально обрабатываемого номера.
+# Номер обрабатываемого issue — $issue_num из guard-пролога (issue #207):
+# только хвостовой маркер ("для задачи issue #N."), не голый
+# `case "$*" in *"issue #1"*)` — сам текст-инструкция ралфа безусловно
+# содержит "issue #139" и ложно совпадал бы с "issue #1" как префикс.
 case "$issue_num" in
   1)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -3182,7 +3176,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN/claude"
 
 RALPH_LOGS="$TMP/ralph-logs"
 RALPH_NOTIFY="$TMP/ralph-notify.log"
@@ -3411,12 +3404,10 @@ cat > "$RBIN3/prs-fixture.json" <<'EOF'
 []
 EOF
 gh_ralph_stub "$RBIN3" "$RBIN3/issues-fixture.json" "$RBIN3/prs-fixture.json"
-claude_stub_guard "$RBIN3"
-cat >> "$RBIN3/claude" <<'EOF'
+claude_stub "$RBIN3" <<'EOF'
 echo "call" >> "$d/claude-calls.log"
-# Номер issue — из хвостового маркера, не подстрочным case по "$*" целиком
-# (см. комментарий у аналогичного стаба фикстуры issue #139 выше: сам текст
-# инструкции ралфа безусловно содержит "issue #139").
+# Номер issue — $issue_num из guard-пролога (хвостовой маркер, не case по
+# "$*" целиком: текст инструкции безусловно содержит "issue #139").
 case "$issue_num" in
   21)
     cat > "$d/prs-fixture.json" <<'PRJSON'
@@ -3436,7 +3427,6 @@ PRJSON
 esac
 exit 0
 EOF
-chmod +x "$RBIN3/claude"
 RALPH3_LOGS="$TMP/ralph-three-logs"
 RALPH3_NOTIFY="$TMP/ralph-three-notify.log"
 
@@ -5604,9 +5594,8 @@ cat > "$RBIN_MERGE/prs-fixture.json" <<'EOF'
 []
 EOF
 claude_stub_one_pr "$RBIN_MERGE" args '5001' false 'issue-2001-x'
-# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — самописный стаб,
-# тот же приём, что уже используют RALPH_CFAIL/RALPH_CONFLICT выше для
-# сценариев за пределами общего каркаса.
+# merge-ветка resolve_ready_pr — pr view/pr merge через extra-параметр
+# gh_ralph_stub (issue #207) поверх общего каркаса.
 gh_ralph_stub "$RBIN_MERGE" "$RBIN_MERGE/issues-fixture.json" "$RBIN_MERGE/prs-fixture.json" log \
   '  "pr view") echo "MERGEABLE null issue-2001-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
@@ -5818,7 +5807,7 @@ cat > "$RBIN_BEHIND/prs-fixture.json" <<'EOF'
 []
 EOF
 claude_stub_one_pr "$RBIN_BEHIND" args '5020' false 'issue-2020-x'
-read -r -d '' behind_gh_extra <<EXTRA || true
+IFS= read -r -d '' behind_gh_extra <<EXTRA || true
   "pr view") echo "MERGEABLE null issue-2020-x"; exit 0 ;;
   "pr checkout") (cd "$RALPH_BEHIND" && git checkout -B issue-2020-x origin/issue-2020-x) >/dev/null 2>&1; exit \$? ;;
   "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
@@ -6044,7 +6033,7 @@ cat > "$RBIN_TRUNK/prs-fixture.json" <<'EOF'
 []
 EOF
 claude_stub_one_pr "$RBIN_TRUNK" args '5060' false 'issue-2060-x'
-read -r -d '' trunk_gh_extra <<EXTRA || true
+IFS= read -r -d '' trunk_gh_extra <<EXTRA || true
   "pr view") echo "MERGEABLE null issue-2060-x"; exit 0 ;;
   "pr checkout") (cd "$RALPH_TRUNK" && git checkout -B issue-2060-x origin/issue-2060-x) >/dev/null 2>&1; exit \$? ;;
   "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
@@ -6136,7 +6125,7 @@ cat > "$RBIN_ACTCONFLICT/prs-fixture.json" <<'EOF'
 []
 EOF
 claude_stub_one_pr "$RBIN_ACTCONFLICT" args '5070' false 'issue-2070-x'
-read -r -d '' actconflict_gh_extra <<EXTRA || true
+IFS= read -r -d '' actconflict_gh_extra <<EXTRA || true
   "pr view") echo "MERGEABLE null issue-2070-x"; exit 0 ;;
   "pr checkout") (cd "$RALPH_ACTCONFLICT" && git checkout -B issue-2070-x origin/issue-2070-x) >/dev/null 2>&1; exit \$? ;;
 EXTRA
@@ -6693,9 +6682,8 @@ EOF
 cat > "$RBIN_TOKB/prs-fixture.json" <<'EOF'
 []
 EOF
-# свой gh-стаб (не gh_ralph_stub): canMerge=true ведёт ready-исход #973 через
-# реальную merge-ветку resolve_ready_pr → нужны pr view/pr merge (тот же
-# приём, что фикстура RALPH_MB issue #129 выше)
+# canMerge=true ведёт ready-исход #973 через реальную merge-ветку
+# resolve_ready_pr → pr view/pr merge через extra (приём RALPH_MB выше)
 gh_ralph_stub "$RBIN_TOKB" "$RBIN_TOKB/issues-fixture.json" "$RBIN_TOKB/prs-fixture.json" log \
   '  "pr view") echo "MERGEABLE null issue-973-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
@@ -7110,8 +7098,8 @@ EOF
 cat > "$RBIN_NC/prs-fixture.json" <<'EOF'
 []
 EOF
-# свой gh-стаб: дефолтная политика (canMerge=true) ведёт ready через
-# merge-ветку — нужны pr view/pr merge (приём фикстуры RALPH_MB)
+# дефолтная политика (canMerge=true) ведёт ready через merge-ветку —
+# pr view/pr merge через extra; pr view отвечает веткой по номеру PR
 gh_ralph_stub "$RBIN_NC" "$RBIN_NC/issues-fixture.json" "$RBIN_NC/prs-fixture.json" log \
   '  "pr view") echo "MERGEABLE null issue-${3#9}-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
@@ -7222,8 +7210,7 @@ PRJSON
 esac
 exit 0
 EOF
-# gh_ralph_stub не умеет "pr view"/"pr merge" (issue #129) — самописный стаб,
-# тот же приём, что RALPH_MERGE выше.
+# merge-ветка через extra-параметр (приём RALPH_MERGE выше)
 gh_ralph_stub "$RBIN_SIGNAL" "$RBIN_SIGNAL/issues-fixture.json" "$RBIN_SIGNAL/prs-fixture.json" log \
   '  "pr view") echo "MERGEABLE null issue-3001-x"; exit 0 ;;
   "pr merge") echo "$*" >> "$d/pr-merge-calls.log"; exit 0 ;;'
