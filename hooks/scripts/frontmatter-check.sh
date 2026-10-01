@@ -59,10 +59,22 @@ def unquote(v):
     return v
 
 
+def has_colon_space(s):
+    # ": " где угодно в строке — реальный триггер построчного
+    # fallback-регэкспа рантайма (механизм — ADR-022).
+    return ": " in s
+
+
+def has_trailing_colon(s):
+    # Значение заканчивается на ":" без текста после — fallback его НЕ
+    # кавотирует (триггер регэкспа — только ": ", не голое ":" на конце),
+    # поэтому строгий парсер теряет весь блок независимо от того, есть ли
+    # у записи строка-продолжение (механизм — ADR-022).
+    return s.endswith(":")
+
+
 def has_colon_trigger(s):
-    # ": " в любом месте строки или ":" на самом конце — граница, за
-    # которой рантайм теряет фронтматтер (механизм — ADR-022).
-    return ": " in s or s.endswith(":")
+    return has_colon_space(s) or has_trailing_colon(s)
 
 
 def parse_frontmatter(text, kind, warnings):
@@ -97,6 +109,8 @@ def parse_frontmatter(text, kind, warnings):
             if rest and not rest[0].isspace():
                 return None, "строка %d: нет пробела после \":\" — такую строку fallback-парсер рантайма не кавотирует" % lineno
             v = rest.strip()
+            if has_trailing_colon(v):
+                return None, "строка %d: значение заканчивается на \":\" — рантайм теряет весь блок, даже без строки-продолжения" % lineno
             if k not in ALLOWED[kind]:
                 return None, "строка %d: неизвестный ключ %r для %s (допустимы: %s)" % (
                     lineno, k, kind, ", ".join(sorted(ALLOWED[kind])))
@@ -109,7 +123,7 @@ def parse_frontmatter(text, kind, warnings):
             if key is None:
                 return None, "строка %d: строка-продолжение до первого ключа" % lineno
             cont = raw.strip()
-            if has_colon_trigger(first_value.get(key, "")):
+            if has_colon_space(first_value.get(key, "")):
                 return None, "строка %d: строка-продолжение после двоеточия в первой строке записи — рантайм теряет весь блок" % lineno
             if has_colon_trigger(cont):
                 return None, "строка %d: двоеточие в строке-продолжении — рантайм теряет значение" % lineno

@@ -8629,7 +8629,7 @@ EOF
 fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201: отсутствующий description у команды — красный check" 1 $?
 assert_contains "issue #201: ошибка называет файл без description" "$fm_out" "missing-description.md"
-assert_contains "issue #201: ошибка называет отсутствующий ключ description" "$fm_out" "description"
+assert_contains "issue #201: ошибка называет отсутствующий ключ description" "$fm_out" "'description'"
 rm -f "$FM/commands/missing-description.md"
 
 # Отсутствующий argument-hint у команды — тот же класс, другой ключ.
@@ -8667,7 +8667,7 @@ model: opus
 EOF
 fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201: агент без tools — красный check" 1 $?
-assert_contains "issue #201: ошибка называет отсутствующий ключ tools" "$fm_out" "tools"
+assert_contains "issue #201: ошибка называет отсутствующий ключ tools" "$fm_out" "'tools'"
 rm -f "$FM/agents/no-tools.md"
 
 # Агент без обязательного model — красный check.
@@ -8681,7 +8681,7 @@ tools: Read
 EOF
 fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201: агент без model — красный check" 1 $?
-assert_contains "issue #201: ошибка называет отсутствующий ключ model" "$fm_out" "model"
+assert_contains "issue #201: ошибка называет отсутствующий ключ model" "$fm_out" "'model'"
 rm -f "$FM/agents/no-model.md"
 
 # Валидный агент — зелёный check.
@@ -8814,8 +8814,7 @@ rm -f "$FM/commands/multiline-colon-first-line.md"
 
 # Двоеточие на САМОМ КОНЦЕ первой строки записи (не ": " с текстом после) —
 # тот же риск, что multiline-colon-first-line.md: ровно сценарий переноса
-# description work.md/autopilot.md сразу после двоеточия (issue #201, круг
-# 3 ревью PR #243).
+# description work.md/autopilot.md сразу после двоеточия (issue #201, ADR-022).
 cat > "$FM/commands/multiline-colon-first-line-trailing.md" <<'EOF'
 ---
 description: Взять задачу (issue) в работу:
@@ -8828,6 +8827,22 @@ fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201: висящее ':' на конце первой строки записи с продолжением — красный check" 1 $?
 assert_contains "issue #201: ошибка называет файл с висящим ':' в первой строке многострочной записи" "$fm_out" "multiline-colon-first-line-trailing.md"
 rm -f "$FM/commands/multiline-colon-first-line-trailing.md"
+
+# Та же форма (двоеточие на самом конце значения), но БЕЗ строки-продолжения
+# вообще — fallback не квотирует голое ":" на конце (регэксп триггера — это
+# ": ", а не голое ":"), поэтому строгий парсер теряет весь блок даже у
+# однострочной записи (issue #201, ADR-022).
+cat > "$FM/commands/single-line-trailing-colon.md" <<'EOF'
+---
+description: Взять задачу (issue) в работу:
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: висящее ':' на конце однострочной записи без продолжения — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с висящим ':' в однострочной записи" "$fm_out" "single-line-trailing-colon.md"
+rm -f "$FM/commands/single-line-trailing-colon.md"
 
 # "key:value" без пробела после ":" — fallback рантайма требует ":\s+" и
 # такую строку не кавотирует, весь фронтматтер теряется.
