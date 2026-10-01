@@ -3918,9 +3918,13 @@ RALPH_SPEC_LOGS="$TMP/ralph-spec-logs"
 ralph_spec_out=$(run_ralph "$RALPH_SPEC" "$RBIN_SPEC" "$RALPH_SPEC_LOGS" "$TMP/ralph-spec-notify.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #218: adk-ralph: спека #90 не в main — прогон завершается штатно" 0 $?
 assert_contains "issue #218: adk-ralph: спека #90 не в main — сводка перечисляет ready #91 (спека #91 уже в main)" \
-  "$ralph_spec_out" "#91"
-assert_not_contains "issue #218: adk-ralph: спека #90 не в main — сводка нигде не упоминает #90 (не застрял, не пропущен)" \
-  "$ralph_spec_out" "#90"
+  "$ralph_spec_out" "Ready (ждут человека):  #91"
+assert_not_contains "issue #218: adk-ralph: спека #90 не в main — не застрял" \
+  "$ralph_spec_out" "Застряло: #90"
+assert_not_contains "issue #218: adk-ralph: спека #90 не в main — не пропущен каскадом" \
+  "$ralph_spec_out" "Пропущено (зависимость от застрявшей задачи): #90"
+assert_contains "круг 2 ревью PR #246: adk-ralph: мелочь — #90 виден отдельным бакетом сводки «Ждёт спеки в main» (раньше был невидим нигде, в отличие от owner:human)" \
+  "$ralph_spec_out" "Ждёт спеки в main: #90"
 
 ralph_spec_log=$(cat "$(ralph_journal "$RALPH_SPEC_LOGS")" 2>/dev/null)
 assert_not_contains "issue #218: adk-ralph: журнал не содержит ни одной записи по issue #90" \
@@ -3938,6 +3942,111 @@ assert_exit "issue #218: adk-ralph: headless-процесс запущен ро�
   1 "$spec_claude_call_count"
 assert_not_contains "issue #218: adk-ralph: headless-процесс не вызывался с номером #90" \
   "$spec_claude_calls" "issue #90"
+
+# ── Круг 2 ревью PR #246, блокер: default branch репозитория — trunk, не
+# main (как RALPH_TRUNK ниже, круг 1 ревью PR #195, но для spec_missing(),
+# не для rev-list актуализации). До фикса spec_missing() читал
+# `origin/main` буквально — на репозитории с другим default branch этот
+# `git ls-tree` падает (нет такой ссылки, `2>/dev/null` глушит), existing_specs
+# остаётся пустым НАВСЕГДА, и issue #91 (спека РЕАЛЬНО есть в origin/trunk)
+# ошибочно читался бы как spec_missing — молча исключён из очереди без
+# единого сигнала, воспроизводя тот же класс регрессии, что issue #144/#220
+# п.2 для другого участка файла. Фикстура — та же пара issues (#90 без
+# спеки, #91 со спекой), но ralph_clone с --branch trunk: #91 обязан
+# дойти до ready, доказывая, что spec_missing() берёт существующий файл
+# из origin/$default_branch (trunk), а не из несуществующего origin/main ──
+RALPH_SPEC_TRUNK_ORIGIN="$TMP/ralph-spec-trunk-origin"
+RALPH_SPEC_TRUNK="$TMP/ralph-spec-trunk-proj"
+ralph_clone "$RALPH_SPEC_TRUNK_ORIGIN" "$RALPH_SPEC_TRUNK" --branch trunk
+mkdir -p "$RALPH_SPEC_TRUNK_ORIGIN/docs/specs"
+echo '# SPEC-901' > "$RALPH_SPEC_TRUNK_ORIGIN/docs/specs/901-present.md"
+(cd "$RALPH_SPEC_TRUNK_ORIGIN" && git add docs/specs/901-present.md && git_c commit -qm "spec 901 on trunk")
+
+RBIN_SPEC_TRUNK="$TMP/ralph-spec-trunk-bin"
+ralph_bin "$RBIN_SPEC_TRUNK"
+cat > "$RBIN_SPEC_TRUNK/issues-fixture.json" <<'EOF'
+[
+  {"number": 90, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: docs/specs/900-missing.md"},
+  {"number": 91, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: docs/specs/901-present.md"}
+]
+EOF
+gh_ralph_stub "$RBIN_SPEC_TRUNK" "$RBIN_SPEC_TRUNK/issues-fixture.json" "$RBIN_SPEC_TRUNK/prs-fixture.json"
+claude_stub_one_pr "$RBIN_SPEC_TRUNK" args '5902' false 'issue-91-trunk-z'
+
+RALPH_SPEC_TRUNK_LOGS="$TMP/ralph-spec-trunk-logs"
+ralph_spec_trunk_out=$(run_ralph "$RALPH_SPEC_TRUNK" "$RBIN_SPEC_TRUNK" "$RALPH_SPEC_TRUNK_LOGS" "$TMP/ralph-spec-trunk-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "круг 2 ревью PR #246: adk-ralph: default branch trunk — прогон завершается штатно" 0 $?
+assert_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — сводка перечисляет ready #91 (спека #91 есть в origin/trunk, не в несуществующем origin/main)" \
+  "$ralph_spec_trunk_out" "Ready (ждут человека):  #91"
+assert_not_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — #90 не застрял и не пропущен каскадом" \
+  "$ralph_spec_trunk_out" "Застряло: #90"
+assert_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — #90 (спеки нет и в trunk) виден бакетом «Ждёт спеки в main», не потерян" \
+  "$ralph_spec_trunk_out" "Ждёт спеки в main: #90"
+
+ralph_spec_trunk_log=$(cat "$(ralph_journal "$RALPH_SPEC_TRUNK_LOGS")" 2>/dev/null)
+assert_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — журнал фиксирует issue #91 (не потерян из-за хардкода origin/main)" \
+  "$ralph_spec_trunk_log" '"issue": "91"'
+assert_not_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — журнал не содержит ни одной записи по issue #90" \
+  "$ralph_spec_trunk_log" '"issue": "90"'
+
+# ── Круг 2 ревью PR #246, «важно»: контракт писатель/читатель — plan.md
+# шаг 4 гарантирует ТОЛЬКО то, что путь спеки присутствует буквальным
+# текстом в строке «Спека: …», без ограничений на обрамление. Старый
+# regex (путь СРАЗУ после «Спека:», максимум одна опциональная «[»)
+# распознавал только одну из легальных по этому контракту форм — на
+# остальных spec_missing() молча возвращал False (путь не найден →
+# «спеки нет в строке» → issue проезжает как обычный, даже если его
+# спека реально не в main), воспроизводя баг круга 1. Три формы из
+# самого ревью, спека НЕ в main у каждой: бэктики (#80), **жирный**
+# префикс (#81), ссылка вида [SPEC-NNN: путь](url) (#82). Контрольный
+# #83 — обычный формат, спека РЕАЛЬНО в main — доказывает, что фикс не
+# перекрывает легальный путь заодно ─────────────────────────────────────────
+RALPH_SPECFMT_ORIGIN="$TMP/ralph-specfmt-origin"
+RALPH_SPECFMT="$TMP/ralph-specfmt-proj"
+ralph_clone "$RALPH_SPECFMT_ORIGIN" "$RALPH_SPECFMT"
+mkdir -p "$RALPH_SPECFMT_ORIGIN/docs/specs"
+echo '# SPEC-963' > "$RALPH_SPECFMT_ORIGIN/docs/specs/963-present.md"
+(cd "$RALPH_SPECFMT_ORIGIN" && git add docs/specs/963-present.md && git_c commit -qm "spec 963")
+
+RBIN_SPECFMT="$TMP/ralph-specfmt-bin"
+ralph_bin "$RBIN_SPECFMT"
+cat > "$RBIN_SPECFMT/issues-fixture.json" <<'EOF'
+[
+  {"number": 80, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: `docs/specs/960-missing-a.md`"},
+  {"number": 81, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\n**Спека:** docs/specs/961-missing-b.md"},
+  {"number": 82, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: [SPEC-962: docs/specs/962-missing-c.md](https://github.com/x/y/blob/main/docs/specs/962-missing-c.md)"},
+  {"number": 83, "labels": [{"name":"type:task"}], "body": "Зависит от: —\n\n---\nСпека: docs/specs/963-present.md"}
+]
+EOF
+gh_ralph_stub "$RBIN_SPECFMT" "$RBIN_SPECFMT/issues-fixture.json" "$RBIN_SPECFMT/prs-fixture.json"
+claude_stub_one_pr "$RBIN_SPECFMT" args '5903' false 'issue-83-z'
+
+RALPH_SPECFMT_LOGS="$TMP/ralph-specfmt-logs"
+ralph_specfmt_out=$(run_ralph "$RALPH_SPECFMT" "$RBIN_SPECFMT" "$RALPH_SPECFMT_LOGS" "$TMP/ralph-specfmt-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "круг 2 ревью PR #246: adk-ralph: формы «Спека:» с обрамлением — прогон завершается штатно" 0 $?
+assert_contains "круг 2 ревью PR #246: adk-ralph: контрольный #83 (обычный формат, спека в main) доигран до ready" \
+  "$ralph_specfmt_out" "Ready (ждут человека):  #83"
+assert_contains "круг 2 ревью PR #246: adk-ralph: #80 (бэктики вокруг пути) распознан как spec_missing — виден бакетом «Ждёт спеки в main»" \
+  "$ralph_specfmt_out" "#80"
+assert_contains "круг 2 ревью PR #246: adk-ralph: #81 (**жирный** префикс «Спека:») распознан как spec_missing — виден бакетом «Ждёт спеки в main»" \
+  "$ralph_specfmt_out" "#81"
+assert_contains "круг 2 ревью PR #246: adk-ralph: #82 ([SPEC-NNN: путь](url)) распознан как spec_missing — виден бакетом «Ждёт спеки в main»" \
+  "$ralph_specfmt_out" "#82"
+assert_contains "круг 2 ревью PR #246: adk-ralph: бакет «Ждёт спеки в main» перечисляет ровно #80, #81, #82 (не #83)" \
+  "$ralph_specfmt_out" "Ждёт спеки в main: #80 #81 #82"
+
+ralph_specfmt_log=$(cat "$(ralph_journal "$RALPH_SPECFMT_LOGS")" 2>/dev/null)
+assert_contains "круг 2 ревью PR #246: adk-ralph: журнал — #83 result=ready" \
+  "$ralph_specfmt_log" '"issue": "83"'
+for n in 80 81 82; do
+  assert_not_contains "круг 2 ревью PR #246: adk-ralph: журнал не содержит ни одной записи по issue #$n" \
+    "$ralph_specfmt_log" "\"issue\": \"$n\""
+done
+
+specfmt_claude_calls=$(cat "$RBIN_SPECFMT/claude-calls.log" 2>/dev/null)
+specfmt_claude_call_count=$(printf '%s' "$specfmt_claude_calls" | grep -c "Инструкция ралфа")
+assert_exit "круг 2 ревью PR #246: adk-ralph: headless-процесс запущен ровно один раз (#80/#81/#82 не исполнялись вовсе)" \
+  1 "$specfmt_claude_call_count"
 
 # ── issue #220 п.1: снимок очереди (issues_file) статичен на старте
 # прогона — issue #300 (без блокеров) закрыт человеком МЕЖДУ снимком и
@@ -4727,6 +4836,52 @@ bor_spec=$(printf '%s\n%s\n%s\n%s' \
 bor_valid=$(jsonl_check "$(ralph_journal "$RALPH_BOR_LOGS")" 4 "$bor_spec")
 assert_exit "issue #147: adk-ralph: журнал — run_start, #71 ready, #72 blocked-on-ready, run_end с blocked_on_ready=1" \
   1 "$bor_valid"
+
+# ── Круг 2 ревью PR #246, «важно»: `continue` по spec_missing() внутри
+# цикла blocked_on_ready ничем не был покрыт — мутация (удаление строки)
+# не давала ни одного FAIL. #72 «Blocked by #71» + «Спека:
+# docs/specs/950-missing.md» (файла нет в main — ralph_init не создаёт
+# origin вовсе, existing_specs всегда пуст). Единственный блокер #71
+# становится ready этим прогоном — БЕЗ `continue` по spec_missing() #72
+# попал бы в бакет blocked-on-ready (все блокеры resolved_ready). С
+# `continue` #72 обязан остаться невидимым, тем же способом, что
+# owner:human/spec_missing() в кандидатском цикле ниже — не ready, не
+# stuck, не skipped, не blocked-on-ready ───────────────────────────────────
+RALPH_BOR_SPEC="$TMP/ralph-bor-spec-proj"
+RBIN_BOR_SPEC="$TMP/ralph-bor-spec-bin"
+ralph_init "$RALPH_BOR_SPEC" "$RBIN_BOR_SPEC"
+cat > "$RBIN_BOR_SPEC/issues-fixture.json" <<'EOF'
+[
+  {"number": 71, "labels": [{"name":"type:task"}], "body": "Зависит от: —"},
+  {"number": 72, "labels": [{"name":"type:task"}], "body": "Зависит от: Blocked by #71\n\n---\nСпека: docs/specs/950-missing.md"}
+]
+EOF
+gh_ralph_stub "$RBIN_BOR_SPEC" "$RBIN_BOR_SPEC/issues-fixture.json" "$RBIN_BOR_SPEC/prs-fixture.json"
+claude_stub_one_pr "$RBIN_BOR_SPEC" call '711' false 'issue-71-spec-x'
+RALPH_BOR_SPEC_LOGS="$TMP/ralph-bor-spec-logs"
+
+ralph_bor_spec_out=$(run_ralph "$RALPH_BOR_SPEC" "$RBIN_BOR_SPEC" "$RALPH_BOR_SPEC_LOGS" "$TMP/ralph-bor-spec-notify.log" "$RALPH_NOMERGE_CFG")
+assert_exit "круг 2 ревью PR #246: adk-ralph: #72 (спека не в main) заблокирован ready #71 — прогон завершается штатно" 0 $?
+assert_contains "круг 2 ревью PR #246: adk-ralph: сводка перечисляет ready #71" "$ralph_bor_spec_out" "Ready (ждут человека):  #71"
+assert_contains "круг 2 ревью PR #246: adk-ralph: #72 НЕ попадает в бакет blocked-on-ready (spec_missing() обязан исключить его ДО этой проверки)" \
+  "$ralph_bor_spec_out" "Заблокировано ready-PR блокера: нет"
+assert_contains "круг 2 ревью PR #246: adk-ralph: #72 (не ready, не stuck, не skipped, не blocked-on-ready) виден отдельным бакетом «Ждёт спеки в main»" \
+  "$ralph_bor_spec_out" "Ждёт спеки в main: #72"
+
+claude_bor_spec_calls=$(cat "$RBIN_BOR_SPEC/claude-calls.log" 2>/dev/null | grep -c "call")
+assert_exit "круг 2 ревью PR #246: adk-ralph: headless-процесс запущен ровно один раз (#72 не исполнялся вовсе)" \
+  1 "$claude_bor_spec_calls"
+
+ralph_bor_spec_log=$(cat "$(ralph_journal "$RALPH_BOR_SPEC_LOGS")" 2>/dev/null)
+bor_spec_spec=$(printf '%s\n%s\n%s' \
+  'event=run_start' \
+  'event=task|issue=71|type=task|result=ready' \
+  'event=run_end|ready=1|stuck=0|skipped=0|blocked_on_ready=0')
+bor_spec_valid=$(jsonl_check "$(ralph_journal "$RALPH_BOR_SPEC_LOGS")" 3 "$bor_spec_spec")
+assert_exit "круг 2 ревью PR #246: adk-ralph: журнал — только #71 ready, #72 нигде (ни одной записи), run_end blocked_on_ready=0" \
+  1 "$bor_spec_valid"
+assert_not_contains "круг 2 ревью PR #246: adk-ralph: журнал не содержит ни одной записи по issue #72" \
+  "$ralph_bor_spec_log" '"issue": "72"'
 
 # ── issue #147 (круг 1 ревью PR #186, блокер): несколько блокеров — только
 # ЧАСТЬ из них ready этим прогоном, другая застряла. #72 «Blocked by #71,
@@ -8410,17 +8565,20 @@ check_ac_doc "issue #218" "autopilot.md шаг 1 выводит такой issue
 # ветки/PR по новому тексту work.md, а find_pr_state прочёл бы «PR нет»
 # как застревание — детерминированная ложная needs-human. Симметрично
 # owner:human (issue #158): новая функция spec_missing() в select_next.
-ralph_text=$(doc_text "$KIT/hooks/scripts/adk-ralph.sh")
+#
+# Круг 2 ревью PR #246 (важно): проверки `grep 'def spec_missing'`/
+# `'not in existing_specs'`/`'ls-tree -r --name-only origin/main'`/
+# `'if spec_missing(it):'`, которые были здесь, — тесты РЕАЛИЗАЦИИ, не
+# поведения: одна из них (`origin/main`) закрепляла сам блокер круга 2
+# (хардкод ветки) как ожидаемый текст и была бы зелёной на регрессии.
+# Поведение — что issue со spec_missing() молча не берётся в работу, а
+# issue со спекой, реально присутствующей в origin/$default_branch (в
+# т.ч. на нестандартном default branch), доигрывается до ready — уже
+# доказано прогоном ralph на фикстурах RALPH_SPEC/RALPH_SPEC_TRUNK выше
+# (issue #218, круг 2 ревью PR #246). Здесь остаётся только doc-проверка
+# заголовка (ссылка на issue/ADR в комментарии, не код).
 check_ac_doc "issue #218" "adk-ralph.sh header упоминает issue #218 в описании правила выбора" \
   "$KIT/hooks/scripts/adk-ralph.sh" "issue #218, ADR-021"
-assert_contains "issue #218: adk-ralph.sh определяет spec_missing() по строке «Спека:» в теле issue" \
-  "$ralph_text" 'def spec_missing'
-assert_contains "issue #218: adk-ralph.sh spec_missing() проверяет путь против existing_specs (origin/main)" \
-  "$ralph_text" 'not in existing_specs'
-assert_contains "issue #218: adk-ralph.sh обновляет existing_specs через git fetch + git ls-tree перед каждым select_next" \
-  "$ralph_text" 'ls-tree -r --name-only origin/main'
-assert_contains "issue #218: adk-ralph.sh кандидатский цикл пропускает spec_missing() issue тем же способом, что owner:human" \
-  "$ralph_text" 'if spec_missing(it):'
 
 check_ac_doc "issue #218" "ADR-021 описывает spec_missing() в select_next как симметричную owner:human проверку" \
   "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"

@@ -38,10 +38,10 @@
 # зарезервированных не входит ни в ready/stuck/skipped журнала, только в
 # отдельную строку сводки прогона.
 #
-# Спека вехи ещё не в main (issue #218, ADR-021, симметрично шагу 1
+# Спека вехи ещё не в default branch (issue #218, ADR-021, симметрично шагу 1
 # commands/work.md и commands/autopilot.md): issue со строкой «Спека:
 # docs/specs/NNN-<слаг>.md» в теле, чей файл ещё не существует в
-# origin/main (PR спеки ready, но `policies.merge` не даёт агенту его
+# origin/$default_branch (PR спеки ready, но `policies.merge` не даёт агенту его
 # смержить), пропускается тем же молчаливым способом, что owner:human —
 # без needs-human, без записи в журнал, вне ready/stuck/skipped. Без этого
 # select_next отдал бы issue `claude -p` с текстом commands/work.md,
@@ -375,14 +375,20 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # (доступных задач не осталось).
 #
 # Перед каждым вызовом освежаем список файлов docs/specs/*.md в
-# origin/main (issue #218, ADR-021) — дёшево (один fetch + один ls-tree)
-# и позволяет ralph заметить merge PR спеки человеком посреди прогона.
-# Fetch может упасть (сеть) — `|| true` намеренно: пустой/устаревший
-# список на этой итерации лишь оставляет issue со спекой вне кандидатов
-# (безопасное направление отказа, симметрично owner:human — не needs-human).
+# origin/$default_branch (issue #218, круг 2 ревью PR #246, ADR-007 §6) —
+# дёшево (один fetch + один ls-tree) и позволяет ralph заметить merge PR
+# спеки человеком посреди прогона. `default_branch` вычисляется один раз
+# ниже по файлу (до первого вызова select_next, issue #144/#220 п.2) —
+# хардкод `origin/main` здесь молча исключал бы из очереди КАЖДЫЙ issue
+# со спекой на репозитории с другим default branch, без needs-human и
+# какого-либо сигнала (воспроизведено мутацией круга 2: фикстура с
+# `--branch trunk` → 3 FAIL). Fetch может упасть (сеть) — `|| true`
+# намеренно: пустой/устаревший список на этой итерации лишь оставляет
+# issue со спекой вне кандидатов (безопасное направление отказа,
+# симметрично owner:human — не needs-human).
 select_next() {
   git -C "$root" fetch origin >/dev/null 2>&1 || true
-  existing_specs=$(git -C "$root" ls-tree -r --name-only origin/main -- docs/specs 2>/dev/null | tr '\n' ',')
+  existing_specs=$(git -C "$root" ls-tree -r --name-only "origin/$default_branch" -- docs/specs 2>/dev/null | tr '\n' ',')
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
     "$blocked_on_ready_nums" "$merged_nums" "$closed_externally_nums" \
     "$task_label" "$bug_label" "$ff_label" "$consolidate_label" "$existing_specs" <<'PYEOF'
@@ -460,18 +466,33 @@ def type_of(it):
 
 
 # issue #218, ADR-021: issue со строкой «Спека: docs/specs/NNN-<слаг>.md»
-# (так размечает /plan шаг 4 — формат может быть обёрнут в markdown-ссылку,
-# путь захватывается нежадно до первого «.md») чей файл ещё не в
-# origin/main — спека ждёт человека (policies.merge блокирует агенту
-# merge PR спеки, /plan шаг 5). Симметрично owner:human ниже: issue без
-# такой строки (не из /plan, или спека уже была в main — ADR-009)
-# проверке не подлежит.
-SPEC_REF_RE = re.compile(r"Спека:\s*\[?(docs/specs/\S+?\.md)\]?")
+# чей файл ещё не в origin/$default_branch — спека ждёт человека
+# (policies.merge блокирует агенту merge PR спеки, /plan шаг 5).
+# Симметрично owner:human ниже: issue без такой строки (не из /plan, или
+# спека уже была в main — ADR-009) проверке не подлежит.
+#
+# Круг 2 ревью PR #246 (важно): контракт plan.md шаг 4 гарантирует только
+# то, что путь спеки присутствует буквальным текстом в строке «Спека:
+# …» — обёртка вокруг него (markdown-ссылка, бэктики, **жирный** префикс,
+# хвост вида «(SPEC-NNN)» или «[SPEC-NNN: путь](url)») остаётся легальной.
+# Старый regex требовал путь СРАЗУ после «Спека:» (с опциональной одной
+# «[») — распознавал ровно одну из этих форм и на остальных воспроизводил
+# исходный баг круга 1 (spec_missing() молча возвращал False). Вместо
+# жёсткой адъacency: строка содержит литерал «Спека:» где угодно в
+# строке, путь — первое вхождение docs/specs/….md в ТОЙ ЖЕ строке,
+# независимо от обрамления — буквальная реализация контракта plan.md.
+SPEC_LINE_MARKER = "Спека:"
+SPEC_PATH_RE = re.compile(r"docs/specs/\S+?\.md")
 
 
 def spec_missing(it):
-    m = SPEC_REF_RE.search(it.get("body") or "")
-    return bool(m) and m.group(1) not in existing_specs
+    for line in (it.get("body") or "").splitlines():
+        if SPEC_LINE_MARKER not in line:
+            continue
+        m = SPEC_PATH_RE.search(line)
+        if m:
+            return m.group(0) not in existing_specs
+    return False
 
 
 new_skips = []
@@ -1003,6 +1024,41 @@ if [ -z "$default_branch" ]; then
   default_branch=$(cd "$root" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
 fi
 default_branch="${default_branch:-main}"
+
+# Issues, чья спека ещё не в default branch (issue #218, круг 2 ревью PR
+# #246, мелочь): один снимок на старте прогона (тот же приём, что
+# reserved_count/owner:human выше, issue #158) — только для итоговой
+# сводки, не журнал (не result=, не аномалия; живой select_next ниже
+# по-прежнему освежает existing_specs на каждой итерации для реального
+# отбора кандидатов). До этой правки категория была невидима в сводке:
+# issue молча исключался из кандидатов без единой строки, в отличие от
+# owner:human с собственным счётчиком.
+waiting_for_spec_info=$(python3 -c '
+import json, re, sys
+with open(sys.argv[1]) as f:
+    issues = json.load(f)
+issues.sort(key=lambda it: it["number"])
+existing_specs = {p for p in sys.argv[2].split(",") if p}
+SPEC_PATH_RE = re.compile(r"docs/specs/\S+?\.md")
+
+
+def spec_missing(it):
+    for line in (it.get("body") or "").splitlines():
+        if "Спека:" not in line:
+            continue
+        m = SPEC_PATH_RE.search(line)
+        if m:
+            return m.group(0) not in existing_specs
+    return False
+
+
+nums = [it["number"] for it in issues if spec_missing(it)]
+print(len(nums))
+print(" ".join(f"#{n}" for n in nums))
+' "$issues_file" "$(git -C "$root" ls-tree -r --name-only "origin/$default_branch" -- docs/specs 2>/dev/null | tr '\n' ',')" 2>/dev/null)
+waiting_for_spec_count=$(printf '%s\n' "$waiting_for_spec_info" | sed -n '1p')
+waiting_for_spec_count="${waiting_for_spec_count:-0}"
+waiting_for_spec_summary=$(printf '%s\n' "$waiting_for_spec_info" | sed -n '2p')
 
 # return_to_default_branch — возврат рабочего дерева на default branch
 # между итерациями: единая точка на любом выходе из цикла (обоснование и
@@ -1778,6 +1834,7 @@ Ready (ждут человека): ${ready_list:-нет}
 Закрыто человеком до старта задачи: ${closed_externally_summary:-нет}
 Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
+Ждёт спеки в main: ${waiting_for_spec_summary:-нет}
 Расход по задачам (сек/токены):${usage_summary:- нет}
 Расход прогона: $run_tokens_used ток.
 Причина остановки: $stop_reason"
@@ -1790,6 +1847,6 @@ echo "$summary"
 # "завершён:", чтобы не сдвинуть существующие assert_contains на буквальный
 # префикс "ready=... stuck=... skipped=..." у фикстур, предшествующих этим
 # полям (issue #139/#134/#135/#147/#130).
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count closed_externally=$closed_externally_count. Причина: $stop_reason" || true
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count closed_externally=$closed_externally_count waiting_for_spec=$waiting_for_spec_count. Причина: $stop_reason" || true
 
 exit "$exit_code"
