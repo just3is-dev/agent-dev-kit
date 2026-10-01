@@ -8765,8 +8765,8 @@ assert_contains "issue #201: ошибка называет неизвестны�
 rm -f "$FM/commands/broken-continuation-colon.md"
 
 # Многострочное значение, чья строка-продолжение сама содержит ": " —
-# рантайм теряет значение (нет построчного fallback для многострочных
-# значений), гейт обязан повторять эту границу (issue #201, ADR-022).
+# строка-продолжение не вида "key: value", построчный fallback её не
+# кавотирует, рантайм теряет весь фронтматтер (issue #201, ADR-022).
 cat > "$FM/commands/multiline-colon.md" <<'EOF'
 ---
 description: первая строка описания
@@ -8812,6 +8812,23 @@ assert_exit "issue #201: ':' в первой строке записи с про
 assert_contains "issue #201: ошибка называет файл с двоеточием в первой строке многострочной записи" "$fm_out" "multiline-colon-first-line.md"
 rm -f "$FM/commands/multiline-colon-first-line.md"
 
+# Двоеточие на САМОМ КОНЦЕ первой строки записи (не ": " с текстом после) —
+# тот же риск, что multiline-colon-first-line.md: ровно сценарий переноса
+# description work.md/autopilot.md сразу после двоеточия (issue #201, круг
+# 3 ревью PR #243).
+cat > "$FM/commands/multiline-colon-first-line-trailing.md" <<'EOF'
+---
+description: Взять задачу (issue) в работу:
+  ветка → тесты → код → гейты → PR → ревью
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: висящее ':' на конце первой строки записи с продолжением — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с висящим ':' в первой строке многострочной записи" "$fm_out" "multiline-colon-first-line-trailing.md"
+rm -f "$FM/commands/multiline-colon-first-line-trailing.md"
+
 # "key:value" без пробела после ":" — fallback рантайма требует ":\s+" и
 # такую строку не кавотирует, весь фронтматтер теряется.
 cat > "$FM/commands/no-space-after-colon.md" <<'EOF'
@@ -8838,7 +8855,8 @@ description: второе значение
 EOF
 fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201: повторяющийся ключ — check остаётся зелёным" 0 $?
-assert_contains "issue #201: повторяющийся ключ — предупреждение называет файл и ключ" "$fm_out" "duplicate-key.md"
+assert_contains "issue #201: повторяющийся ключ — предупреждение называет файл" "$fm_out" "duplicate-key.md"
+assert_contains "issue #201: повторяющийся ключ — предупреждение называет сам ключ" "$fm_out" "'description'"
 rm -f "$FM/commands/duplicate-key.md"
 
 # description в одинарных кавычках, пустое значение ('') — тоже считается
