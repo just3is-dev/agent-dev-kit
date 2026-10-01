@@ -71,14 +71,27 @@ FORBIDDEN_LEAD_CHARS = set("-?:,[]{}#&*!|>\x27\"%@`")
 NULL_LITERALS = {"~", "null", "Null", "NULL"}
 BOOL_LITERALS = {"true", "True", "TRUE", "false", "False", "FALSE"}
 FORBIDDEN_LITERALS = NULL_LITERALS | BOOL_LITERALS
+# YAML core schema типизирует подобные токены как число (int/float/hex/
+# octal/inf/nan), а не строку — обязательный ключ рантайм получает не
+# строкой (ADR-022, круг 7 ревью PR #243).
+NUMERIC_RE = re.compile(r"[-+]?(\.?[0-9][0-9a-fA-FxXoObB_.eE+-]*|\.(inf|Inf|INF|nan|NaN|NAN))")
 
 KEY_RE = re.compile(r"^([A-Za-z_-]+):( +(.*))?$")
 
 
 def extract_frontmatter(text):
+    # CRLF/CR и юникодные разделители строк: построчные регэкспы рантайма
+    # (JS, "." не матчит \r/ / ) ведут себя иначе, чем python3 с
+    # универсальными переводами строк — безопасность формы не доказана,
+    # отказ безусловно (ADR-022, круг 7 ревью PR #243).
+    if any(c in text for c in "\r  \u0085"):
+        return None, "файл содержит CRLF/CR или юникодный разделитель строк (U+2028/U+2029/U+0085)"
     # Ленивая граница ---: первое вхождение "---" после открывающей
-    # строки, где угодно в тексте, не обязательно отдельной строкой
-    # (так же ведёт себя рантайм — ADR-022).
+    # строки, где угодно в тексте, не обязательно отдельной строкой (так
+    # же ведёт себя рантайм — ADR-022). Но если найденное вхождение само
+    # не образует отдельную строку — оно обрезало значение посреди текста
+    # (рантайм это делает молча, гейт обязан заметить и отказать, а не
+    # согласиться с уже обрезанным значением — круг 7 ревью PR #243).
     lines = text.split("\n")
     if not lines or lines[0] != "---":
         return None, "нет открывающего --- на первой строке"
@@ -86,6 +99,11 @@ def extract_frontmatter(text):
     idx = rest.find("---")
     if idx == -1:
         return None, "нет закрывающего --- (фронтматтер не завершён)"
+    before_ok = idx == 0 or rest[idx - 1] == "\n"
+    after = rest[idx + 3:]
+    after_ok = after == "" or after[0] == "\n"
+    if not (before_ok and after_ok):
+        return None, "первое вхождение --- после открывающей строки не на отдельной строке — фронтматтер обрезан посреди значения"
     return rest[:idx].split("\n"), None
 
 
@@ -130,6 +148,15 @@ def scalar_safe(value_remainder, continuation_texts):
         return False, None
 
     assembled = " ".join(p.strip() for p in all_lines if p.strip())
+    if "..." in assembled:
+        # Bun.YAML 1.3.13 трактует "..." (с пробелом или концом строки
+        # после) как маркер конца YAML-документа даже внутри значения
+        # ключа — результат не бросает исключение, строгий разбор отдаёт
+        # несколько документов, фронтматтер молча пустеет (ADR-022, круг
+        # 7 ревью PR #243).
+        return False, None
+    if NUMERIC_RE.fullmatch(assembled):
+        return False, None
     if assembled in FORBIDDEN_LITERALS:
         return False, None
     return True, assembled
@@ -210,7 +237,10 @@ for line in sys.stdin:
         continue
     path, _, kind = line.rpartition("::")
     try:
-        with open(path, encoding="utf-8") as fh:
+        # newline="": без универсального перевода строк — CRLF/CR должны
+        # остаться видимыми extract_frontmatter(), не быть молча
+        # нормализованы в "\n" (ADR-022, круг 7 ревью PR #243).
+        with open(path, encoding="utf-8", newline="") as fh:
             text = fh.read()
     except OSError as e:
         errors.append("%s: не удалось прочитать (%s)" % (path, e))
