@@ -38,6 +38,17 @@
 # зарезервированных не входит ни в ready/stuck/skipped журнала, только в
 # отдельную строку сводки прогона.
 #
+# Спека вехи ещё не в default branch (issue #218, ADR-021, симметрично шагу 1
+# commands/work.md и commands/autopilot.md): issue со строкой «Спека:
+# docs/specs/NNN-<слаг>.md» в теле, чей файл ещё не существует в
+# origin/$default_branch (PR спеки ready, но `policies.merge` не даёт агенту его
+# смержить), пропускается тем же молчаливым способом, что owner:human —
+# без needs-human, без записи в журнал, вне ready/stuck/skipped. Без этого
+# select_next отдал бы issue `claude -p` с текстом commands/work.md,
+# тот остановился бы без ветки и PR (шаг 1 /work, «номер задан явно —
+# остановись»), а find_pr_state прочёл бы «PR нет» как застревание —
+# ложная needs-human на легальном ожидании человека.
+#
 # Тесты: hooks/scripts/adk-ralph.sh стабами claude/gh на суженном PATH,
 # журнал — $ADK_LOGS_DIR, уведомления — $ADK_NOTIFY_FILE (notify-send.sh),
 # конфиг — $ADK_CONFIG_FILE (lib/config.sh) — все три уже поддержаны
@@ -204,6 +215,17 @@ stuck_summary=""
 skipped_summary=""
 closed_externally_summary=""
 blocked_on_ready_summary=""
+waiting_for_spec_nums=""  # issue-номера, у которых спека ещё не в default
+                          # branch — НЕ подмножество handled (issue #218,
+                          # круг 4 ревью PR #246): перезаписывается целиком
+                          # на каждой итерации значением из последнего вызова
+                          # select_next (который каждый раз освежает fetch +
+                          # ls-tree), а не накапливается — спеку могли
+                          # смержить по ходу прогона, и к концу прогона
+                          # достоверен только самый свежий список, не их
+                          # объединение за весь прогон.
+waiting_for_spec_count=0
+waiting_for_spec_summary=""
 stop_reason=""
 exit_code=0
 
@@ -362,14 +384,31 @@ csv_add() { # csv_add <csv> <значение> — печатает csv с до�
 # строку "NEXT <N> <type> <size>" (следующая задача к исполнению; <size> —
 # "large" при label size:large, иначе "-", issue #133) либо "NONE"
 # (доступных задач не осталось).
+#
+# Перед каждым вызовом освежаем список файлов docs/specs/*.md в
+# origin/$default_branch (issue #218, круг 2 ревью PR #246, ADR-007 §6) —
+# дёшево (один fetch + один ls-tree) и позволяет ralph заметить merge PR
+# спеки человеком посреди прогона. `default_branch` вычисляется один раз
+# ниже по файлу (до первого вызова select_next, issue #144/#220 п.2) —
+# хардкод `origin/main` здесь молча исключал бы из очереди КАЖДЫЙ issue
+# со спекой на репозитории с другим default branch, без needs-human и
+# какого-либо сигнала (воспроизведено мутацией круга 2: фикстура с
+# `--branch trunk` → 3 FAIL). Fetch может упасть (сеть) — `|| true`
+# намеренно: пустой/устаревший список на этой итерации лишь оставляет
+# issue со спекой вне кандидатов (безопасное направление отказа,
+# симметрично owner:human — не needs-human).
 select_next() {
+  git -C "$root" fetch origin >/dev/null 2>&1 || true
+  existing_specs=$(git -C "$root" ls-tree -r --name-only "origin/$default_branch" -- docs/specs 2>/dev/null | tr '\n' ',')
   python3 - "$issues_file" "$handled" "$stuck" "$skipped" "$ready_nums" \
     "$blocked_on_ready_nums" "$merged_nums" "$closed_externally_nums" \
-    "$task_label" "$bug_label" "$ff_label" "$consolidate_label" <<'PYEOF'
+    "$task_label" "$bug_label" "$ff_label" "$consolidate_label" "$existing_specs" <<'PYEOF'
 import json, re, sys
 
 issues_file, handled_csv, stuck_csv, skipped_csv, ready_csv, prev_bor_csv, merged_csv, closed_csv = sys.argv[1:9]
 task_label, bug_label, ff_label, consolidate_label = sys.argv[9:13]
+existing_specs_csv = sys.argv[13]
+existing_specs = {p for p in existing_specs_csv.split(",") if p}
 
 
 def csv_ints(s):
@@ -437,6 +476,33 @@ def type_of(it):
     return "task"
 
 
+# issue #218, ADR-021: issue со строкой «Спека: docs/specs/NNN-<слаг>.md»
+# чей файл ещё не в origin/$default_branch — спека ждёт человека
+# (policies.merge блокирует агенту merge PR спеки, /plan шаг 5).
+# Симметрично owner:human ниже: issue без такой строки (не из /plan, или
+# спека уже была в main — ADR-009) проверке не подлежит.
+#
+# Контракт plan.md шаг 4 гарантирует только то, что путь спеки присутствует
+# буквальным текстом в строке «Спека: …» — обёртка вокруг него
+# (markdown-ссылка, бэктики, **жирный** префикс, хвост вида «(SPEC-NNN)»
+# или «[SPEC-NNN: путь](url)») остаётся легальной (ADR-021). Поэтому — без
+# жёсткой привязки к позиции: строка содержит литерал «Спека:» где угодно в
+# строке, путь — первое вхождение docs/specs/….md в ТОЙ ЖЕ строке,
+# независимо от обрамления — буквальная реализация контракта plan.md.
+SPEC_LINE_MARKER = "Спека:"
+SPEC_PATH_RE = re.compile(r"docs/specs/\S+?\.md")
+
+
+def spec_missing(it):
+    for line in (it.get("body") or "").splitlines():
+        if SPEC_LINE_MARKER not in line:
+            continue
+        m = SPEC_PATH_RE.search(line)
+        if m:
+            return m.group(0) not in existing_specs
+    return False
+
+
 new_skips = []
 new_skip_numbers = set()
 already_needs_human = set()
@@ -472,8 +538,19 @@ excluded = handled | new_skip_numbers
 # resolved_ready (ready_now этого прогона + prev_blocked_on_ready прошлых
 # итераций внешнего цикла), — «на подвеске», не молча потеряна. Неподвижная
 # точка ниже — тем же приёмом, что каскад SKIP выше.
+#
+# Эта же неподвижная точка — единственное место, где select_next собирает
+# waiting_for_spec_numbers (issue #218, круг 4 ревью PR #246): `for it in
+# issues` на первом же проходе (blocked_on_ready_numbers ещё пуст) проверяет
+# КАЖДУЮ не-excluded/needs-human/owner:human задачу этого вызова, поэтому
+# множество полно уже после первого прохода — ниже по циклу (ветка
+# candidate) просто повторяет ту же проверку для выбора NEXT, не для сбора
+# множества. existing_specs здесь — тот самый свежий снимок, который
+# select_next уже отфетчил в начале этого вызова (строка выше по файлу) —
+# отдельного снимка/копии spec_missing() для сводки больше не нужно.
 resolved_ready = set(ready_now) | prev_blocked_on_ready
 blocked_on_ready_numbers = set()
+waiting_for_spec_numbers = set()
 changed = True
 while changed:
     changed = False
@@ -484,6 +561,9 @@ while changed:
         if "needs-human" in labels_of(it):
             continue
         if "owner:human" in labels_of(it):
+            continue
+        if spec_missing(it):
+            waiting_for_spec_numbers.add(n)
             continue
         open_blockers = blockers(it.get("body")) & open_numbers
         if open_blockers and open_blockers <= resolved_ready:
@@ -503,6 +583,11 @@ for it in issues:
         # но и не «застрял»/«пропущен»: остаётся открытым, дальше по циклу.
         # Дальнейшие исходы (needs-human/result=) на неё не действуют.
         continue
+    if spec_missing(it):
+        # Спека вехи ждёт человека (issue #218, ADR-021) — тот же принцип:
+        # не кандидат, но и не «застрял»/«пропущен». Уже учтена в
+        # waiting_for_spec_numbers неподвижной точкой blocked-on-ready выше.
+        continue
     if blockers(it.get("body")) & open_numbers:
         continue
     candidate = it
@@ -511,6 +596,10 @@ for it in issues:
 for it in issues:
     if it["number"] in blocked_on_ready_numbers:
         print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
+
+for it in issues:
+    if it["number"] in waiting_for_spec_numbers:
+        print(f"WAITING_SPEC {it['number']} {type_of(it)}")
 
 if candidate:
     sized = "large" if "size:large" in labels_of(candidate) else "-"
@@ -961,6 +1050,17 @@ if [ -z "$default_branch" ]; then
 fi
 default_branch="${default_branch:-main}"
 
+# Issues, чья спека ещё не в default branch (issue #218): для итоговой
+# сводки больше нет отдельного снимка/копии spec_missing() здесь (круг 3
+# ревью PR #246 — снимок брался один раз на старте, до первого fetch внутри
+# select_next, и печатался в конце прогона: задача могла одновременно
+# попасть и в Ready, и в «Ждёт спеки»). Вместо этого waiting_for_spec_nums/
+# _count/_summary заполняются ниже по циклу из строк `WAITING_SPEC <N>`,
+# которые select_next печатает сама (тот же приём, что уже существующий
+# BLOCKED_ON_READY) из уже отфетченного на этот конкретный вызов
+# existing_specs — см. объявление переменных и неподвижную точку
+# blocked-on-ready внутри select_next.
+
 # return_to_default_branch — возврат рабочего дерева на default branch
 # между итерациями: единая точка на любом выходе из цикла (обоснование и
 # история — ADR-007 §6, issue #144). Отказ checkout — не best-effort:
@@ -1239,6 +1339,17 @@ while [ "$exit_code" -eq 0 ]; do
 
   select_out=$(select_next)
 
+  # WAITING_SPEC — в отличие от SKIP/BLOCKED_ON_READY ниже (handled,
+  # переживают итерации внешнего цикла), не накапливается: категория не
+  # терминальна, спеку могут смержить по ходу прогона, и select_next
+  # пересчитывает её заново на каждом вызове из свежего fetch (issue #218,
+  # круг 4 ревью PR #246). Поэтому здесь — полная замена перед разбором
+  # строк этого вызова, а не csv_add к значению прошлой итерации: к сводке
+  # в конце прогона должен дойти список именно последнего вызова.
+  waiting_for_spec_nums=""
+  waiting_for_spec_count=0
+  waiting_for_spec_summary=""
+
   while IFS= read -r line; do
     case "$line" in
       SKIP\ *)
@@ -1275,6 +1386,17 @@ while [ "$exit_code" -eq 0 ]; do
           journal_break
           break
         fi
+        ;;
+      WAITING_SPEC\ *)
+        # Issue #218, круг 4 ревью PR #246: НЕ handled, в отличие от SKIP и
+        # BLOCKED_ON_READY выше — спека может быть смержена по ходу прогона,
+        # issue должен снова стать кандидатом на следующей же итерации без
+        # отдельной отметки. Не журналируется (не result=, не аномалия —
+        # симметрично owner:human, круг 1 ревью PR #246).
+        ws_num=$(printf '%s' "$line" | awk '{print $2}')
+        waiting_for_spec_nums=$(csv_add "$waiting_for_spec_nums" "$ws_num")
+        waiting_for_spec_count=$((waiting_for_spec_count + 1))
+        waiting_for_spec_summary="$waiting_for_spec_summary #$ws_num"
         ;;
     esac
   done <<<"$select_out"
@@ -1735,6 +1857,7 @@ Ready (ждут человека): ${ready_list:-нет}
 Закрыто человеком до старта задачи: ${closed_externally_summary:-нет}
 Заблокировано ready-PR блокера: ${blocked_on_ready_summary:-нет}
 Зарезервировано человеком: $reserved_count
+Ждёт спеки в main: ${waiting_for_spec_summary:-нет}
 Расход по задачам (сек/токены):${usage_summary:- нет}
 Расход прогона: $run_tokens_used ток.
 Причина остановки: $stop_reason"
@@ -1747,6 +1870,6 @@ echo "$summary"
 # "завершён:", чтобы не сдвинуть существующие assert_contains на буквальный
 # префикс "ready=... stuck=... skipped=..." у фикстур, предшествующих этим
 # полям (issue #139/#134/#135/#147/#130).
-"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count closed_externally=$closed_externally_count. Причина: $stop_reason" || true
+"$notifier" "Ralph" "Прогон завершён: ready=$ready_count stuck=$stuck_count skipped=$skipped_count blocked_on_ready=$blocked_on_ready_count merged=$merged_count closed_externally=$closed_externally_count waiting_for_spec=$waiting_for_spec_count. Причина: $stop_reason" || true
 
 exit "$exit_code"
