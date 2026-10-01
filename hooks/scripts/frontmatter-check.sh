@@ -2,16 +2,19 @@
 # Гейт: фронтматтер commands/*.md, agents/*.md и skills/*/SKILL.md
 # парсится и несёт обязательные по типу файла ключи (issue #201, класс
 # бага PR #199 — commands/stats.md потерял description/argument-hint).
+#
 # Разбор — минимальный парсер «key: value / отступ-продолжение», не
 # полноценный YAML: без внешней зависимости и терпимый к «: » внутри
-# однострочного значения (обоснование границ терпимости — ADR-021).
+# однострочного значения ровно в границах, где терпим построчный
+# fallback-парсер рантайма Claude Code (механизм — ADR-022).
 #
 # Использование: frontmatter-check.sh <project_root>
 # exit 1 со списком ошибок вида "<файл>: <причина>" в stderr, если хоть
 # один файл не разобрался как валидный фронтматтер своего типа или не
-# хватает обязательного ключа; exit 0 молча, если всё в порядке (в том
-# числе когда ни commands/, ни agents/, ни skills/ в корне нет — гейт
-# кита, не обязателен для произвольного проекта).
+# хватает обязательного ключа; exit 0, если всё в порядке (возможны
+# предупреждения в stderr, не влияющие на exit code), в том числе когда
+# ни commands/, ни agents/, ни skills/ в корне нет — гейт кита, не
+# обязателен для произвольного проекта.
 set -u
 
 root="${1:-}"
@@ -38,8 +41,8 @@ printf '%s\n' "${entries[@]}" | python3 -c '
 import sys
 
 # Обязательные и допустимые ключи по типу файла (issue #201). Сейчас
-# ALLOWED == REQUIRED для всех типов — если когда-нибудь появится
-# опциональный ключ, ALLOWED расширяется отдельно от REQUIRED.
+# ALLOWED == REQUIRED для всех типов; опциональный ключ расширяет ALLOWED
+# отдельно от REQUIRED.
 REQUIRED = {
     "command": ["description", "argument-hint"],
     "agent": ["name", "description", "model", "tools"],
@@ -47,37 +50,31 @@ REQUIRED = {
 }
 ALLOWED = {kind: set(keys) for kind, keys in REQUIRED.items()}
 
+QUOTE_CHARS = ("\"", "\x27")
+
 
 def unquote(v):
-    # "текст" -> текст — иначе description: "" читается как непустое
-    # значение (ревью круга 1 PR #243). Питоновский литерал одинарной
-    # кавычки внутри этого инлайн-скрипта недопустим (он завершил бы
-    # обрамляющую bash single-quoted строку), поэтому распознаётся только
-    # двойная кавычка — единственный стиль кавычек, реально используемый
-    # во фронтматтере кита (argument-hint).
-    if len(v) >= 2 and v[0] == v[-1] and v[0] == "\"":
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in QUOTE_CHARS:
         return v[1:-1]
     return v
 
 
-def parse_frontmatter(text, kind):
-    # Возвращает (dict ключ->значение, None) при успехе, (None, причина)
-    # при ошибке разбора.
+def parse_frontmatter(text, kind, warnings):
+    # (dict ключ->значение, None) при успехе, (None, причина) при ошибке.
     #
-    # Ключ — строка с колонки 0 вида "key: значение" (значение может быть
-    # пустым — тогда его донабирают отступные строки-продолжения ниже);
-    # ключ обязан входить в ALLOWED[kind] — неизвестный ключ отвергается,
-    # а не молча заводится (иначе строка-продолжение, потерявшая отступ
-    # и при этом содержащая ":", молча становится новым "ключом" вместо
-    # ошибки — ровно класс бага issue #201, замеченный ревью круга 1).
-    #
-    # Строка не с колонки 0 — продолжение предыдущего ключа. Рантайм
-    # Claude Code при провале строгого YAML кавычит только однострочные
-    # "key: value" целиком; многострочное значение, чья строка-продолжение
-    # сама содержит ": ", под этот fallback не попадает и теряется
-    # ("nested mappings are not allowed in compact mappings" — найдено
-    # ревью круга 1 PR #243 разбором рантайма) — гейт обязан повторять эту
-    # границу, а не быть терпимее рантайма.
+    # Строка с колонки 0 вида "key: значение" задаёт ключ; отступная
+    # строка — продолжение значения предыдущего ключа. Каждая проверка
+    # ниже отражает границу, за которой построчный fallback-парсер
+    # рантайма Claude Code теряет фронтматтер целиком (ADR-022):
+    # - "key:value" без пробела после ":" — fallback требует ":\s+" и
+    #   такую строку не кавотирует;
+    # - ": " или висящее ":" в строке-продолжении — fallback кавотирует
+    #   только отдельные физические строки вида "key: value", отступную
+    #   строку не трогает;
+    # - ": " в первой строке записи, за которой следует продолжение —
+    #   fallback кавотирует эту первую строку саму по себе, но получившийся
+    #   законченный скаляр с висящей отступной строкой следом всё равно не
+    #   разбирается.
     lines = text.split("\n")
     if not lines or lines[0] != "---":
         return None, "нет открывающего --- на первой строке"
@@ -90,6 +87,7 @@ def parse_frontmatter(text, kind):
         return None, "нет закрывающего --- (фронтматтер не завершён)"
 
     data = {}
+    first_value = {}
     key = None
     for lineno, raw in enumerate(lines[1:end], start=2):
         if raw.strip() == "":
@@ -97,22 +95,29 @@ def parse_frontmatter(text, kind):
         if raw[0] not in (" ", "\t"):
             if ":" not in raw:
                 return None, "строка %d: не \"ключ: значение\" и не отступ-продолжение: %r" % (lineno, raw)
-            k, _, v = raw.partition(":")
+            k, _, rest = raw.partition(":")
             k = k.strip()
-            v = v.strip()
             if not k:
                 return None, "строка %d: пустой ключ" % lineno
+            if rest and not rest[0].isspace():
+                return None, "строка %d: нет пробела после \":\" — такую строку fallback-парсер рантайма не кавотирует" % lineno
+            v = rest.strip()
             if k not in ALLOWED[kind]:
                 return None, "строка %d: неизвестный ключ %r для %s (допустимы: %s)" % (
                     lineno, k, kind, ", ".join(sorted(ALLOWED[kind])))
+            if k in data:
+                warnings.append("строка %d: повторяющийся ключ %r, предыдущее значение перезаписано" % (lineno, k))
             data[k] = v
+            first_value[k] = v
             key = k
         else:
             if key is None:
                 return None, "строка %d: строка-продолжение до первого ключа" % lineno
             cont = raw.strip()
-            if ": " in cont:
-                return None, "строка %d: \": \" внутри строки-продолжения — рантайм Claude Code такое значение теряет (нет построчного fallback для многострочных значений)" % lineno
+            if ": " in first_value.get(key, ""):
+                return None, "строка %d: строка-продолжение после значения с \": \" в первой строке записи — рантайм теряет весь блок" % lineno
+            if ": " in cont or cont.endswith(":"):
+                return None, "строка %d: \": \" в строке-продолжении — рантайм теряет значение" % lineno
             data[key] = (data[key] + " " + cont).strip() if data[key] else cont
     return data, None
 
@@ -129,7 +134,10 @@ for line in sys.stdin:
     except OSError as e:
         errors.append("%s: не удалось прочитать (%s)" % (path, e))
         continue
-    data, err = parse_frontmatter(text, kind)
+    warnings = []
+    data, err = parse_frontmatter(text, kind, warnings)
+    for w in warnings:
+        print("%s: %s" % (path, w), file=sys.stderr)
     if err:
         errors.append("%s: %s" % (path, err))
         continue

@@ -444,7 +444,7 @@ scripts/, tests/  собственный контракт кита: смоук-�
 и безусловную проверку фронтматтера `commands/*.md`, `agents/*.md`,
 `skills/*/SKILL.md` (`hooks/scripts/frontmatter-check.sh` — обязательные
 по типу файла ключи, парсится без сломанной строки-продолжения; issue
-#201, ADR-021).
+#201, ADR-022).
 
 ## Статус (roadmap)
 

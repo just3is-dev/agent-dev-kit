@@ -8597,7 +8597,7 @@ mkdir -p "$FM/commands" "$FM/agents" "$FM/skills/demo"
 # Все текущие файлы кита проходят молча (DoD issue #201): включая
 # commands/autopilot.md и commands/work.md, чьи description содержат
 # «: » внутри текста (не strict-YAML, но валидны по минимальному
-# парсеру кита — ADR-021).
+# парсеру кита — ADR-022).
 fm_kit_out=$("$HOOKS/frontmatter-check.sh" "$KIT" 2>&1)
 assert_exit "issue #201: frontmatter-check проходит все текущие файлы кита" 0 $?
 if [ -z "$fm_kit_out" ]; then fm_kit_silent=0; else fm_kit_silent=1; fi
@@ -8747,9 +8747,9 @@ assert_exit "issue #201: пустое quoted-значение description — к
 assert_contains "issue #201: ошибка называет отсутствующий ключ description (пустая строка в кавычках)" "$fm_out" "description"
 rm -f "$FM/commands/empty-desc.md"
 
-# Ревью круга 1 PR #243: строка-продолжение, потерявшая отступ и вставшая
-# на колонку 0, но содержащая ":" — не молча заводит новый ключ, а
-# отвергается белым списком допустимых ключей типа файла.
+# Строка-продолжение, потерявшая отступ и вставшая на колонку 0, но
+# содержащая ":" — не молча заводит новый ключ, а отвергается белым
+# списком допустимых ключей типа файла (issue #201, ADR-022).
 cat > "$FM/commands/broken-continuation-colon.md" <<'EOF'
 ---
 description: первая строка описания
@@ -8764,10 +8764,9 @@ assert_contains "issue #201: ошибка называет файл" "$fm_out" "
 assert_contains "issue #201: ошибка называет неизвестный ключ, не молча заводит его" "$fm_out" "неизвестный ключ"
 rm -f "$FM/commands/broken-continuation-colon.md"
 
-# Ревью круга 1 PR #243: многострочное значение, чья строка-продолжение
-# сама содержит ": " — рантайм Claude Code такое значение теряет (нет
-# построчного fallback для многострочных значений), гейт обязан
-# повторять эту границу, а не быть терпимее.
+# Многострочное значение, чья строка-продолжение сама содержит ": " —
+# рантайм теряет значение (нет построчного fallback для многострочных
+# значений), гейт обязан повторять эту границу (issue #201, ADR-022).
 cat > "$FM/commands/multiline-colon.md" <<'EOF'
 ---
 description: первая строка описания
@@ -8781,11 +8780,84 @@ assert_exit "issue #201: двоеточие внутри отступной ст
 assert_contains "issue #201: ошибка называет файл с двоеточием в продолжении" "$fm_out" "multiline-colon.md"
 rm -f "$FM/commands/multiline-colon.md"
 
+# Строка-продолжение заканчивается двоеточием без пробела после ("  second:")
+# — тоже теряется рантаймом ("nested mappings"), не только "": "" в середине.
+cat > "$FM/commands/multiline-colon-trailing.md" <<'EOF'
+---
+description: первая строка описания
+  второе:
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: висящее ':' в конце строки-продолжения — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с висящим ':' в продолжении" "$fm_out" "multiline-colon-trailing.md"
+rm -f "$FM/commands/multiline-colon-trailing.md"
+
+# Двоеточие в ПЕРВОЙ строке записи (не в продолжении), за которой следует
+# продолжение — fallback рантайма кавотирует первую строку саму по себе,
+# но итоговый законченный скаляр с висящим продолжением следом всё равно
+# не разбирается, и весь фронтматтер теряется (issue #201, ADR-022).
+cat > "$FM/commands/multiline-colon-first-line.md" <<'EOF'
+---
+description: первая строка: с двоеточием
+  и продолжением без своего двоеточия
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: ':' в первой строке записи с продолжением — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с двоеточием в первой строке многострочной записи" "$fm_out" "multiline-colon-first-line.md"
+rm -f "$FM/commands/multiline-colon-first-line.md"
+
+# "key:value" без пробела после ":" — fallback рантайма требует ":\s+" и
+# такую строку не кавотирует, весь фронтматтер теряется.
+cat > "$FM/commands/no-space-after-colon.md" <<'EOF'
+---
+description:нет пробела после двоеточия
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: 'key:value' без пробела — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл без пробела после ':'" "$fm_out" "no-space-after-colon.md"
+rm -f "$FM/commands/no-space-after-colon.md"
+
+# Повторяющийся ключ — предупреждение в stderr, не ошибка (гейт остаётся
+# зелёным, но не молчит).
+cat > "$FM/commands/duplicate-key.md" <<'EOF'
+---
+description: первое значение
+argument-hint: "[x]"
+description: второе значение
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: повторяющийся ключ — check остаётся зелёным" 0 $?
+assert_contains "issue #201: повторяющийся ключ — предупреждение называет файл и ключ" "$fm_out" "duplicate-key.md"
+rm -f "$FM/commands/duplicate-key.md"
+
+# description в одинарных кавычках, пустое значение ('') — тоже считается
+# пустым, не только двойные кавычки ("").
+cat > "$FM/commands/empty-desc-single-quote.md" <<'EOF'
+---
+description: ''
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: пустое значение в одинарных кавычках — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с пустым одинарно-квотированным description" "$fm_out" "empty-desc-single-quote.md"
+rm -f "$FM/commands/empty-desc-single-quote.md"
+
 # ── scripts/check кита реально зовёт frontmatter-check.sh, не только сам
-# скрипт по отдельности (ревью круга 1 PR #243: тест на "check зелёный"
-# не доказывал саму проводку) — изолированная копия по образцу фикстуры
-# issue #24 ($KCHK), но с НАСТОЯЩИМ frontmatter-check.sh и сломанным
-# commands/*.md ──────────────────────────────────────────────────────────────
+# скрипт по отдельности — изолированная копия по образцу фикстуры issue #24
+# ($KCHK), но с НАСТОЯЩИМ frontmatter-check.sh и сломанным commands/*.md ────
 FMWIRE="$TMP/frontmatter-wired"
 rm -rf "$FMWIRE"
 mkdir -p "$FMWIRE/.claude-plugin" "$FMWIRE/hooks/scripts" "$FMWIRE/scripts" "$FMWIRE/tests" "$FMWIRE/bin" "$FMWIRE/commands"
