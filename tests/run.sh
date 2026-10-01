@@ -3924,7 +3924,9 @@ assert_not_contains "issue #218: adk-ralph: спека #90 не в main — не
 assert_not_contains "issue #218: adk-ralph: спека #90 не в main — не пропущен каскадом" \
   "$ralph_spec_out" "Пропущено (зависимость от застрявшей задачи): #90"
 assert_contains "круг 2 ревью PR #246: adk-ralph: мелочь — #90 виден отдельным бакетом сводки «Ждёт спеки в main» (раньше был невидим нигде, в отличие от owner:human)" \
-  "$ralph_spec_out" "Ждёт спеки в main: #90"
+  "$ralph_spec_out" "Ждёт спеки в main:  #90$"
+assert_not_contains "круг 4 ревью PR #246: adk-ralph: #91 (ready, спека уже в main) НЕ одновременно виден в бакете «Ждёт спеки в main» — регрессия круга 3 (снимок existing_specs брался один раз до первого git fetch внутри select_next, поэтому ещё не знал про спеку 901, появившуюся в origin уже после клона)" \
+  "$ralph_spec_out" "Ждёт спеки в main:.*#91"
 
 ralph_spec_log=$(cat "$(ralph_journal "$RALPH_SPEC_LOGS")" 2>/dev/null)
 assert_not_contains "issue #218: adk-ralph: журнал не содержит ни одной записи по issue #90" \
@@ -3981,7 +3983,9 @@ assert_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk 
 assert_not_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — #90 не застрял и не пропущен каскадом" \
   "$ralph_spec_trunk_out" "Застряло: #90"
 assert_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — #90 (спеки нет и в trunk) виден бакетом «Ждёт спеки в main», не потерян" \
-  "$ralph_spec_trunk_out" "Ждёт спеки в main: #90"
+  "$ralph_spec_trunk_out" "Ждёт спеки в main:  #90$"
+assert_not_contains "круг 4 ревью PR #246: adk-ralph: default branch trunk — #91 (ready) НЕ одновременно виден в бакете «Ждёт спеки в main» — та же регрессия круга 3, воспроизводимая и на нестандартном default branch" \
+  "$ralph_spec_trunk_out" "Ждёт спеки в main:.*#91"
 
 ralph_spec_trunk_log=$(cat "$(ralph_journal "$RALPH_SPEC_TRUNK_LOGS")" 2>/dev/null)
 assert_contains "круг 2 ревью PR #246: adk-ralph: default branch trunk — журнал фиксирует issue #91 (не потерян из-за хардкода origin/main)" \
@@ -4032,8 +4036,10 @@ assert_contains "круг 2 ревью PR #246: adk-ralph: #81 (**жирный**
   "$ralph_specfmt_out" "#81"
 assert_contains "круг 2 ревью PR #246: adk-ralph: #82 ([SPEC-NNN: путь](url)) распознан как spec_missing — виден бакетом «Ждёт спеки в main»" \
   "$ralph_specfmt_out" "#82"
-assert_contains "круг 2 ревью PR #246: adk-ralph: бакет «Ждёт спеки в main» перечисляет ровно #80, #81, #82 (не #83)" \
-  "$ralph_specfmt_out" "Ждёт спеки в main: #80 #81 #82"
+assert_contains "круг 4 ревью PR #246: adk-ralph: бакет «Ждёт спеки в main» перечисляет РОВНО #80, #81, #82 (конец строки, не подстрока — круг 3 обнаружил, что assert_contains на «#80 #81 #82» как подстроку проходит даже когда реально выведено «#80 #81 #82 #83»)" \
+  "$ralph_specfmt_out" "Ждёт спеки в main:  #80 #81 #82\$"
+assert_not_contains "круг 4 ревью PR #246: adk-ralph: #83 (ready, спека в main) НЕ одновременно виден в бакете «Ждёт спеки в main» — регрессия круга 3 (устаревший до-fetch снимок не знал о спеке 963)" \
+  "$ralph_specfmt_out" "Ждёт спеки в main:.*#83"
 
 ralph_specfmt_log=$(cat "$(ralph_journal "$RALPH_SPECFMT_LOGS")" 2>/dev/null)
 assert_contains "круг 2 ревью PR #246: adk-ralph: журнал — #83 result=ready" \
@@ -4866,7 +4872,9 @@ assert_contains "круг 2 ревью PR #246: adk-ralph: сводка пере
 assert_contains "круг 2 ревью PR #246: adk-ralph: #72 НЕ попадает в бакет blocked-on-ready (spec_missing() обязан исключить его ДО этой проверки)" \
   "$ralph_bor_spec_out" "Заблокировано ready-PR блокера: нет"
 assert_contains "круг 2 ревью PR #246: adk-ralph: #72 (не ready, не stuck, не skipped, не blocked-on-ready) виден отдельным бакетом «Ждёт спеки в main»" \
-  "$ralph_bor_spec_out" "Ждёт спеки в main: #72"
+  "$ralph_bor_spec_out" "Ждёт спеки в main:  #72$"
+assert_not_contains "круг 4 ревью PR #246: adk-ralph: #71 (ready) НЕ одновременно виден в бакете «Ждёт спеки в main»" \
+  "$ralph_bor_spec_out" "Ждёт спеки в main:.*#71"
 
 claude_bor_spec_calls=$(cat "$RBIN_BOR_SPEC/claude-calls.log" 2>/dev/null | grep -c "call")
 assert_exit "круг 2 ревью PR #246: adk-ralph: headless-процесс запущен ровно один раз (#72 не исполнялся вовсе)" \
@@ -8560,30 +8568,17 @@ check_ac_doc "issue #218" "autopilot.md шаг 1 объясняет, почем�
 check_ac_doc "issue #218" "autopilot.md шаг 1 выводит такой issue из счётчиков сводки (maxSkippedShare его не видит)" \
   "$KIT/commands/autopilot.md" "вне счётчиков сводки"
 
-# adk-ralph.sh (круг 1 ревью PR #246): без этой проверки headless-прогон
-# отдал бы issue со спекой не в main субагенту, тот остановился бы без
-# ветки/PR по новому тексту work.md, а find_pr_state прочёл бы «PR нет»
-# как застревание — детерминированная ложная needs-human. Симметрично
-# owner:human (issue #158): новая функция spec_missing() в select_next.
-#
-# Круг 2 ревью PR #246 (важно): проверки `grep 'def spec_missing'`/
-# `'not in existing_specs'`/`'ls-tree -r --name-only origin/main'`/
-# `'if spec_missing(it):'`, которые были здесь, — тесты РЕАЛИЗАЦИИ, не
-# поведения: одна из них (`origin/main`) закрепляла сам блокер круга 2
-# (хардкод ветки) как ожидаемый текст и была бы зелёной на регрессии.
-# Поведение — что issue со spec_missing() молча не берётся в работу, а
-# issue со спекой, реально присутствующей в origin/$default_branch (в
-# т.ч. на нестандартном default branch), доигрывается до ready — уже
-# доказано прогоном ralph на фикстурах RALPH_SPEC/RALPH_SPEC_TRUNK выше
-# (issue #218, круг 2 ревью PR #246). Здесь остаётся только doc-проверка
-# заголовка (ссылка на issue/ADR в комментарии, не код).
+# adk-ralph.sh, симметрично owner:human (issue #158): spec_missing() в
+# select_next молча исключает issue со спекой не в main из кандидатов.
+# Поведение (не молча взят в работу, доигрывается до ready на реальной
+# спеке, в т.ч. на нестандартном default branch) доказано прогоном ralph
+# на фикстурах RALPH_SPEC/RALPH_SPEC_TRUNK/RALPH_SPECFMT ниже — здесь
+# только doc-проверка заголовка (ссылка на issue/ADR в комментарии, не код).
 check_ac_doc "issue #218" "adk-ralph.sh header упоминает issue #218 в описании правила выбора" \
   "$KIT/hooks/scripts/adk-ralph.sh" "issue #218, ADR-021"
 
 check_ac_doc "issue #218" "ADR-021 описывает spec_missing() в select_next как симметричную owner:human проверку" \
   "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"
-check_ac_doc "issue #218" "ADR-021 фиксирует, что круг 1 ревью PR #246 отклонил план не трогать adk-ralph.sh" \
-  "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "Круг 1 ревью PR #246 отклонил"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"

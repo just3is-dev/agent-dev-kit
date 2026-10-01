@@ -215,6 +215,17 @@ stuck_summary=""
 skipped_summary=""
 closed_externally_summary=""
 blocked_on_ready_summary=""
+waiting_for_spec_nums=""  # issue-номера, у которых спека ещё не в default
+                          # branch — НЕ подмножество handled (issue #218,
+                          # круг 4 ревью PR #246): перезаписывается целиком
+                          # на каждой итерации значением из последнего вызова
+                          # select_next (который каждый раз освежает fetch +
+                          # ls-tree), а не накапливается — спеку могли
+                          # смержить по ходу прогона, и к концу прогона
+                          # достоверен только самый свежий список, не их
+                          # объединение за весь прогон.
+waiting_for_spec_count=0
+waiting_for_spec_summary=""
 stop_reason=""
 exit_code=0
 
@@ -471,14 +482,11 @@ def type_of(it):
 # Симметрично owner:human ниже: issue без такой строки (не из /plan, или
 # спека уже была в main — ADR-009) проверке не подлежит.
 #
-# Круг 2 ревью PR #246 (важно): контракт plan.md шаг 4 гарантирует только
-# то, что путь спеки присутствует буквальным текстом в строке «Спека:
-# …» — обёртка вокруг него (markdown-ссылка, бэктики, **жирный** префикс,
-# хвост вида «(SPEC-NNN)» или «[SPEC-NNN: путь](url)») остаётся легальной.
-# Старый regex требовал путь СРАЗУ после «Спека:» (с опциональной одной
-# «[») — распознавал ровно одну из этих форм и на остальных воспроизводил
-# исходный баг круга 1 (spec_missing() молча возвращал False). Вместо
-# жёсткой адъacency: строка содержит литерал «Спека:» где угодно в
+# Контракт plan.md шаг 4 гарантирует только то, что путь спеки присутствует
+# буквальным текстом в строке «Спека: …» — обёртка вокруг него
+# (markdown-ссылка, бэктики, **жирный** префикс, хвост вида «(SPEC-NNN)»
+# или «[SPEC-NNN: путь](url)») остаётся легальной (ADR-021). Поэтому — без
+# жёсткой привязки к позиции: строка содержит литерал «Спека:» где угодно в
 # строке, путь — первое вхождение docs/specs/….md в ТОЙ ЖЕ строке,
 # независимо от обрамления — буквальная реализация контракта plan.md.
 SPEC_LINE_MARKER = "Спека:"
@@ -530,8 +538,19 @@ excluded = handled | new_skip_numbers
 # resolved_ready (ready_now этого прогона + prev_blocked_on_ready прошлых
 # итераций внешнего цикла), — «на подвеске», не молча потеряна. Неподвижная
 # точка ниже — тем же приёмом, что каскад SKIP выше.
+#
+# Эта же неподвижная точка — единственное место, где select_next собирает
+# waiting_for_spec_numbers (issue #218, круг 4 ревью PR #246): `for it in
+# issues` на первом же проходе (blocked_on_ready_numbers ещё пуст) проверяет
+# КАЖДУЮ не-excluded/needs-human/owner:human задачу этого вызова, поэтому
+# множество полно уже после первого прохода — ниже по циклу (ветка
+# candidate) просто повторяет ту же проверку для выбора NEXT, не для сбора
+# множества. existing_specs здесь — тот самый свежий снимок, который
+# select_next уже отфетчил в начале этого вызова (строка выше по файлу) —
+# отдельного снимка/копии spec_missing() для сводки больше не нужно.
 resolved_ready = set(ready_now) | prev_blocked_on_ready
 blocked_on_ready_numbers = set()
+waiting_for_spec_numbers = set()
 changed = True
 while changed:
     changed = False
@@ -544,6 +563,7 @@ while changed:
         if "owner:human" in labels_of(it):
             continue
         if spec_missing(it):
+            waiting_for_spec_numbers.add(n)
             continue
         open_blockers = blockers(it.get("body")) & open_numbers
         if open_blockers and open_blockers <= resolved_ready:
@@ -565,7 +585,8 @@ for it in issues:
         continue
     if spec_missing(it):
         # Спека вехи ждёт человека (issue #218, ADR-021) — тот же принцип:
-        # не кандидат, но и не «застрял»/«пропущен».
+        # не кандидат, но и не «застрял»/«пропущен». Уже учтена в
+        # waiting_for_spec_numbers неподвижной точкой blocked-on-ready выше.
         continue
     if blockers(it.get("body")) & open_numbers:
         continue
@@ -575,6 +596,10 @@ for it in issues:
 for it in issues:
     if it["number"] in blocked_on_ready_numbers:
         print(f"BLOCKED_ON_READY {it['number']} {type_of(it)}")
+
+for it in issues:
+    if it["number"] in waiting_for_spec_numbers:
+        print(f"WAITING_SPEC {it['number']} {type_of(it)}")
 
 if candidate:
     sized = "large" if "size:large" in labels_of(candidate) else "-"
@@ -1025,40 +1050,16 @@ if [ -z "$default_branch" ]; then
 fi
 default_branch="${default_branch:-main}"
 
-# Issues, чья спека ещё не в default branch (issue #218, круг 2 ревью PR
-# #246, мелочь): один снимок на старте прогона (тот же приём, что
-# reserved_count/owner:human выше, issue #158) — только для итоговой
-# сводки, не журнал (не result=, не аномалия; живой select_next ниже
-# по-прежнему освежает existing_specs на каждой итерации для реального
-# отбора кандидатов). До этой правки категория была невидима в сводке:
-# issue молча исключался из кандидатов без единой строки, в отличие от
-# owner:human с собственным счётчиком.
-waiting_for_spec_info=$(python3 -c '
-import json, re, sys
-with open(sys.argv[1]) as f:
-    issues = json.load(f)
-issues.sort(key=lambda it: it["number"])
-existing_specs = {p for p in sys.argv[2].split(",") if p}
-SPEC_PATH_RE = re.compile(r"docs/specs/\S+?\.md")
-
-
-def spec_missing(it):
-    for line in (it.get("body") or "").splitlines():
-        if "Спека:" not in line:
-            continue
-        m = SPEC_PATH_RE.search(line)
-        if m:
-            return m.group(0) not in existing_specs
-    return False
-
-
-nums = [it["number"] for it in issues if spec_missing(it)]
-print(len(nums))
-print(" ".join(f"#{n}" for n in nums))
-' "$issues_file" "$(git -C "$root" ls-tree -r --name-only "origin/$default_branch" -- docs/specs 2>/dev/null | tr '\n' ',')" 2>/dev/null)
-waiting_for_spec_count=$(printf '%s\n' "$waiting_for_spec_info" | sed -n '1p')
-waiting_for_spec_count="${waiting_for_spec_count:-0}"
-waiting_for_spec_summary=$(printf '%s\n' "$waiting_for_spec_info" | sed -n '2p')
+# Issues, чья спека ещё не в default branch (issue #218): для итоговой
+# сводки больше нет отдельного снимка/копии spec_missing() здесь (круг 3
+# ревью PR #246 — снимок брался один раз на старте, до первого fetch внутри
+# select_next, и печатался в конце прогона: задача могла одновременно
+# попасть и в Ready, и в «Ждёт спеки»). Вместо этого waiting_for_spec_nums/
+# _count/_summary заполняются ниже по циклу из строк `WAITING_SPEC <N>`,
+# которые select_next печатает сама (тот же приём, что уже существующий
+# BLOCKED_ON_READY) из уже отфетченного на этот конкретный вызов
+# existing_specs — см. объявление переменных и неподвижную точку
+# blocked-on-ready внутри select_next.
 
 # return_to_default_branch — возврат рабочего дерева на default branch
 # между итерациями: единая точка на любом выходе из цикла (обоснование и
@@ -1338,6 +1339,17 @@ while [ "$exit_code" -eq 0 ]; do
 
   select_out=$(select_next)
 
+  # WAITING_SPEC — в отличие от SKIP/BLOCKED_ON_READY ниже (handled,
+  # переживают итерации внешнего цикла), не накапливается: категория не
+  # терминальна, спеку могут смержить по ходу прогона, и select_next
+  # пересчитывает её заново на каждом вызове из свежего fetch (issue #218,
+  # круг 4 ревью PR #246). Поэтому здесь — полная замена перед разбором
+  # строк этого вызова, а не csv_add к значению прошлой итерации: к сводке
+  # в конце прогона должен дойти список именно последнего вызова.
+  waiting_for_spec_nums=""
+  waiting_for_spec_count=0
+  waiting_for_spec_summary=""
+
   while IFS= read -r line; do
     case "$line" in
       SKIP\ *)
@@ -1374,6 +1386,17 @@ while [ "$exit_code" -eq 0 ]; do
           journal_break
           break
         fi
+        ;;
+      WAITING_SPEC\ *)
+        # Issue #218, круг 4 ревью PR #246: НЕ handled, в отличие от SKIP и
+        # BLOCKED_ON_READY выше — спека может быть смержена по ходу прогона,
+        # issue должен снова стать кандидатом на следующей же итерации без
+        # отдельной отметки. Не журналируется (не result=, не аномалия —
+        # симметрично owner:human, круг 1 ревью PR #246).
+        ws_num=$(printf '%s' "$line" | awk '{print $2}')
+        waiting_for_spec_nums=$(csv_add "$waiting_for_spec_nums" "$ws_num")
+        waiting_for_spec_count=$((waiting_for_spec_count + 1))
+        waiting_for_spec_summary="$waiting_for_spec_summary #$ws_num"
         ;;
     esac
   done <<<"$select_out"
