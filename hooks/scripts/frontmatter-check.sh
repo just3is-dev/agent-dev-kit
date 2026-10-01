@@ -165,19 +165,19 @@ def quote_value(s):
 def fallback_transform_value(value_remainder):
     v = value_remainder.strip()
     if looks_already_quoted(v):
-        return value_remainder, False
+        return value_remainder
     if U1.search(value_remainder):
-        return quote_value(v), True
-    return value_remainder, False
+        return quote_value(v)
+    return value_remainder
 
 
 def fallback_transform_continuation(cont_line):
     c = cont_line.strip()
     if looks_already_quoted(c):
-        return cont_line, False
+        return cont_line
     if U1.search(cont_line):
-        return quote_value(c), True
-    return cont_line, False
+        return quote_value(c)
+    return cont_line
 
 
 def build_records(fm_lines, kind, errors, warnings):
@@ -232,23 +232,16 @@ def resolve_frontmatter(fm_lines, kind, errors, warnings):
     # Fallback: построчное кавотирование применяется ко ВСЕМ записям
     # документа разом (не только к той, что провалила строгий разбор) — в
     # рантайме это один повторный Bun.YAML.parse над всем предобработанным
-    # текстом, одна ошибка в любом месте теряет документ целиком (ADR-022).
-    transformed = []
-    doc_broken = False
-    for r in records:
-        new_value, value_requoted = fallback_transform_value(r["value"])
-        if value_requoted and r["continuations"]:
-            doc_broken = True
-        new_conts = []
-        for c in r["continuations"]:
-            nc, cont_requoted = fallback_transform_continuation(c)
-            if cont_requoted:
-                doc_broken = True
-            new_conts.append(nc)
-        transformed.append((r["key"], new_value, new_conts))
-
-    if doc_broken:
-        return {}
+    # текстом. Предобработанный текст проверяется тем же scalar_legal, что
+    # и строгая фаза: кавыченное значение с продолжением снизу или
+    # кавыченная строка-продолжение сами по себе уже дают "хвост после
+    # закрывающей кавычки" в quoted_scalar_legal — отдельный флаг "разбор
+    # сломан" не нужен (ADR-022).
+    transformed = [
+        (r["key"], fallback_transform_value(r["value"]),
+         [fallback_transform_continuation(c) for c in r["continuations"]])
+        for r in records
+    ]
 
     fallback_results = [scalar_legal(v, c) for (_, v, c) in transformed]
     if all(ok for ok, _ in fallback_results):
