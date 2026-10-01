@@ -8596,8 +8596,8 @@ mkdir -p "$FM/commands" "$FM/agents" "$FM/skills/demo"
 
 # Все текущие файлы кита проходят молча (DoD issue #201): включая
 # commands/autopilot.md и commands/work.md, чьи description содержат
-# «: » внутри текста (не strict-YAML, но валидны по минимальному
-# парсеру кита — ADR-022).
+# «: » внутри текста однострочного значения — форма (а)/(б) белого
+# списка, не часть риска (ADR-022).
 fm_kit_out=$("$HOOKS/frontmatter-check.sh" "$KIT" 2>&1)
 assert_exit "issue #201: frontmatter-check проходит все текущие файлы кита" 0 $?
 if [ -z "$fm_kit_out" ]; then fm_kit_silent=0; else fm_kit_silent=1; fi
@@ -8982,9 +8982,10 @@ assert_exit "issue #201 (круг 6): пробел перед ':' в ключе 
 assert_contains "issue #201 (круг 6): ошибка называет файл с пробелом перед ':'" "$fm_out" "space-before-colon.md"
 rm -f "$FM/commands/space-before-colon.md"
 
-# NBSP сразу после ":" — не ASCII-пробел/таб, разделитель ключ-значение
-# рантайма его не принимает, гейт тоже не должен принимать за валидный
-# пробел после двоеточия.
+# NBSP сразу после ":" — гейт требует буквальный ASCII-пробел/таб как
+# разделитель "ключ: значение" безусловно (белый список доказуемо
+# безопасных форм, не предсказание того, что сделает конкретная версия
+# рантайма с конкретным символом-разделителем — ADR-022).
 printf -- '---\ndescription:\xc2\xa0foo\nargument-hint: "[x]"\n---\nтело\n' > "$FM/commands/nbsp-after-colon.md"
 fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201 (круг 6): NBSP вместо ASCII-пробела после ':' — красный check" 1 $?
@@ -9077,6 +9078,162 @@ EOF
 "$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
 assert_exit "issue #201 (круг 6): 'a:b' без пробела внутри продолжения — зелёный check" 0 $?
 rm -f "$FM/commands/colon-no-space-ok.md"
+
+# ── Круг 7 ревью PR #243: переход с эмуляции алгоритма рантайма на белый
+# список доказуемо безопасных форм (ADR-022). Независимая проверка круга 6
+# (реверс-инжиниринг того же бинаря 2.1.114 плюс Bun 1.3.13 плюс
+# дифференциальный фаззинг) показала: эмуляция строгой фазы на предикатах
+# была неверной моделью — часть символов U_1 (#, [, {, &, !, |, >) не
+# бросают исключение строгого YAML-парсера, а молча превращают значение в
+# null/массив/обрезанную строку, из-за чего fallback вообще не
+# запускается, а гейт круга 6 всё равно считал такие значения спасёнными.
+# Фикстуры ниже — формы, на которых это разошлось. ───────────────────────
+
+# "#" где угодно в значении — комментарий YAML, строгий парсер его просто
+# обрезает без ошибки (fallback не запускается), значение теряется молча.
+cat > "$FM/commands/hash-anywhere-single-line.md" <<'EOF'
+---
+description: #201 — гейт фронтматтера
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): '#' в однострочном значении — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с '#' в однострочном значении" "$fm_out" "hash-anywhere-single-line.md"
+rm -f "$FM/commands/hash-anywhere-single-line.md"
+
+# "[...]" — валидный YAML-массив, строгий парсер успешно его разбирает
+# (не строка), обязательный ключ лишается текстового значения без ошибки.
+cat > "$FM/commands/array-value.md" <<'EOF'
+---
+description: [черновик]
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение-массив '[...]' — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением-массивом" "$fm_out" "array-value.md"
+rm -f "$FM/commands/array-value.md"
+
+# YAML null-литерал как значение — строгий парсер отдаёт None, не строку.
+cat > "$FM/commands/null-literal.md" <<'EOF'
+---
+description: ~
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение '~' (YAML null) — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением null" "$fm_out" "null-literal.md"
+rm -f "$FM/commands/null-literal.md"
+
+# "? " в начале значения — явный индикатор YAML-ключа, зарезервирован.
+cat > "$FM/commands/question-value.md" <<'EOF'
+---
+description: ? foo
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение начинается с '? ' — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением '? '" "$fm_out" "question-value.md"
+rm -f "$FM/commands/question-value.md"
+
+# Запятая в начале значения — индикатор flow-последовательности YAML.
+cat > "$FM/commands/comma-leading.md" <<'EOF'
+---
+description: , начинается с запятой
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение начинается с запятой — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением на запятую" "$fm_out" "comma-leading.md"
+rm -f "$FM/commands/comma-leading.md"
+
+# Скаляр фактически начинается на строке-продолжении (первая строка —
+# легальный YAML null), а не на первой строке записи — проверки "первого
+# символа" должны смотреть и туда тоже.
+cat > "$FM/commands/quoted-on-continuation.md" <<'EOF'
+---
+description:
+  "/work" для одной задачи
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): кавыченное значение начинается со строки-продолжения — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл" "$fm_out" "quoted-on-continuation.md"
+rm -f "$FM/commands/quoted-on-continuation.md"
+
+cat > "$FM/commands/dash-on-continuation.md" <<'EOF'
+---
+description:
+  - foo
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): '- foo' на строке-продолжении при пустой первой строке — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с '- foo' на продолжении" "$fm_out" "dash-on-continuation.md"
+rm -f "$FM/commands/dash-on-continuation.md"
+
+# Невалидная escape-последовательность в двойных кавычках — "уже
+# кавыченное" значение гейт не трогает, но внутренний "\d" не валиден для
+# YAML-экранирования; все argument-hint кита в двойных кавычках, так что
+# обратный слеш внутри подсказки реалистичен.
+cat > "$FM/commands/bad-escape-hint.md" <<'EOF'
+---
+description: нормальное описание
+argument-hint: "<\d+>"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): обратный слеш внутри кавыченного значения — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с обратным слешем в кавычках" "$fm_out" "bad-escape-hint.md"
+rm -f "$FM/commands/bad-escape-hint.md"
+
+# Висящее ":" (с хвостовым пробелом) в строке-продолжении — регресс круга
+# 2/3, повторно открытый промежуточным упрощением круга 6 (коммит
+# "Убрать избыточный флаг doc_broken"): кавотирование продолжений не
+# входит в настоящий построчный fallback рантайма (регэксп d_1 матчит
+# только колонку 0), а срезание хвостового пробела перед сравнением с
+# ":" маскировало обнаружение. Белый список круга 7 проверяет висящее ":"
+# по каждой строке записи независимо от позиции, без кавотирования.
+cat > "$FM/commands/trailing-colon-space-continuation.md" <<'EOF'
+---
+description: Взять задачу (issue) в работу
+  ветка тесты код:
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): висящее ':' с хвостовым пробелом в продолжении — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с висящим ':' в продолжении (с пробелом)" "$fm_out" "trailing-colon-space-continuation.md"
+rm -f "$FM/commands/trailing-colon-space-continuation.md"
+
+# Негативные: формы, которые белый список обязан принимать молча —
+# однострочное значение с "а:b" без пробела дальше по тексту, обычная
+# кавыченная подсказка со скобками/точкой с запятой внутри.
+cat > "$FM/commands/ok-quoted-hint-punctuation.md" <<'EOF'
+---
+description: обычное описание
+argument-hint: "[номер issue; по умолчанию следующий]"
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201 (круг 7): кавыченная подсказка с ';' и скобками внутри — зелёный check" 0 $?
+rm -f "$FM/commands/ok-quoted-hint-punctuation.md"
 
 # ── scripts/check кита реально зовёт frontmatter-check.sh, не только сам
 # скрипт по отдельности — изолированная копия по образцу фикстуры issue #24

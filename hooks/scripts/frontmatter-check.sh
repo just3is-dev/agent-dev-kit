@@ -2,10 +2,17 @@
 # Гейт: фронтматтер commands/*.md, agents/*.md и skills/*/SKILL.md несёт
 # обязательные по типу файла ключи (issue #201, класс бага PR #199).
 #
-# Разбор моделирует двухфазный алгоритм рантайма Claude Code (строгий
-# Bun.YAML.parse, затем построчный fallback-парсер с кавотированием по
-# триггеру) на python3 stdlib, без внешней зависимости — механизм и
-# источники реверс-инжиниринга в ADR-022.
+# Разбор — доказуемо безопасный белый список форм "ключ: значение /
+# отступ-продолжение", а не попытка эмулировать сам парсер рантайма
+# Claude Code: круг 6 ревью показал, что двухфазный алгоритм рантайма
+# (строгий Bun.YAML.parse + построчный fallback) не моделируется
+# предикатами на stdlib без собственного YAML-парсера — некоторые формы
+# (одиночные спецсимволы YAML) не вызывают ошибку строгого парсера, а
+# молча заменяют значение на null/массив/обрезанную строку, минуя
+# fallback целиком. Гейт поэтому принимает ТОЛЬКО формы, для которых
+# результат разбора доказуемо не зависит от деталей самого парсера;
+# всё остальное — отказ, даже если конкретный рантайм на конкретной
+# версии это бы и разобрал правильно. Источники и обоснование — ADR-022.
 #
 # Использование: frontmatter-check.sh <project_root>
 # exit 1 со списком ошибок вида "<файл>: <причина>" в stderr, если хоть
@@ -40,10 +47,11 @@ printf '%s\n' "${entries[@]}" | python3 -c '
 import re
 import sys
 
-# Обязательные и допустимые ключи по типу файла (issue #201). Белый список
-# ALLOWED — своя, не из рантайма, защита от PR #199 (ADR-022, раздел
-# "Решение", п.4): перевёрстанная строка-продолжение, ставшая новым
-# "ключ: значение", отвергается как неизвестный ключ, а не молча заводится.
+# Обязательные и допустимые ключи по типу файла (issue #201). Белый
+# список ALLOWED — отдельная, более строгая защита от класса бага
+# PR #199: перевёрстанная строка-продолжение, ставшая синтаксически
+# валидным новым "ключ: значение", отвергается как неизвестный ключ, а
+# не молча заводится (ADR-022).
 REQUIRED = {
     "command": ["description", "argument-hint"],
     "agent": ["name", "description", "model", "tools"],
@@ -52,17 +60,25 @@ REQUIRED = {
 ALLOWED = {kind: set(keys) for kind, keys in REQUIRED.items()}
 
 QUOTE_CHARS = ("\"", "\x27")
-# U_1 рантайма (ADR-022): символьный класс fallback-триггера построчного
-# кавотирования, буквальный порт регэкспа из бинаря 2.1.114.
-U1 = re.compile(r"[{}\[\]*&#!|>%@`]|: ")
-# Ключ рантайма: `^([a-zA-Z_-]+):\s+(.+)$`, но разделитель — буквальный
-# пробел/таб, не `\s` (NBSP после ":" гейт тоже не принимает — ADR-022).
-KEY_RE = re.compile(r"^([A-Za-z_-]+):([ \t](.*))?$")
+# Одиночные спецсимволы, при которых значение однозначно опасно в ЛЮБОЙ
+# позиции: у каждого своя YAML-семантика (комментарий, flow-коллекция,
+# якорь, тег, блочный скаляр, литерал), и не каждая форма даёт ошибку
+# строгого парсера — некоторые молча подменяют значение (ADR-022).
+U1_CHARS = set("{}[]*&#!|>%@`")
+# Символы, запрещённые как ПЕРВЫЙ символ значения (индикаторы блочных
+# конструкций YAML плюс кавычки/двоеточие/запятая) — ADR-022.
+FORBIDDEN_LEAD_CHARS = set("-?:,[]{}#&*!|>\x27\"%@`")
+NULL_LITERALS = {"~", "null", "Null", "NULL"}
+BOOL_LITERALS = {"true", "True", "TRUE", "false", "False", "FALSE"}
+FORBIDDEN_LITERALS = NULL_LITERALS | BOOL_LITERALS
+
+KEY_RE = re.compile(r"^([A-Za-z_-]+):( +(.*))?$")
 
 
 def extract_frontmatter(text):
-    # phH рантайма (ADR-022): ленивый поиск ПЕРВОГО "---" после открывающей
-    # границы, где угодно в тексте, не обязательно отдельной строкой.
+    # Ленивая граница ---: первое вхождение "---" после открывающей
+    # строки, где угодно в тексте, не обязательно отдельной строкой
+    # (так же ведёт себя рантайм — ADR-022).
     lines = text.split("\n")
     if not lines or lines[0] != "---":
         return None, "нет открывающего --- на первой строке"
@@ -73,111 +89,50 @@ def extract_frontmatter(text):
     return rest[:idx].split("\n"), None
 
 
-def _find_quote_close(s, start, q):
-    i, n = start, len(s)
+def quoted_safe(v):
+    # Однострочное кавыченное значение без внутренних кавычек/бэкслешей —
+    # однозначный скаляр независимо от деталей парсера. Всё остальное
+    # (незакрытая кавычка, хвост после закрывающей, экранирование,
+    # перенос на другую строку) — отказ, не попытка разобрать (ADR-022).
+    q = v[0]
+    if len(v) < 2 or v[-1] != q:
+        return False, None
+    inner = v[1:-1]
     if q == "\"":
-        while i < n:
-            c = s[i]
-            if c == "\\":
-                i += 2
-                continue
-            if c == "\"":
-                return i
-            i += 1
-        return None
-    while i < n:
-        if s[i] == "\x27":
-            if i + 1 < n and s[i + 1] == "\x27":
-                i += 2
-                continue
-            return i
-        i += 1
-    return None
-
-
-def _unescape(s, q):
-    if q == "\"":
-        out = []
-        i = 0
-        while i < len(s):
-            if s[i] == "\\" and i + 1 < len(s):
-                out.append(s[i + 1])
-                i += 2
-            else:
-                out.append(s[i])
-                i += 1
-        return "".join(out)
-    return s.replace("\x27\x27", "\x27")
-
-
-def quoted_scalar_legal(first_trimmed, continuation_texts):
-    # Значение, начинающееся с кавычки: ищем парную закрывающую кавычку по
-    # всем строкам записи (сворачивание многострочного кавыченного скаляра
-    # — реальная YAML-семантика); что угодно после закрывающей кавычки,
-    # кроме пробелов, — хвост, который ломает разбор (ADR-022).
-    q = first_trimmed[0]
-    segments = [first_trimmed] + [c.strip() for c in continuation_texts]
-    joined = "\n".join(segments)
-    close = _find_quote_close(joined, 1, q)
-    if close is None:
+        if "\\" in inner or "\"" in inner:
+            return False, None
+    elif "\x27" in inner:
         return False, None
-    trailing = joined[close + 1:]
-    if trailing.strip(" \t\n"):
-        return False, None
-    value = _unescape(joined[1:close], q)
-    return True, " ".join(value.split("\n")).strip()
+    return True, inner
 
 
-def scalar_legal(value_remainder, continuation_texts):
-    trimmed = value_remainder.strip()
-    if trimmed[:1] in QUOTE_CHARS:
-        return quoted_scalar_legal(trimmed, continuation_texts)
-    if trimmed[:2] in ("- ", "? ") or trimmed == "-":
-        return False, None
+def scalar_safe(value_remainder, continuation_texts):
+    v = value_remainder.strip()
+    if v[:1] in QUOTE_CHARS:
+        if continuation_texts:
+            return False, None
+        return quoted_safe(v)
+
     all_lines = [value_remainder] + list(continuation_texts)
     if any("\t" in ln for ln in all_lines):
         return False, None
-    # Голое ":" на конце любой строки записи — fallback его не кавотирует
-    # (триггер U_1 требует пробел после ":"), строгий парсер теряет весь
-    # блок независимо от продолжения (ADR-022).
-    if any(ln.endswith(":") for ln in all_lines):
+    if any(ln.rstrip(" ").endswith(":") for ln in all_lines):
         return False, None
-    if continuation_texts:
-        # Многострочное значение: U_1 где угодно в любой строке записи —
-        # фатально, фронтматтер теряется целиком (ADR-022).
-        if any(U1.search(ln) for ln in all_lines):
-            return False, None
-        parts = [p.strip() for p in all_lines if p.strip()]
-        return True, " ".join(parts)
-    if U1.search(value_remainder):
+    if any(ch in ln for ln in all_lines for ch in U1_CHARS):
         return False, None
-    return True, value_remainder.strip()
+    if continuation_texts and any(": " in ln for ln in all_lines):
+        return False, None
 
+    first_token = v
+    if not first_token:
+        first_token = next((c.strip() for c in continuation_texts if c.strip()), "")
+    if first_token[:1] in FORBIDDEN_LEAD_CHARS:
+        return False, None
 
-def looks_already_quoted(s):
-    return len(s) >= 2 and s[0] in QUOTE_CHARS and s[-1] in QUOTE_CHARS
-
-
-def quote_value(s):
-    return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-
-
-def fallback_transform_value(value_remainder):
-    v = value_remainder.strip()
-    if looks_already_quoted(v):
-        return value_remainder
-    if U1.search(value_remainder):
-        return quote_value(v)
-    return value_remainder
-
-
-def fallback_transform_continuation(cont_line):
-    c = cont_line.strip()
-    if looks_already_quoted(c):
-        return cont_line
-    if U1.search(cont_line):
-        return quote_value(c)
-    return cont_line
+    assembled = " ".join(p.strip() for p in all_lines if p.strip())
+    if assembled in FORBIDDEN_LITERALS:
+        return False, None
+    return True, assembled
 
 
 def build_records(fm_lines, kind, errors, warnings):
@@ -193,7 +148,7 @@ def build_records(fm_lines, kind, errors, warnings):
                 errors.append("строка %d: не \"ключ: значение\" и не отступ-продолжение: %r" % (lineno, raw))
                 return None
             key = m.group(1)
-            value = m.group(2)[1:] if m.group(2) is not None else ""
+            value = m.group(3) if m.group(3) is not None else ""
             if key not in ALLOWED[kind]:
                 errors.append(
                     "строка %d: неизвестный ключ %r для %s (допустимы: %s)"
@@ -202,7 +157,7 @@ def build_records(fm_lines, kind, errors, warnings):
                 return None
             if key in index:
                 # Повторяющийся ключ — предупреждение, не ошибка
-                # (осознанное решение мягче рантайма, ADR-022, п.4).
+                # (осознанное решение, ADR-022).
                 warnings.append("строка %d: повторяющийся ключ %r, предыдущее значение перезаписано" % (lineno, key))
                 record = index[key]
                 record["value"] = value
@@ -224,29 +179,17 @@ def resolve_frontmatter(fm_lines, kind, errors, warnings):
     records = build_records(fm_lines, kind, errors, warnings)
     if records is None:
         return None
-
-    strict_results = [scalar_legal(r["value"], r["continuations"]) for r in records]
-    if all(ok for ok, _ in strict_results):
-        return {r["key"]: val for r, (ok, val) in zip(records, strict_results)}
-
-    # Fallback: построчное кавотирование применяется ко ВСЕМ записям
-    # документа разом (не только к той, что провалила строгий разбор) — в
-    # рантайме это один повторный Bun.YAML.parse над всем предобработанным
-    # текстом. Предобработанный текст проверяется тем же scalar_legal, что
-    # и строгая фаза: кавыченное значение с продолжением снизу или
-    # кавыченная строка-продолжение сами по себе уже дают "хвост после
-    # закрывающей кавычки" в quoted_scalar_legal — отдельный флаг "разбор
-    # сломан" не нужен (ADR-022).
-    transformed = [
-        (r["key"], fallback_transform_value(r["value"]),
-         [fallback_transform_continuation(c) for c in r["continuations"]])
-        for r in records
-    ]
-
-    fallback_results = [scalar_legal(v, c) for (_, v, c) in transformed]
-    if all(ok for ok, _ in fallback_results):
-        return {key: val for (key, _, _), (ok, val) in zip(transformed, fallback_results)}
-    return {}
+    data = {}
+    for r in records:
+        ok, val = scalar_safe(r["value"], r["continuations"])
+        if not ok:
+            errors.append(
+                "ключ %r: значение не распознано как безопасная форма (могло бы потеряться или исказиться в рантайме)"
+                % r["key"]
+            )
+            return None
+        data[r["key"]] = val
+    return data
 
 
 def parse_frontmatter(text, kind, warnings):
