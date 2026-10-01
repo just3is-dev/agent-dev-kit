@@ -7490,13 +7490,21 @@ assert_contains "AC-3: docs/config.md документирует дефолт po
   "$budget_config_doc_text" '| `policies.autopilot.budget.run.maxMinutes` | число (положительное, минуты) | `240` |'
 
 # ── Первый релиз по новой политике — minor-бамп до 0.2.0 (issue #156,
-# SPEC-004 AC-6): реальный .claude-plugin/plugin.json кита, не фикстура ────
-real_plugin_version=$(python3 -c '
-import json
-print(json.load(open("'"$KIT"'/.claude-plugin/plugin.json")).get("version", ""))
-')
-[ "$real_plugin_version" = "0.2.0" ]
-assert_exit "AC-6: .claude-plugin/plugin.json: version кита равен 0.2.0 (первый релиз по новой политике)" 0 $?
+# SPEC-004 AC-6): реальный .claude-plugin/plugin.json кита, не фикстура.
+# Инвариант, не точное значение (ревью PR #248 круг 1): version-bump-check.sh
+# требует бампа в каждом PR, меняющем файлы плагина (условие уже
+# выполняется) — следующий штатный PR поднимет version дальше (0.2.1 или
+# выше), и тест на точное "0.2.0" покраснел бы на легальном состоянии
+# main. Проверяем то, что остаётся верным: major.minor не откатился ниже
+# 0.2 — тот же паттерн динамического чтения, что и kit_real_version ниже
+# (adk-plugin-version.sh, AC-5) ─────────────────────────────────────────────
+python3 - "$KIT/.claude-plugin/plugin.json" <<'EOF'
+import json, sys
+version = json.load(open(sys.argv[1])).get("version", "0.0.0")
+major, minor = (int(x) for x in version.split(".")[:2])
+sys.exit(0 if (major, minor) >= (0, 2) else 1)
+EOF
+assert_exit "AC-6: .claude-plugin/plugin.json: version кита — major.minor >= 0.2 (первый релиз по новой политике, откат на 0.1.x не ожидается)" 0 $?
 
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
@@ -7578,14 +7586,9 @@ assert_contains "AC-2: release-check(в): вердикт «релиза нет»
 relc_tag_count=$(cd "$RELC" && git tag | wc -l | tr -d ' ')
 assert_exit "AC-2: release-check(в): тегов по-прежнему два — повторный релиз не создан" 2 "$relc_tag_count"
 
-# (г) minor-бамп при существующем предыдущем теге — тот же код, что и
-# patch-бамп сценария (а) (issue #156, AC-6): постановка issue #156
-# изначально предполагала репозиторий без единого тега, но к моменту
-# задачи релизный workflow (issue #155) уже отработал на каждом
-# patch-PR — реальный переход кита 0.1.42 → 0.2.0 идёт веткой
-# «предыдущий тег есть» (ADR-008 п.2), а не отдельным сценарием «тегов
-# нет». Тест доказывает: release-check.sh не различает уровень бампа —
-# minor обрабатывается identично patch ──────────────────────────────────
+# (г) minor-бамп при существующем предыдущем теге (issue #156, AC-6) —
+# тот же код, что и patch-бамп сценария (а): release-check.sh не
+# различает уровень бампа ───────────────────────────────────────────────
 RELD="$TMP/release-d"
 mkdir -p "$RELD/.claude-plugin"
 (cd "$RELD" && git_c init -q -b main)
@@ -7735,12 +7738,9 @@ assert_exit "AC-1: version-bump-check: пустой список путей — 
 
 # minor-бамп (issue #156, AC-6): гейт сравнивает base/head строками, без
 # разбора на patch/minor/major — минорный бамп проходит гейт так же, как
-# patch, и одинаковые версии ловятся независимо от того, какой уровень
-# бампа ожидался
+# patch (сценарий (б) выше)
 vbc_minor_out=$(run_vbc 0.1.42 0.2.0 "commands/work.md" "hooks/scripts/adk-log.sh" ".claude-plugin/plugin.json")
 assert_exit "AC-6: version-bump-check: minor-бамп (0.1.42 -> 0.2.0) с файлами плагина — exit 0" 0 $?
-vbc_minor_same_out=$(run_vbc 0.2.0 0.2.0 "commands/work.md")
-assert_exit "AC-6: version-bump-check: version уже 0.2.0 без изменения — ненулевой exit, как при любом другом уровне" 1 $?
 
 # ── .github/workflows/version-bump-check.yml: тонкая обёртка над
 # version-bump-check.sh на pull_request (issue #151) ────────────────────────
