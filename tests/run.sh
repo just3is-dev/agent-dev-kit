@@ -3212,12 +3212,61 @@ run_ralph() {
   fi
 }
 
-# ralph_journal <logs> — путь журнала прогона за сегодня (issue #206:
-# ~60 ручных повторов пути). Дата по-прежнему вычисляется в момент вызова
-# — латентный полночь-флейк вынесен в issue #217, здесь только дедуп.
+# ralph_journal <logs> — путь единственного журнала прогона в каталоге
+# логов фикстуры (issue #206: ~60 ручных повторов пути). Дата в имени
+# файла — решение писателя (adk-ralph.sh вычисляет её один раз в начале
+# своего прогона, hooks/scripts/adk-ralph.sh:117), не читателя: вместо
+# реконструкции через свой date() (гонка по дню при пересечении полуночи,
+# issue #217) — глоб по изолированному каталогу логов фикстуры, он
+# находит файл, который реально написал writer, каким бы днём тот его
+# ни назвал. Не ровно одно совпадение — громкий отказ, а не угаданный
+# несуществующий путь.
 ralph_journal() {
-  printf '%s/autopilot-%s.jsonl' "$1" "$(date +%Y-%m-%d)"
+  local logs="$1" matches n
+  matches=$(find "$logs" -maxdepth 1 -name 'autopilot-*.jsonl' 2>/dev/null | sort)
+  n=$(printf '%s\n' "$matches" | grep -c '.' || true)
+  if [ "$n" -ne 1 ]; then
+    echo "ralph_journal: ожидался ровно один autopilot-*.jsonl в $logs, найдено $n" >&2
+    return 1
+  fi
+  printf '%s' "$matches"
 }
+
+# ── issue #217: ralph_journal находит журнал, который писатель назвал
+# ДРУГИМ днём, не днём на момент чтения ───────────────────────────────────
+# Конструктивное доказательство без ожидания реальной полуночи: стаб
+# date() в PATH фикстуры (тот же приём, что остальные стабы run_ralph)
+# заставляет adk-ralph.sh реально написать autopilot-1999-12-31.jsonl;
+# тестовый процесс читает журнал обычным date() хоста (другой день) —
+# воспроизводит расхождение писателя и читателя по дню.
+RALPH_217="$TMP/ralph-217-proj"
+RBIN_217="$TMP/ralph-217-bin"
+ralph_init "$RALPH_217" "$RBIN_217"
+printf '[]\n' > "$RBIN_217/issues-fixture.json"
+gh_ralph_stub "$RBIN_217" "$RBIN_217/issues-fixture.json" "$RBIN_217/prs-fixture.json"
+claude_stub "$RBIN_217" <<'EOF'
+echo "$*" >> "$d/claude-calls.log"
+exit 0
+EOF
+cat > "$RBIN_217/date" <<'EOF'
+#!/usr/bin/env bash
+echo "1999-12-31"
+EOF
+chmod +x "$RBIN_217/date"
+RALPH_217_LOGS="$TMP/ralph-217-logs"
+# Явный несуществующий config (приём issue #138, RALPH_NC ниже) — прогон
+# не зависит от ADK_CONFIG_FILE в окружении разработчика.
+ralph_217_out=$(run_ralph "$RALPH_217" "$RBIN_217" "$RALPH_217_LOGS" "$TMP/ralph-217-notify.log" "$TMP/ralph-217-absent-config.json")
+assert_exit "issue #217: фикстура с подменённым date() (писатель) отрабатывает штатно, пустая очередь с самого начала (exit 0)" 0 $?
+[ -f "$RALPH_217_LOGS/autopilot-1999-12-31.jsonl" ]
+assert_exit "issue #217: adk-ralph реально написал журнал под днём, который вернул подменённый date() (1999-12-31)" 0 $?
+ralph_217_journal=$(ralph_journal "$RALPH_217_LOGS")
+assert_exit "issue #217: ralph_journal находит журнал по глобу, без подмены date() в собственном PATH" 0 $?
+assert_contains "issue #217: ralph_journal вернул путь к файлу, который реально написал writer (1999-12-31), а не к дню чтения" \
+  "$ralph_217_journal" "autopilot-1999-12-31.jsonl"
+ralph_217_content=$(cat "$ralph_217_journal" 2>/dev/null)
+assert_contains "issue #217: найденный по глобу журнал — содержимое реального прогона (run_start записан)" \
+  "$ralph_217_content" '"event": "run_start"'
 
 # ── adk-ralph.sh: ralph-цикл SPEC-003, цикл по очереди issues свежим
 # headless-процессом, без --dangerously-skip-permissions (issue #139,
@@ -4534,6 +4583,18 @@ EOF
 gh_ralph_stub "$RBIN_AR" "$RBIN_AR/issues-fixture.json" "$RBIN_AR/prs-fixture.json"
 claude_stub_one_pr "$RBIN_AR" call '601' false 'issue-61-x'
 RALPH_AR_LOGS="$TMP/ralph-already-ready-logs"
+
+# issue #217: оба прогона ниже пишут в ОДИН $RALPH_AR_LOGS и каждый сам
+# вычисляет день журнала (hooks/scripts/adk-ralph.sh:117) — при полуночи
+# между ними ralph_journal честно откажет («найдено 2» вместо одного
+# файла с 6 строками). Стаб date() в общем PATH обоих прогонов ($RBIN_AR)
+# фиксирует день, чтобы фикстура проверяла инвариант issue #147 (reused),
+# а не гонку по дате.
+cat > "$RBIN_AR/date" <<'EOF'
+#!/usr/bin/env bash
+echo "2024-01-01"
+EOF
+chmod +x "$RBIN_AR/date"
 
 ralph_ar_run1=$(run_ralph "$RALPH_AR" "$RBIN_AR" "$RALPH_AR_LOGS" "$TMP/ralph-already-ready-notify1.log" "$RALPH_NOMERGE_CFG")
 assert_exit "issue #147: adk-ralph: первый прогон — issue #61 без PR обрабатывается и становится ready" 0 $?
