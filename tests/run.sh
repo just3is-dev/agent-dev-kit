@@ -7489,6 +7489,19 @@ assert_contains "AC-3: docs/config.md документирует дефолт po
 assert_contains "AC-3: docs/config.md документирует дефолт policies.autopilot.budget.run.maxMinutes = 240" \
   "$budget_config_doc_text" '| `policies.autopilot.budget.run.maxMinutes` | число (положительное, минуты) | `240` |'
 
+# ── Первый релиз по новой политике — minor-бамп до 0.2.0 (issue #156,
+# SPEC-004 AC-6): реальный .claude-plugin/plugin.json кита, не фикстура.
+# Инвариант, не точное значение: следующий бамп поднимет version дальше —
+# откат ниже 0.2 не ожидается (тот же паттерн, что kit_real_version ниже,
+# AC-5) ──────────────────────────────────────────────────────────────────
+python3 - "$KIT/.claude-plugin/plugin.json" <<'EOF'
+import json, sys
+version = json.load(open(sys.argv[1])).get("version", "0.0.0")
+major, minor = (int(x) for x in version.split(".")[:2])
+sys.exit(0 if (major, minor) >= (0, 2) else 1)
+EOF
+assert_exit "AC-6: .claude-plugin/plugin.json: version кита — major.minor >= 0.2 (первый релиз по новой политике, откат на 0.1.x не ожидается)" 0 $?
+
 # ── .github/scripts/release-check.sh + .github/workflows/release.yml:
 # релизный workflow — тег и GitHub Release из истории main (issue #155,
 # SPEC-004 AC-2). Скрипт только решает и печатает; git tag/GitHub Release
@@ -7568,6 +7581,27 @@ assert_exit "AC-2: release-check(в): целевой тег уже сущест�
 assert_contains "AC-2: release-check(в): вердикт «релиза нет» — повтора нет" "$relc_out" "релиза нет"
 relc_tag_count=$(cd "$RELC" && git tag | wc -l | tr -d ' ')
 assert_exit "AC-2: release-check(в): тегов по-прежнему два — повторный релиз не создан" 2 "$relc_tag_count"
+
+# (г) minor-бамп при существующем предыдущем теге (issue #156, AC-6) —
+# тот же код, что и patch-бамп сценария (а): release-check.sh не
+# различает уровень бампа ───────────────────────────────────────────────
+RELD="$TMP/release-d"
+mkdir -p "$RELD/.claude-plugin"
+(cd "$RELD" && git_c init -q -b main)
+plugin_json 0.1.42 > "$RELD/.claude-plugin/plugin.json"
+(cd "$RELD" && git add -A && git_c commit -qm "release: bump version to 0.1.42")
+(cd "$RELD" && git_c tag v0.1.42)
+plugin_json 0.2.0 > "$RELD/.claude-plugin/plugin.json"
+(cd "$RELD" && git add -A && git_c commit -qm "release: bump version to 0.2.0")
+
+reld_out=$("$REL_SCRIPT" "$RELD")
+assert_exit "AC-6: release-check(г): minor-бамп (0.1.42 -> 0.2.0) при существующем теге — exit 0" 0 $?
+reld_line1=$(printf '%s\n' "$reld_out" | sed -n '1p')
+reld_tag=$(printf '%s\n' "$reld_out" | sed -n '2p')
+[ "$reld_line1" = "RELEASE" ]
+assert_exit "AC-6: release-check(г): minor-бамп — вердикт RELEASE, как и при patch" 0 $?
+[ "$reld_tag" = "v0.2.0" ]
+assert_exit "AC-6: release-check(г): minor-бамп — целевой тег v0.2.0" 0 $?
 
 # ── release.yml: валиден как YAML, срабатывает на push в main, вызывает
 # именно release-check.sh (issue #155) — Psych парсит голый ключ YAML `on:`
@@ -7697,6 +7731,12 @@ assert_exit "AC-1: version-bump-check: смешанный набор с файл
 # Пустой список изменённых путей — нечего проверять, exit 0
 vbc_empty_out=$(printf '' | "$VBC" 0.1.8 0.1.8 2>&1)
 assert_exit "AC-1: version-bump-check: пустой список путей — exit 0" 0 $?
+
+# minor-бамп (issue #156, AC-6): гейт сравнивает base/head строками, без
+# разбора на patch/minor/major — минорный бамп проходит гейт так же, как
+# patch (сценарий (б) выше)
+vbc_minor_out=$(run_vbc 0.1.42 0.2.0 "commands/work.md" "hooks/scripts/adk-log.sh" ".claude-plugin/plugin.json")
+assert_exit "AC-6: version-bump-check: minor-бамп (0.1.42 -> 0.2.0) с файлами плагина — exit 0" 0 $?
 
 # ── .github/workflows/version-bump-check.yml: тонкая обёртка над
 # version-bump-check.sh на pull_request (issue #151) ────────────────────────
