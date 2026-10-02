@@ -2,24 +2,28 @@
 # Гейт: фронтматтер commands/*.md, agents/*.md и skills/*/SKILL.md несёт
 # обязательные по типу файла ключи (issue #201, класс бага PR #199).
 #
-# Разбор — доказуемо безопасный белый список форм "ключ: значение /
-# отступ-продолжение", а не попытка эмулировать сам парсер рантайма
-# Claude Code: круг 6 ревью показал, что двухфазный алгоритм рантайма
-# (строгий Bun.YAML.parse + построчный fallback) не моделируется
-# предикатами на stdlib без собственного YAML-парсера — некоторые формы
-# (одиночные спецсимволы YAML) не вызывают ошибку строгого парсера, а
-# молча заменяют значение на null/массив/обрезанную строку, минуя
-# fallback целиком. Гейт поэтому принимает ТОЛЬКО формы, для которых
-# результат разбора доказуемо не зависит от деталей самого парсера;
-# всё остальное — отказ, даже если конкретный рантайм на конкретной
-# версии это бы и разобрал правильно. Источники и обоснование — ADR-022.
+# Разбор — белый список форм "ключ: значение / отступ-продолжение",
+# эмпирически проверенных как безопасные против Bun.YAML 1.3.13
+# (реверс-инжиниринг бинаря рантайма + дифференциальный фаззинг, см.
+# ADR-022), а не попытка эмулировать сам парсер рантайма Claude Code:
+# круг 6 ревью показал, что двухфазный алгоритм рантайма (строгий
+# Bun.YAML.parse + построчный fallback) не моделируется предикатами на
+# stdlib без собственного YAML-парсера — некоторые формы (одиночные
+# спецсимволы YAML) не вызывают ошибку строгого парсера, а молча
+# заменяют значение на null/массив/обрезанную строку, минуя fallback
+# целиком. Гейт поэтому принимает ТОЛЬКО формы, безопасность которых
+# проверена эмпирически против установленной версии Bun; всё
+# остальное — отказ, даже если конкретный рантайм на конкретной версии
+# это бы и разобрал правильно. Это не формальное доказательство
+# относительно полной спецификации Bun.YAML — методика и объём проверки
+# (фаззинг на сотни тысяч случайных документов по состоянию на круг 8)
+# — в ADR-022.
 #
 # Использование: frontmatter-check.sh <project_root>
 # exit 1 со списком ошибок вида "<файл>: <причина>" в stderr, если хоть
 # один файл не разобрался как валидный фронтматтер своего типа или не
-# хватает обязательного ключа; exit 0, если всё в порядке (возможны
-# предупреждения в stderr, не влияющие на exit code), в том числе когда
-# ни commands/, ни agents/, ни skills/ в корне нет — гейт кита, не
+# хватает обязательного ключа; exit 0, если всё в порядке, в том числе
+# когда ни commands/, ни agents/, ни skills/ в корне нет — гейт кита, не
 # обязателен для произвольного проекта.
 set -u
 
@@ -80,18 +84,20 @@ KEY_RE = re.compile(r"^([A-Za-z_-]+):( +(.*))?$")
 
 
 def extract_frontmatter(text):
-    # CRLF/CR и юникодные разделители строк: построчные регэкспы рантайма
-    # (JS, "." не матчит \r/\u2028/\u2029) ведут себя иначе, чем python3 с
-    # универсальными переводами строк — безопасность формы не доказана,
-    # отказ безусловно (ADR-022, круг 7 ревью PR #243).
-    if any(c in text for c in "\r\u2028\u2029\u0085"):
-        return None, "файл содержит CRLF/CR или юникодный разделитель строк (U+2028/U+2029/U+0085)"
     # Ленивая граница ---: первое вхождение "---" после открывающей
     # строки, где угодно в тексте, не обязательно отдельной строкой (так
     # же ведёт себя рантайм — ADR-022). Но если найденное вхождение само
     # не образует отдельную строку — оно обрезало значение посреди текста
     # (рантайм это делает молча, гейт обязан заметить и отказать, а не
     # согласиться с уже обрезанным значением — круг 7 ревью PR #243).
+    # Сравнение построчное и байт-в-байт (файл открыт с newline=""), так
+    # что CRLF/CR или юникодный разделитель строк (U+2028/U+2029/U+0085)
+    # прямо на границе "---" уже не даёт точного совпадения со строкой
+    # "---" и отклоняется здесь же, без отдельной проверки (круг 10:
+    # прежняя проверка по всему файлу удалена как избыточная — то же
+    # вхождение внутри блока фронтматтера ловит проверка ниже, а в теле
+    # документа после закрывающей --- оно не влияет на разбор
+    # фронтматтера вовсе).
     lines = text.split("\n")
     if not lines or lines[0] != "---":
         return None, "нет открывающего --- на первой строке"
@@ -145,8 +151,10 @@ def scalar_safe(value_remainder, continuation_texts):
         return quoted_safe(v)
 
     all_lines = [value_remainder] + list(continuation_texts)
-    if any("\t" in ln for ln in all_lines):
-        return False, None
+    # Таб внутри значения здесь невозможен: extract_frontmatter уже
+    # отказал бы на любом табе во фронтматтере (круг 8 ревью PR #243) —
+    # прежняя отдельная проверка была недостижимой веткой, убрана в
+    # круге 10.
     if any(ln.rstrip(" ").endswith(":") for ln in all_lines):
         return False, None
     if any(ch in ln for ln in all_lines for ch in U1_CHARS):
@@ -175,14 +183,18 @@ def scalar_safe(value_remainder, continuation_texts):
     return True, assembled
 
 
-def build_records(fm_lines, kind, errors, warnings):
+def build_records(fm_lines, kind, errors):
     records = []
     index = {}
     current = None
     for lineno, raw in enumerate(fm_lines, start=2):
         if raw.strip() == "":
             continue
-        if raw[0] not in (" ", "\t"):
+        # Таб как первый символ здесь тоже невозможен (см. выше) — эта
+        # ветка только отличает новую запись от строки-продолжения
+        # (круг 10: прежняя проверка "or raw[0] == tab" была
+        # недостижимой).
+        if raw[0] != " ":
             m = KEY_RE.match(raw)
             if not m:
                 errors.append("строка %d: не \"ключ: значение\" и не отступ-продолжение: %r" % (lineno, raw))
@@ -214,8 +226,8 @@ def build_records(fm_lines, kind, errors, warnings):
     return records
 
 
-def resolve_frontmatter(fm_lines, kind, errors, warnings):
-    records = build_records(fm_lines, kind, errors, warnings)
+def resolve_frontmatter(fm_lines, kind, errors):
+    records = build_records(fm_lines, kind, errors)
     if records is None:
         return None
     data = {}
@@ -231,12 +243,12 @@ def resolve_frontmatter(fm_lines, kind, errors, warnings):
     return data
 
 
-def parse_frontmatter(text, kind, warnings):
+def parse_frontmatter(text, kind):
     errors = []
     fm_lines, err = extract_frontmatter(text)
     if err:
         return None, err
-    data = resolve_frontmatter(fm_lines, kind, errors, warnings)
+    data = resolve_frontmatter(fm_lines, kind, errors)
     if data is None:
         return None, errors[0]
     return data, None
@@ -257,10 +269,7 @@ for line in sys.stdin:
     except OSError as e:
         errors.append("%s: не удалось прочитать (%s)" % (path, e))
         continue
-    warnings = []
-    data, err = parse_frontmatter(text, kind, warnings)
-    for w in warnings:
-        print("%s: %s" % (path, w), file=sys.stderr)
+    data, err = parse_frontmatter(text, kind)
     if err:
         errors.append("%s: %s" % (path, err))
         continue
