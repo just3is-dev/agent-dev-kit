@@ -79,8 +79,9 @@ argument-hint: "[номер PR или issue; по умолчанию PR теку
    безусловно) — без этой гарантии проверка с чужого HEAD дала бы
    ложное «актуальна», а актуализация с него затёрла бы ветку PR (та же
    оговорка — в `/autopilot`). Отставание считается как в каноне, от
-   HEAD (`git fetch origin && git rev-list --count HEAD..origin/main` —
-   больше нуля значит ветка отстала).
+   HEAD (`git fetch origin && git rev-list --count HEAD..origin/<default>`
+   — больше нуля значит ветка отстала; `<default>` — default branch
+   репозитория, определение — в нотации `/work`).
 
    Ветка актуальна и гейты зелёные — `gh pr ready <PR>`, затем (`<N>`
    определён) обнови итог задачи: `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-log.sh

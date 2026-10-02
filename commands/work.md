@@ -5,7 +5,16 @@ argument-hint: "[номер issue; по умолчанию следующий н
 
 Выполни одну задачу от issue до PR с вердиктом ревьюера.
 
-Нотация ниже: `<N>` — номер issue, `<PR>` — номер pull request.
+Нотация ниже: `<N>` — номер issue, `<PR>` — номер pull request,
+`<default>` — default branch репозитория (не обязательно `main`).
+Определи его один раз, при первом использовании: `git symbolic-ref
+--short refs/remotes/origin/HEAD` печатает `origin/<имя>` — отрежь
+префикс `origin/`; пусто или ошибка — `gh repo view --json
+defaultBranchRef -q .defaultBranchRef.name`; и это не удалось — `main`.
+Это канонический рецепт: `/review`, `/plan` и `/autopilot` пишут
+`origin/<default>` и отсылают сюда (то же, что `$default_branch` в
+`hooks/scripts/adk-ralph.sh`, ADR-007 §6); для репозитория с default
+branch `main` все команды ниже выполняются ровно так же, как раньше.
 
 1. **Выбери задачу.** `$ARGUMENTS` — номер issue, иначе возьми через
    `gh issue list --state open` следующий незаблокированный issue текущего
@@ -15,8 +24,8 @@ argument-hint: "[номер issue; по умолчанию следующий н
    **Спека вехи должна быть в main.** Issue ссылается на спеку строкой
    `Спека: docs/specs/NNN-<слаг>.md` (так размечает `/plan`, шаг 4) —
    прежде чем брать issue в работу, проверь, что этот файл уже есть в
-   `main`: `git fetch origin && git cat-file -e
-   origin/main:docs/specs/NNN-<слаг>.md` (путь — из ссылки issue, номер и
+   default branch: `git fetch origin && git cat-file -e
+   origin/<default>:docs/specs/NNN-<слаг>.md` (путь — из ссылки issue, номер и
    слаг не додумывай). `git fetch origin` не прошёл (сеть) — не додумывай
    состояние спеки: остановись, как при недоступном GitHub, и сообщи
    пользователю, что проверку нужно повторить. Файла там нет — спека вехи
@@ -158,7 +167,7 @@ argument-hint: "[номер issue; по умолчанию следующий н
    git, а не из GitHub-статусов
    (`mergeStateStatus=BEHIND` GitHub отдаёт только при включённом
    `required_status_checks.strict`): `git fetch origin &&
-   git rev-list --count HEAD..origin/main` — счётчик больше нуля значит
+   git rev-list --count HEAD..origin/<default>` — счётчик больше нуля значит
    BEHIND, ветка отстала. Конфликтность — `gh pr view <PR> --json
    mergeable`: `CONFLICTING` — конфликт с main, остановись и позови
    пользователя, конфликт разрешает человек; `UNKNOWN` — GitHub ещё
@@ -167,8 +176,8 @@ argument-hint: "[номер issue; по умолчанию следующий н
    (`${CLAUDE_PLUGIN_ROOT}/hooks/scripts/adk-config.sh
    conventions.branchUpdate rebase rebase,merge`; ненулевой exit = опечатка
    в конфиге, остановись; fetch уже сделан выше): `rebase` (дефолт) —
-   перебазируй (`git rebase origin/main`); `merge` — влей main в ветку
-   (`git merge origin/main`). Конфликт при самой актуализации (rebase
+   перебазируй (`git rebase origin/<default>`); `merge` — влей `<default>` в
+   ветку (`git merge origin/<default>`). Конфликт при самой актуализации (rebase
    останавливается, merge не применяется) — прерви её (`git rebase
    --abort` / `git merge --abort`), остановись и позови пользователя,
    как при `CONFLICTING`.
