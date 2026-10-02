@@ -17,6 +17,12 @@ for j in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.
   python3 -m json.tool "$j" >/dev/null
 done
 
+# фронтматтер commands/*.md, agents/*.md, skills/*/SKILL.md парсится и несёт
+# обязательные ключи (issue #201) — не зависит от аргументов: файлов немного,
+# проверка дешёвая, и класс бага (PR #199) не привязан к конкретному
+# редактируемому файлу.
+hooks/scripts/frontmatter-check.sh .
+
 if command -v claude >/dev/null 2>&1; then
   claude plugin validate . >/dev/null 2>&1
 fi

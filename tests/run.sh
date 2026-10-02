@@ -2206,6 +2206,14 @@ echo "AC_CHECK_CALLED"
 exit 0
 EOF
 chmod +x "$KCHK/hooks/scripts/ac-check.sh"
+# frontmatter-check.sh (issue #201) — scripts/check зовёт его безусловно,
+# вне $#-guard'а, который здесь проверяется для ac-check.sh: стаб, чтобы
+# изолированная фикстура не падала на отсутствующем файле.
+cat > "$KCHK/hooks/scripts/frontmatter-check.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$KCHK/hooks/scripts/frontmatter-check.sh"
 cat > "$KCHK/tests/run.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -8579,6 +8587,859 @@ check_ac_doc "issue #218" "adk-ralph.sh header упоминает issue #218 в 
 
 check_ac_doc "issue #218" "ADR-021 описывает spec_missing() в select_next как симметричную owner:human проверку" \
   "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"
+
+# ── Гейт: фронтматтер commands/*.md, agents/*.md, skills/*/SKILL.md
+# (issue #201, hooks/scripts/frontmatter-check.sh) ───────────────────────────
+FM="$TMP/frontmatter"
+rm -rf "$FM"
+mkdir -p "$FM/commands" "$FM/agents" "$FM/skills/demo"
+
+# Все текущие файлы кита проходят молча (DoD issue #201): включая
+# commands/autopilot.md и commands/work.md, чьи description содержат
+# «: » внутри текста однострочного значения — форма (а)/(б) белого
+# списка, не часть риска (ADR-022).
+fm_kit_out=$("$HOOKS/frontmatter-check.sh" "$KIT" 2>&1)
+assert_exit "issue #201: frontmatter-check проходит все текущие файлы кита" 0 $?
+if [ -z "$fm_kit_out" ]; then fm_kit_silent=0; else fm_kit_silent=1; fi
+assert_exit "issue #201: frontmatter-check не печатает ничего на успех" 0 "$fm_kit_silent"
+
+# Фикстура DoD №1: строка продолжения с колонки 0 (класс бага PR #199,
+# commands/stats.md) — красный check с именем файла.
+cat > "$FM/commands/broken-continuation.md" <<'EOF'
+---
+description: первая строка описания
+продолжение с колонки 0, а не с отступа
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+fm_st=$?
+assert_exit "issue #201: строка-продолжение с колонки 0 — красный check" 1 "$fm_st"
+assert_contains "issue #201: ошибка называет файл со сломанным продолжением" "$fm_out" "broken-continuation.md"
+rm -f "$FM/commands/broken-continuation.md"
+
+# Фикстура DoD №2: отсутствующий description — красный check с именем файла.
+cat > "$FM/commands/missing-description.md" <<'EOF'
+---
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: отсутствующий description у команды — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл без description" "$fm_out" "missing-description.md"
+assert_contains "issue #201: ошибка называет отсутствующий ключ description" "$fm_out" "'description'"
+rm -f "$FM/commands/missing-description.md"
+
+# Отсутствующий argument-hint у команды — тот же класс, другой ключ.
+cat > "$FM/commands/missing-hint.md" <<'EOF'
+---
+description: есть описание, нет подсказки аргументов
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: отсутствующий argument-hint у команды — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ argument-hint" "$fm_out" "argument-hint"
+rm -f "$FM/commands/missing-hint.md"
+
+# Валидная команда — зелёный check.
+cat > "$FM/commands/ok.md" <<'EOF'
+---
+description: валидная команда
+argument-hint: "[x]"
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201: валидная команда проходит" 0 $?
+rm -f "$FM/commands/ok.md"
+
+# Агент без обязательного tools — красный check.
+cat > "$FM/agents/no-tools.md" <<'EOF'
+---
+name: demo
+description: демо-агент без tools
+model: opus
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: агент без tools — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ tools" "$fm_out" "'tools'"
+rm -f "$FM/agents/no-tools.md"
+
+# Агент без обязательного model — красный check.
+cat > "$FM/agents/no-model.md" <<'EOF'
+---
+name: demo
+description: демо-агент без model
+tools: Read
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: агент без model — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ model" "$fm_out" "'model'"
+rm -f "$FM/agents/no-model.md"
+
+# Валидный агент — зелёный check.
+cat > "$FM/agents/ok.md" <<'EOF'
+---
+name: demo
+description: валидный агент
+tools: Read, Grep
+model: opus
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201: валидный агент проходит" 0 $?
+rm -f "$FM/agents/ok.md"
+
+# skill без name — красный check.
+cat > "$FM/skills/demo/SKILL.md" <<'EOF'
+---
+description: скилл без name
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: skill без name — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл skills/demo/SKILL.md" "$fm_out" "skills/demo/SKILL.md"
+assert_contains "issue #201: ошибка называет отсутствующий ключ name" "$fm_out" "'name'"
+
+# Валидный skill — зелёный check.
+cat > "$FM/skills/demo/SKILL.md" <<'EOF'
+---
+name: demo
+description: валидный скилл
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201: валидный skill проходит" 0 $?
+
+# Незакрытый фронтматтер (нет второго ---) — красный check с именем файла,
+# не молчаливая потеря ключей.
+cat > "$FM/commands/unterminated.md" <<'EOF'
+---
+description: без закрывающего разделителя
+argument-hint: "[x]"
+тело без ---
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: незакрытый фронтматтер — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с незакрытым фронтматтером" "$fm_out" "unterminated.md"
+rm -f "$FM/commands/unterminated.md"
+
+# Пустое, но присутствующее значение (кавычки не спасают) — красный check.
+cat > "$FM/commands/empty-desc.md" <<'EOF'
+---
+description: ""
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: пустое quoted-значение description — красный check" 1 $?
+assert_contains "issue #201: ошибка называет отсутствующий ключ description (пустая строка в кавычках)" "$fm_out" "description"
+rm -f "$FM/commands/empty-desc.md"
+
+# Строка-продолжение, потерявшая отступ и вставшая на колонку 0, но
+# содержащая ":" — не молча заводит новый ключ, а отвергается белым
+# списком допустимых ключей типа файла (issue #201, ADR-022).
+cat > "$FM/commands/broken-continuation-colon.md" <<'EOF'
+---
+description: первая строка описания
+issues: вторая строка потеряла отступ, но похожа на "ключ: значение"
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: продолжение с колонки 0, похожее на ключ, — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл" "$fm_out" "broken-continuation-colon.md"
+assert_contains "issue #201: ошибка называет неизвестный ключ, не молча заводит его" "$fm_out" "неизвестный ключ"
+rm -f "$FM/commands/broken-continuation-colon.md"
+
+# Многострочное значение, чья строка-продолжение сама содержит ": " —
+# строка-продолжение не вида "key: value", построчный fallback её не
+# кавотирует, рантайм теряет весь фронтматтер (issue #201, ADR-022).
+cat > "$FM/commands/multiline-colon.md" <<'EOF'
+---
+description: первая строка описания
+  issues: продолжение с отступом, но с двоеточием внутри
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: двоеточие внутри отступной строки-продолжения — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с двоеточием в продолжении" "$fm_out" "multiline-colon.md"
+rm -f "$FM/commands/multiline-colon.md"
+
+# Строка-продолжение заканчивается двоеточием без пробела после ("  second:")
+# — тоже теряется рантаймом ("nested mappings"), не только "": "" в середине.
+cat > "$FM/commands/multiline-colon-trailing.md" <<'EOF'
+---
+description: первая строка описания
+  второе:
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: висящее ':' в конце строки-продолжения — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с висящим ':' в продолжении" "$fm_out" "multiline-colon-trailing.md"
+rm -f "$FM/commands/multiline-colon-trailing.md"
+
+# Двоеточие в ПЕРВОЙ строке записи (не в продолжении), за которой следует
+# продолжение — fallback рантайма кавотирует первую строку саму по себе,
+# но итоговый законченный скаляр с висящим продолжением следом всё равно
+# не разбирается, и весь фронтматтер теряется (issue #201, ADR-022).
+cat > "$FM/commands/multiline-colon-first-line.md" <<'EOF'
+---
+description: первая строка: с двоеточием
+  и продолжением без своего двоеточия
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: ':' в первой строке записи с продолжением — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с двоеточием в первой строке многострочной записи" "$fm_out" "multiline-colon-first-line.md"
+rm -f "$FM/commands/multiline-colon-first-line.md"
+
+# Двоеточие на САМОМ КОНЦЕ первой строки записи (не ": " с текстом после) —
+# тот же риск, что multiline-colon-first-line.md: ровно сценарий переноса
+# description work.md/autopilot.md сразу после двоеточия (issue #201, ADR-022).
+cat > "$FM/commands/multiline-colon-first-line-trailing.md" <<'EOF'
+---
+description: Взять задачу (issue) в работу:
+  ветка → тесты → код → гейты → PR → ревью
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: висящее ':' на конце первой строки записи с продолжением — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с висящим ':' в первой строке многострочной записи" "$fm_out" "multiline-colon-first-line-trailing.md"
+rm -f "$FM/commands/multiline-colon-first-line-trailing.md"
+
+# Та же форма (двоеточие на самом конце значения), но БЕЗ строки-продолжения
+# вообще — fallback не квотирует голое ":" на конце (регэксп триггера — это
+# ": ", а не голое ":"), поэтому строгий парсер теряет весь блок даже у
+# однострочной записи (issue #201, ADR-022).
+cat > "$FM/commands/single-line-trailing-colon.md" <<'EOF'
+---
+description: Взять задачу (issue) в работу:
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: висящее ':' на конце однострочной записи без продолжения — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с висящим ':' в однострочной записи" "$fm_out" "single-line-trailing-colon.md"
+rm -f "$FM/commands/single-line-trailing-colon.md"
+
+# "key:value" без пробела после ":" — fallback рантайма требует ":\s+" и
+# такую строку не кавотирует, весь фронтматтер теряется.
+cat > "$FM/commands/no-space-after-colon.md" <<'EOF'
+---
+description:нет пробела после двоеточия
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: 'key:value' без пробела — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл без пробела после ':'" "$fm_out" "no-space-after-colon.md"
+rm -f "$FM/commands/no-space-after-colon.md"
+
+# Повторяющийся ключ — ошибка разбора, не предупреждение с перезаписью
+# (круг 8 ревью PR #243: рантайм на дубле ключа теряет весь документ, гейт
+# обязан отказать той же дорогой, не молча брать последнее значение).
+cat > "$FM/commands/duplicate-key.md" <<'EOF'
+---
+description: первое значение
+argument-hint: "[x]"
+description: второе значение
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): повторяющийся ключ — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с повторяющимся ключом" "$fm_out" "duplicate-key.md"
+assert_contains "issue #201 (круг 8): ошибка называет сам повторяющийся ключ" "$fm_out" "'description'"
+rm -f "$FM/commands/duplicate-key.md"
+
+# description в одинарных кавычках, пустое значение ('') — тоже считается
+# пустым, не только двойные кавычки ("").
+cat > "$FM/commands/empty-desc-single-quote.md" <<'EOF'
+---
+description: ''
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201: пустое значение в одинарных кавычках — красный check" 1 $?
+assert_contains "issue #201: ошибка называет файл с пустым одинарно-квотированным description" "$fm_out" "empty-desc-single-quote.md"
+rm -f "$FM/commands/empty-desc-single-quote.md"
+
+# ── Круг 6 ревью PR #243: смена подхода с чёрного списка эвристик на
+# точное моделирование двухфазного алгоритма рантайма (строгий Bun.YAML +
+# построчный fallback по триггеру U_1, ADR-022). Фикстуры ниже — формы,
+# которые круг 5 нашёл не покрытыми прежним чёрным списком: гейт давал
+# exit 0, а рантайм (Bun.YAML, реверс-инжиниринг бинаря 2.1.114) терял
+# весь фронтматтер либо обрезал обязательный ключ. ──────────────────────
+
+# Кавыченное значение, за которым следует ещё текст на той же строке —
+# fallback пропускает значения, которые уже начинаются и кончаются
+# кавычкой (не трогает их повторным кавотированием), а сам текст после
+# закрывающей кавычки строгий парсер не разбирает (ADR-022).
+cat > "$FM/commands/quoted-trailing-text.md" <<'EOF'
+---
+description: "/work" для одной задачи
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): кавыченное значение с хвостом после закрывающей кавычки — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с хвостом после кавычки" "$fm_out" "quoted-trailing-text.md"
+rm -f "$FM/commands/quoted-trailing-text.md"
+
+# Два кавыченных фрагмента на одной строке — тоже "начинается и кончается
+# кавычкой" с точки зрения fallback, тоже не кавотируется повторно, тоже
+# не разбирается строгим парсером целиком.
+cat > "$FM/commands/quoted-two-fragments.md" <<'EOF'
+---
+description: "a" и "b"
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): два кавыченных фрагмента на одной строке — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с двумя фрагментами в кавычках" "$fm_out" "quoted-two-fragments.md"
+rm -f "$FM/commands/quoted-two-fragments.md"
+
+# Кавыченная пара "ключ": "значение" внутри значения — тот же класс.
+cat > "$FM/commands/quoted-colon-pair.md" <<'EOF'
+---
+description: "a": "b"
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): кавыченная пара 'ключ': 'значение' внутри значения — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с кавыченной парой" "$fm_out" "quoted-colon-pair.md"
+rm -f "$FM/commands/quoted-colon-pair.md"
+
+# Незакрытая кавычка — fallback её тоже не трогает (нет U_1-триггера),
+# строгий парсер не находит закрывающую кавычку нигде.
+cat > "$FM/commands/unterminated-quote.md" <<'EOF'
+---
+description: "незакрытая кавычка
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): незакрытая кавычка в значении — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с незакрытой кавычкой" "$fm_out" "unterminated-quote.md"
+rm -f "$FM/commands/unterminated-quote.md"
+
+# Значение начинается с "- " — индикатор блочной последовательности YAML,
+# запрещённый в начале plain-скаляра; U_1 этот символ не ловит, fallback
+# никогда не спасает такую форму.
+cat > "$FM/commands/dash-value.md" <<'EOF'
+---
+description: - foo
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): значение начинается с '- ' — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл со значением '- '" "$fm_out" "dash-value.md"
+rm -f "$FM/commands/dash-value.md"
+
+# Пробел перед ":" в ключе — fallback-регэксп рантайма `^key:` такую
+# строку не распознаёт как "ключ: значение" вообще, гейт тоже не должен.
+cat > "$FM/commands/space-before-colon.md" <<'EOF'
+---
+description : foo: bar
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): пробел перед ':' в ключе — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с пробелом перед ':'" "$fm_out" "space-before-colon.md"
+rm -f "$FM/commands/space-before-colon.md"
+
+# NBSP сразу после ":" — гейт требует буквальный ASCII-пробел/таб как
+# разделитель "ключ: значение" безусловно (белый список доказуемо
+# безопасных форм, не предсказание того, что сделает конкретная версия
+# рантайма с конкретным символом-разделителем — ADR-022).
+printf -- '---\ndescription:\xc2\xa0foo\nargument-hint: "[x]"\n---\nтело\n' > "$FM/commands/nbsp-after-colon.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): NBSP вместо ASCII-пробела после ':' — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с NBSP после ':'" "$fm_out" "nbsp-after-colon.md"
+rm -f "$FM/commands/nbsp-after-colon.md"
+
+# "#" в первой строке многострочной записи — тот же класс, что двоеточие
+# в круге 3/4: fallback кавотирует первую строку саму по себе (триггер —
+# один из спецсимволов U_1, не только ": "), но продолжение снизу всё
+# равно ломает разбор законченного кавыченного скаляра.
+cat > "$FM/commands/hash-in-first-line.md" <<'EOF'
+---
+description: гейт #201 для
+  фронтматтера
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): '#' в первой строке многострочной записи — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с '#' в первой строке" "$fm_out" "hash-in-first-line.md"
+rm -f "$FM/commands/hash-in-first-line.md"
+
+# "#" во ВТОРОЙ (не первой) строке многострочной записи — тот же класс,
+# показывает, что проверка не завязана именно на первую строку.
+cat > "$FM/commands/hash-in-middle-line.md" <<'EOF'
+---
+description: гейт для
+  фронтматтера #201 и
+  ещё строка
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): '#' в средней строке многострочной записи — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с '#' в средней строке" "$fm_out" "hash-in-middle-line.md"
+rm -f "$FM/commands/hash-in-middle-line.md"
+
+# Таб как отступ строки-продолжения — U_1 табы не ловит, но строгий
+# парсер плоскую строку с табом как структурный отступ не разбирает так
+# же, как пробельный, fallback её тоже не спасает (ADR-022).
+printf -- '---\ndescription: первая строка\n\tпродолжение с табом\nargument-hint: "[x]"\n---\nтело\n' > "$FM/commands/tab-in-continuation.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): таб как отступ строки-продолжения — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с табом в продолжении" "$fm_out" "tab-in-continuation.md"
+rm -f "$FM/commands/tab-in-continuation.md"
+
+# "---" внутри значения (не на отдельной строке) — ленивая граница
+# рантайма (phH) обрезает фронтматтер посреди строки, argument-hint
+# остаётся вообще вне извлечённого текста и теряется молча для рантайма.
+# Круг 7 ревью PR #243 ужесточил саму границу гейта: первое вхождение
+# "---" обязано быть отдельной строкой, иначе отказ на этапе извлечения
+# (а не только когда обрезка заодно роняет следующий обязательный ключ).
+cat > "$FM/commands/embedded-triple-dash.md" <<'EOF'
+---
+description: до --- после
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 6): '---' внутри значения обрезает фронтматтер — красный check" 1 $?
+assert_contains "issue #201 (круг 6): ошибка называет файл с '---' внутри значения" "$fm_out" "embedded-triple-dash.md"
+assert_contains "issue #201 (круг 7): ошибка называет причиной границу ---, а не отсутствующий ключ" "$fm_out" "не на отдельной строке"
+rm -f "$FM/commands/embedded-triple-dash.md"
+
+# Негативные фикстуры: формы, которые ДОЛЖНЫ проходить молча — легальный
+# YAML null (ключ без значения на своей строке) с продолжением снизу, и
+# "a:b" без пробела внутри продолжения (U_1 требует именно ": ", "a:b" не
+# триггерит кавотирование и не ломает разбор, круг 5, "важно").
+cat > "$FM/commands/null-then-continuation.md" <<'EOF'
+---
+description:
+  непустой текст продолжения
+argument-hint: "[x]"
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201 (круг 6): легальный YAML null с продолжением снизу — зелёный check" 0 $?
+rm -f "$FM/commands/null-then-continuation.md"
+
+cat > "$FM/commands/colon-no-space-ok.md" <<'EOF'
+---
+description: первая строка
+  a:b внутри продолжения не триггерит
+argument-hint: "[x]"
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201 (круг 6): 'a:b' без пробела внутри продолжения — зелёный check" 0 $?
+rm -f "$FM/commands/colon-no-space-ok.md"
+
+# ── Круг 7 ревью PR #243: переход с эмуляции алгоритма рантайма на белый
+# список доказуемо безопасных форм (ADR-022). Независимая проверка круга 6
+# (реверс-инжиниринг того же бинаря 2.1.114 плюс Bun 1.3.13 плюс
+# дифференциальный фаззинг) показала: эмуляция строгой фазы на предикатах
+# была неверной моделью — часть символов U_1 (#, [, {, &, !, |, >) не
+# бросают исключение строгого YAML-парсера, а молча превращают значение в
+# null/массив/обрезанную строку, из-за чего fallback вообще не
+# запускается, а гейт круга 6 всё равно считал такие значения спасёнными.
+# Фикстуры ниже — формы, на которых это разошлось. ───────────────────────
+
+# "#" где угодно в значении — комментарий YAML, строгий парсер его просто
+# обрезает без ошибки (fallback не запускается), значение теряется молча.
+cat > "$FM/commands/hash-anywhere-single-line.md" <<'EOF'
+---
+description: #201 — гейт фронтматтера
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): '#' в однострочном значении — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с '#' в однострочном значении" "$fm_out" "hash-anywhere-single-line.md"
+rm -f "$FM/commands/hash-anywhere-single-line.md"
+
+# "[...]" — валидный YAML-массив, строгий парсер успешно его разбирает
+# (не строка), обязательный ключ лишается текстового значения без ошибки.
+cat > "$FM/commands/array-value.md" <<'EOF'
+---
+description: [черновик]
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение-массив '[...]' — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением-массивом" "$fm_out" "array-value.md"
+rm -f "$FM/commands/array-value.md"
+
+# YAML null-литерал как значение — строгий парсер отдаёт None, не строку.
+cat > "$FM/commands/null-literal.md" <<'EOF'
+---
+description: ~
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение '~' (YAML null) — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением null" "$fm_out" "null-literal.md"
+rm -f "$FM/commands/null-literal.md"
+
+# "? " в начале значения — явный индикатор YAML-ключа, зарезервирован.
+cat > "$FM/commands/question-value.md" <<'EOF'
+---
+description: ? foo
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение начинается с '? ' — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением '? '" "$fm_out" "question-value.md"
+rm -f "$FM/commands/question-value.md"
+
+# Запятая в начале значения — индикатор flow-последовательности YAML.
+cat > "$FM/commands/comma-leading.md" <<'EOF'
+---
+description: , начинается с запятой
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение начинается с запятой — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением на запятую" "$fm_out" "comma-leading.md"
+rm -f "$FM/commands/comma-leading.md"
+
+# Скаляр фактически начинается на строке-продолжении (первая строка —
+# легальный YAML null), а не на первой строке записи — проверки "первого
+# символа" должны смотреть и туда тоже.
+cat > "$FM/commands/quoted-on-continuation.md" <<'EOF'
+---
+description:
+  "/work" для одной задачи
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): кавыченное значение начинается со строки-продолжения — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл" "$fm_out" "quoted-on-continuation.md"
+rm -f "$FM/commands/quoted-on-continuation.md"
+
+cat > "$FM/commands/dash-on-continuation.md" <<'EOF'
+---
+description:
+  - foo
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): '- foo' на строке-продолжении при пустой первой строке — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с '- foo' на продолжении" "$fm_out" "dash-on-continuation.md"
+rm -f "$FM/commands/dash-on-continuation.md"
+
+# Невалидная escape-последовательность в двойных кавычках — "уже
+# кавыченное" значение гейт не трогает, но внутренний "\d" не валиден для
+# YAML-экранирования; все argument-hint кита в двойных кавычках, так что
+# обратный слеш внутри подсказки реалистичен.
+cat > "$FM/commands/bad-escape-hint.md" <<'EOF'
+---
+description: нормальное описание
+argument-hint: "<\d+>"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): обратный слеш внутри кавыченного значения — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с обратным слешем в кавычках" "$fm_out" "bad-escape-hint.md"
+rm -f "$FM/commands/bad-escape-hint.md"
+
+# Висящее ":" в строке-продолжении — регресс круга 2/3, повторно
+# открытый промежуточным упрощением круга 6 (коммит "Убрать избыточный
+# флаг doc_broken"): кавотирование продолжений не входит в настоящий
+# построчный fallback рантайма (регэксп d_1 матчит только колонку 0).
+# Белый список круга 7 проверяет висящее ":" по каждой строке записи
+# независимо от позиции, без кавотирования.
+cat > "$FM/commands/trailing-colon-continuation.md" <<'EOF'
+---
+description: Взять задачу (issue) в работу
+  ветка тесты код:
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): висящее ':' в строке-продолжении без пробела после — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с висящим ':' в продолжении" "$fm_out" "trailing-colon-continuation.md"
+rm -f "$FM/commands/trailing-colon-continuation.md"
+
+# Та же форма, но с явным хвостовым пробелом после ":" (printf, не
+# heredoc — нужен гарантированный байт, не вычитанный редактором).
+printf -- '---\ndescription: Взять задачу (issue) в работу\n  ветка тесты код: \nargument-hint: "[x]"\n---\nтело\n' > "$FM/commands/trailing-colon-space-continuation.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): висящее ':' с хвостовым пробелом в продолжении — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с висящим ':' в продолжении (с пробелом)" "$fm_out" "trailing-colon-space-continuation.md"
+rm -f "$FM/commands/trailing-colon-space-continuation.md"
+
+# Кавыченное значение плюс строка-продолжение — всегда отказ: закрытый
+# кавыченный скаляр не может принять что-то снизу (круг 7 ревью PR #243,
+# "важно": мутация снятия этой проверки не ловилась ни одной фикстурой).
+cat > "$FM/commands/quoted-value-plus-continuation.md" <<'EOF'
+---
+description: "foo"
+  bar
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): кавыченное значение со строкой-продолжением снизу — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл" "$fm_out" "quoted-value-plus-continuation.md"
+rm -f "$FM/commands/quoted-value-plus-continuation.md"
+
+# Bool-литерал YAML как значение — строгий парсер отдаёт true/false, не
+# строку (круг 7 ревью PR #243, "важно": не было фикстуры).
+cat > "$FM/commands/bool-literal.md" <<'EOF'
+---
+description: true
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): значение 'true' (YAML bool) — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл со значением true" "$fm_out" "bool-literal.md"
+rm -f "$FM/commands/bool-literal.md"
+
+# Символ U_1 (не в начале) в середине однострочного значения — не только
+# первый символ проверяется (круг 7 ревью PR #243, "важно").
+cat > "$FM/commands/ampersand-mid-value.md" <<'EOF'
+---
+description: один & другой
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 7): '&' в середине однострочного значения — красный check" 1 $?
+assert_contains "issue #201 (круг 7): ошибка называет файл с '&' в середине значения" "$fm_out" "ampersand-mid-value.md"
+rm -f "$FM/commands/ampersand-mid-value.md"
+
+# Негативная: обычная кавыченная подсказка со скобками/точкой с запятой
+# внутри должна проходить молча.
+cat > "$FM/commands/ok-quoted-hint-punctuation.md" <<'EOF'
+---
+description: обычное описание
+argument-hint: "[номер issue; по умолчанию следующий]"
+---
+тело
+EOF
+"$HOOKS/frontmatter-check.sh" "$FM" >/dev/null 2>&1
+assert_exit "issue #201 (круг 7): кавыченная подсказка с ';' и скобками внутри — зелёный check" 0 $?
+rm -f "$FM/commands/ok-quoted-hint-punctuation.md"
+
+# ── Круг 8 ревью PR #243: независимая проверка круга 7 (повторный
+# реверс-инжиниринг того же бинаря 2.1.114 плюс Bun 1.3.13 плюс
+# расширенный дифференциальный фаззинг) нашла четыре оставшихся класса,
+# на которых белый список круга 7 давал exit 0, а рантайм терял или
+# искажал обязательный ключ. Фикстуры ниже — каждый класс. ─────────────
+
+# "..." где угодно в значении — Bun.YAML 1.3.13 трактует его как маркер
+# конца документа даже внутри значения ключа (не по спецификации YAML,
+# но это поведение конкретного рантайма): строгий разбор отдаёт массив
+# из нескольких "документов" вместо объекта, фронтматтер молча пустеет.
+cat > "$FM/commands/ellipsis-in-value.md" <<'EOF'
+---
+description: Показать сводку прогонов, и т.д...
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): '...' в однострочном значении — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с '...' в значении" "$fm_out" "ellipsis-in-value.md"
+rm -f "$FM/commands/ellipsis-in-value.md"
+
+# "---" внутри значения ПОСЛЕДНЕГО ключа записи — ленивая граница находит
+# это вхождение как закрывающую и обрезает значение посреди текста,
+# гейт должен отказать, а не молча принять уже обрезанное значение.
+cat > "$FM/commands/embedded-dash-last-key.md" <<'EOF'
+---
+argument-hint: "[x]"
+description: Гейт --- проверка фронтматтера
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): '---' внутри значения последнего ключа — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с '---' в значении последнего ключа" "$fm_out" "embedded-dash-last-key.md"
+rm -f "$FM/commands/embedded-dash-last-key.md"
+
+# Значение — YAML-число (float/hex/exp/octal/inf) — строгий парсер
+# типизирует его как number, не строку; обязательный ключ рантайм
+# получает не текстом, а числом/Infinity.
+cat > "$FM/commands/numeric-float.md" <<'EOF'
+---
+description: 1.0
+argument-hint: "[x]"
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): значение — YAML-число — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл со значением-числом" "$fm_out" "numeric-float.md"
+rm -f "$FM/commands/numeric-float.md"
+
+# Агент: model/tools как YAML-число — рантайм молча игнорирует (ждёт
+# строку) или подставляет пустой массив.
+cat > "$FM/agents/numeric-agent.md" <<'EOF'
+---
+name: demo
+description: демо агент
+model: 4
+tools: Read
+---
+тело
+EOF
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): значение model — YAML-число у агента — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с числовым model" "$fm_out" "numeric-agent.md"
+rm -f "$FM/agents/numeric-agent.md"
+
+# CRLF — построчные регэкспы рантайма (JS, "." не матчит "\r") ведут себя
+# иначе, чем python3 с универсальными переводами строк; при CRLF теряется
+# однострочное значение с ": " (ровно description work.md/autopilot.md).
+# Этот конкретный файл ловится несовпадением "---\r" со строкой "---" на
+# границе фронтматтера — без отдельной проверки CRLF/U+2028 по всему
+# файлу, убранной в круге 10 как избыточная (см. ADR-022).
+printf -- '---\r\ndescription: \xd0\x92\xd0\xb7\xd1\x8f\xd1\x82\xd1\x8c \xd0\xb7\xd0\xb0\xd0\xb4\xd0\xb0\xd1\x87\xd1\x83: \xd0\xb2 \xd1\x80\xd0\xb0\xd0\xb1\xd0\xbe\xd1\x82\xd1\x83\r\nargument-hint: "[x]"\r\n---\r\nтело\r\n' > "$FM/commands/crlf-colon-space.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): CRLF-файл с ': ' в значении — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с CRLF" "$fm_out" "crlf-colon-space.md"
+rm -f "$FM/commands/crlf-colon-space.md"
+
+# ── Круг 8 ревью PR #243: независимый фаззинг (216 000 случайных
+# документов) нашёл три оставшихся класса, на которых белый список
+# круга 7/8 давал exit 0, а рантайм терял или искажал обязательный ключ.
+# Фикстуры ниже — каждый класс (дубль ключа — регресс выше). ───────────
+
+# NBSP (U+00A0) внутри значения строки-продолжения, не рядом с ":" —
+# str.strip()/.isspace() видит его пробелом и молча пропускает мимо всех
+# существующих проверок scalar_safe, но это не обычный ASCII-пробел и не
+# перевод строки; безопасность формы не доказана, отказ на уровне всего
+# блока фронтматтера безусловно.
+printf -- '---\ndescription: первая строка\n  продолжение с\xc2\xa0переносом\nargument-hint: "[x]"\n---\nтело\n' > "$FM/commands/nbsp-inside-value.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): NBSP внутри значения строки-продолжения — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с NBSP внутри значения" "$fm_out" "nbsp-inside-value.md"
+rm -f "$FM/commands/nbsp-inside-value.md"
+
+# Хвостовой пробел после закавыченного значения (как в commands/work.md,
+# но с одним добавленным пробелом после закрывающей кавычки) — v =
+# value_remainder.strip() стирает этот хвост до вызова quoted_safe(), и
+# форма выглядит "чистой" кавыченной строкой, хотя сам value_remainder
+# его несёт; безопасность такого хвоста не доказана, отказ безусловно.
+printf -- '---\ndescription: Взять задачу (issue) в работу: ветка \xe2\x86\x92 тесты \xe2\x86\x92 код \xe2\x86\x92 гейты \xe2\x86\x92 PR \xe2\x86\x92 ревью\nargument-hint: "[номер issue; по умолчанию следующий незаблокированный из текущего milestone]" \n---\nтело\n' > "$FM/commands/quoted-trailing-space.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 8): хвостовой пробел после закавыченного значения — красный check" 1 $?
+assert_contains "issue #201 (круг 8): ошибка называет файл с хвостовым пробелом после кавычки" "$fm_out" "quoted-trailing-space.md"
+rm -f "$FM/commands/quoted-trailing-space.md"
+
+# ── scripts/check кита реально зовёт frontmatter-check.sh, не только сам
+# скрипт по отдельности — изолированная копия по образцу фикстуры issue #24
+# ($KCHK), но с НАСТОЯЩИМ frontmatter-check.sh и сломанным commands/*.md ────
+FMWIRE="$TMP/frontmatter-wired"
+rm -rf "$FMWIRE"
+mkdir -p "$FMWIRE/.claude-plugin" "$FMWIRE/hooks/scripts" "$FMWIRE/scripts" "$FMWIRE/tests" "$FMWIRE/bin" "$FMWIRE/commands"
+echo '{}' > "$FMWIRE/.claude-plugin/plugin.json"
+echo '{}' > "$FMWIRE/.claude-plugin/marketplace.json"
+echo '{}' > "$FMWIRE/hooks/hooks.json"
+cp "$KIT/scripts/check" "$FMWIRE/scripts/check"
+cp "$HOOKS/frontmatter-check.sh" "$FMWIRE/hooks/scripts/frontmatter-check.sh"
+chmod +x "$FMWIRE/scripts/check" "$FMWIRE/hooks/scripts/frontmatter-check.sh"
+cat > "$FMWIRE/hooks/scripts/ac-check.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FMWIRE/hooks/scripts/ac-check.sh"
+cat > "$FMWIRE/tests/run.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$FMWIRE/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FMWIRE/bin/claude"
+# ровно класс бага PR #199 (строка-продолжение потеряла отступ)
+cat > "$FMWIRE/commands/stats.md" <<'EOF'
+---
+description: первая строка описания
+на колонке 0 вместо отступа
+argument-hint: "[без аргументов]"
+---
+тело
+EOF
+
+fmwire_out=$(cd "$FMWIRE" && PATH="$FMWIRE/bin:$PATH" ./scripts/check some/file.ts 2>&1)
+fmwire_st=$?
+assert_exit "issue #201: scripts/check <файл> красный на сломанном фронтматтере (частичный прогон)" 1 "$fmwire_st"
+assert_contains "issue #201: scripts/check <файл> называет файл со сломанным фронтматтером" "$fmwire_out" "stats.md"
+
+fmwire_out=$(cd "$FMWIRE" && PATH="$FMWIRE/bin:$PATH" ./scripts/check 2>&1)
+fmwire_st=$?
+assert_exit "issue #201: scripts/check без аргументов красный на сломанном фронтматтере (полный прогон)" 1 "$fmwire_st"
+assert_contains "issue #201: scripts/check без аргументов называет файл со сломанным фронтматтером" "$fmwire_out" "stats.md"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
