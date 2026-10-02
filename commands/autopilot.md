@@ -115,9 +115,10 @@ true`.
        вызовом `gh pr view <PR> --json mergeable,headRefName`
        (`CONFLICTING` — конфликт с main, как в каноне; `UNKNOWN` —
        повтори запрос); отставание — `git fetch origin && git rev-list
-       --count origin/<ветка PR>..origin/main` (счётчик больше нуля
+       --count origin/<ветка PR>..origin/<default>` (счётчик больше нуля
        значит BEHIND, ветка отстала), `<ветка PR>` — то же поле
-       `headRefName`;
+       `headRefName`, `<default>` — default branch репозитория,
+       определение — в нотации `/work`;
      - **checkout**: актуализируй отставшую ветку PR только в явном
        `gh pr checkout <PR>`;
      - **push**: refspec обязателен (`git push --force-with-lease origin

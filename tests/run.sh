@@ -1119,8 +1119,8 @@ assert_contains "AC-8: autopilot.md перед merge проверяет CONFLICT
 # work.md шаг 6); в автопилоте — явный checkout и refspec; fetch без
 # «origin main» (текст в одной команде с force-push ложно триггерит гейт
 # bash-guard); отказы актуализации определены.
-assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_step6" 'git rev-list --count HEAD\.\.origin/main'
-assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$autopilot_step3" 'git rev-list --count origin/<ветка PR>\.\.origin/main'
+assert_contains "AC-8: work.md — отставание фактом из git (rev-list), не mergeStateStatus" "$work_step6" 'git rev-list --count HEAD\.\.origin/<default>'
+assert_contains "AC-8: autopilot.md — отставание фактом из git (rev-list), не mergeStateStatus" "$autopilot_step3" 'git rev-list --count origin/<ветка PR>\.\.origin/<default>'
 assert_contains "AC-8: autopilot.md — актуализация только в явном checkout ветки PR" "$autopilot_step3" 'gh pr checkout <PR>'
 assert_contains "AC-8: autopilot.md — push после rebase с обязательным refspec" "$autopilot_step3" 'force-with-lease origin <ветка PR>'
 assert_not_contains "AC-8: work.md — fetch без «origin main» (ложный триггер force-push-гейта)" "$work_step6" 'git fetch origin main'
@@ -1138,11 +1138,11 @@ assert_contains "AC-8: autopilot.md — красные гейты после а�
 # переписанную голову PR раньше, чем стало известно, что она красная.
 assert_contains "AC-8: work.md — красные гейты после актуализации ведут к остановке, симметрично autopilot.md (issue #80)" "$work_step6" 'тот же исход, что и конфликт: остановись и позови пользователя'
 assert_contains "AC-8: work.md — порядок «гейты → push»: гейты перегоняются локально до публикации (issue #80)" "$work_step6" 'Порядок «гейты → push»'
-assert_not_contains "AC-8: work.md — старый порядок «push сразу после rebase, гейты потом» не возвращается (issue #80)" "$work_step6" 'rebase origin/main`), затем `git push'
-assert_not_contains "AC-8: work.md — старый порядок не возвращается и для merge-ветки (issue #80, круг 1)" "$work_step6" 'merge origin/main`), затем `git push origin'
+assert_not_contains "AC-8: work.md — старый порядок «push сразу после rebase, гейты потом» не возвращается (issue #80)" "$work_step6" 'rebase origin/<default>`), затем `git push'
+assert_not_contains "AC-8: work.md — старый порядок не возвращается и для merge-ветки (issue #80, круг 1)" "$work_step6" 'merge origin/<default>`), затем `git push origin'
 assert_contains "AC-8: work.md читает conventions.branchUpdate с дефолтом rebase" "$work_step6" 'conventions\.branchUpdate rebase'
 check_ac_doc AC-8 "work.md: при branchUpdate=merge актуализация через git merge, не rebase" \
-  "$KIT/commands/work.md" "merge\` — влей main в ветку (\`git merge origin/main\`)"
+  "$KIT/commands/work.md" "merge\` — влей \`<default>\` в ветку (\`git merge origin/<default>\`)"
 # Канон живёт в одном месте: work.md называет себя каноном, autopilot.md и
 # review.md ссылаются на него, а не переписывают чтение конфига заново
 check_ac_doc AC-8 "work.md: шаг 6 объявлен каноническим рецептом актуализации" \
@@ -1193,7 +1193,7 @@ check_ac_doc "issue #119" "README.md: merge-описание /autopilot огов
 # fast-follow из вердикта PR #67)
 review_ready=$(md_section "$KIT/commands/review.md" '^5\. \*\*' '^6\. \*\*')
 assert_contains "AC-8: review.md ссылается на канонический рецепт шага 6 /work" "$review_ready" 'каноническому рецепту шага 6'
-assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/main'
+assert_contains "AC-8: review.md перед ready определяет отставание фактом из git" "$review_ready" 'git rev-list --count HEAD\.\.origin/<default>'
 assert_contains "AC-8: review.md — актуализация по conventions.branchUpdate" "$review_ready" 'conventions\.branchUpdate'
 assert_contains "AC-8: review.md — ready без перегона гейтов после актуализации запрещён" "$review_ready" 'переводить в ready без него запрещено'
 assert_contains "AC-8: review.md — конфликт ведёт к остановке, решает человек" "$review_ready" 'остановись, его разрешает человек'
@@ -1349,7 +1349,7 @@ work_step6=$(md_section "$WORKMD" '^6\. \*\*' '^7\. \*\*')
 assert_contains "issue #159: work.md шаг 6 — ready при REQUEST_CHANGES трактуется как нарушенный инвариант и возвращается в draft (круги 2 и 4 ревью PR #169)" "$work_step6" 'нарушенный инвариант'
 assert_contains "issue #159: work.md шаг 2 актуализирует найденную ветку по рецепту шага 6" "$work_step2" 'рецепту шага 6'
 assert_not_contains "issue #159: work.md шаг 2 не пересказывает сам рецепт актуализации (ссылка на шаг 6, не дублирование)" "$work_step2" 'force-with-lease'
-assert_not_contains "issue #159: work.md шаг 2 не пересказывает команду rebase из рецепта шага 6" "$work_step2" 'rebase origin/main'
+assert_not_contains "issue #159: work.md шаг 2 не пересказывает команду rebase из рецепта шага 6" "$work_step2" 'rebase origin/<default>'
 assert_contains "issue #159: work.md шаг 2 не трогает незакоммиченные изменения найденной ветки" "$work_step2" 'Не трогай незакоммиченные изменения'
 assert_contains "issue #159: work.md шаг 2 не переписывает WIP-коммиты найденной ветки" "$work_step2" 'не переписывай WIP-коммиты'
 assert_contains "issue #159: work.md шаг 2 на грязном дереве откладывает актуализацию вместо форсированного rebase (круг 1 ревью PR #169, блокер)" "$work_step2" 'рецепт шага 6 (rebase от main) неприменим'
@@ -8540,8 +8540,8 @@ check_ac_doc "issue #218" "work.md шаг 1 называет литеральн�
   "$WORKMD" 'Спека: docs/specs/NNN-<слаг>.md'
 assert_contains "issue #218: work.md шаг 1 проверяет файл спеки в main через git cat-file -e origin/main" \
   "$work_type_step1" 'git cat-file -e'
-assert_contains "issue #218: work.md шаг 1 проверяет именно origin/main, не локальный main" \
-  "$work_type_step1" 'origin/main:docs/specs/NNN-<слаг>\.md'
+assert_contains "issue #218: work.md шаг 1 проверяет именно origin/<default> (удалённую ветку), не локальный main" \
+  "$work_type_step1" 'origin/<default>:docs/specs/NNN-<слаг>\.md'
 check_ac_doc "issue #218" "work.md шаг 1 трактует отсутствующий файл спеки авто-выбора той же категорией, что незакрытая Blocked by #N" \
   "$WORKMD" "то же правило, что для незакрытой «Blocked by #N»"
 assert_contains "issue #218: work.md шаг 1 — при авто-выборе такой issue пропускается, не берётся" \
@@ -9440,6 +9440,49 @@ fmwire_out=$(cd "$FMWIRE" && PATH="$FMWIRE/bin:$PATH" ./scripts/check 2>&1)
 fmwire_st=$?
 assert_exit "issue #201: scripts/check без аргументов красный на сломанном фронтматтере (полный прогон)" 1 "$fmwire_st"
 assert_contains "issue #201: scripts/check без аргументов называет файл со сломанным фронтматтером" "$fmwire_out" "stats.md"
+
+# ── Default branch в текстах команд (issue #249): оркестратор-LLM исполняет
+# commands/*.md дословно, поэтому буквальный `origin/main` там сверял бы
+# работу не с той веткой на репозитории с default branch, отличным от
+# `main` (в adk-ralph.sh это уже `$default_branch`, ADR-007 §6). Нотация
+# `<default>` определена один раз в work.md, остальные команды ссылаются ──
+for cmd_name in work review plan autopilot; do
+  assert_not_contains "issue #249: $cmd_name.md не содержит буквального origin/main (default branch — через <default>)" \
+    "$(doc_text "$KIT/commands/$cmd_name.md")" 'origin/main'
+done
+assert_contains "issue #249: work.md шаг 1 сверяет спеку с origin/<default>" \
+  "$work_type_step1" 'origin/<default>:docs/specs/NNN-<слаг>'
+assert_contains "issue #249: work.md шаг 6 считает отставание от origin/<default>" \
+  "$work_step6" 'HEAD\.\.origin/<default>'
+assert_contains "issue #249: work.md шаг 6 — rebase на origin/<default>" \
+  "$work_step6" 'git rebase origin/<default>'
+assert_contains "issue #249: work.md шаг 6 — merge origin/<default>" \
+  "$work_step6" 'git merge origin/<default>'
+assert_contains "issue #249: review.md перед ready считает отставание от origin/<default>" \
+  "$review_ready" 'HEAD\.\.origin/<default>'
+assert_contains "issue #249: autopilot.md перед merge считает отставание от origin/<default>" \
+  "$autopilot_step3" 'origin/<ветка PR>\.\.origin/<default>'
+assert_contains "issue #249: plan.md шаг 5 считает отставание ветки спеки от origin/<default>" \
+  "$plan_landing" 'HEAD\.\.origin/<default>'
+
+work_default_notation=$(md_section "$WORKMD" '^Нотация ниже' '^1\. \*\*')
+assert_contains "issue #249: work.md вводит нотацию <default> рядом с <N> и <PR>" \
+  "$work_default_notation" '`<default>` — default branch'
+assert_contains "issue #249: work.md определяет <default> через origin/HEAD" \
+  "$work_default_notation" 'git symbolic-ref --short refs/remotes/origin/HEAD'
+assert_contains "issue #249: work.md — запасной путь определения <default> через gh repo view" \
+  "$work_default_notation" 'gh repo view --json defaultBranchRef -q \.defaultBranchRef\.name'
+assert_contains "issue #249: work.md — последний запасной вариант <default> — main (поведение для main не меняется)" \
+  "$work_default_notation" 'не удалось — `main`'
+assert_contains "issue #249: work.md — origin/HEAD печатает префикс origin/, его срезают" \
+  "$work_default_notation" 'отрежь префикс `origin/`'
+default_recipe_copies=$(for f in "$KIT"/commands/*.md; do [ "$f" = "$WORKMD" ] || doc_text "$f"; done | grep -c 'refs/remotes/origin/HEAD\|defaultBranchRef')
+assert_exit "issue #249: рецепт определения default branch живёт только в work.md — в остальных командах его копий нет" \
+  0 "$default_recipe_copies"
+for cmd_name in review plan autopilot; do
+  assert_contains "issue #249: $cmd_name.md отсылает за определением <default> к нотации /work" \
+    "$(doc_text "$KIT/commands/$cmd_name.md")" 'определение — в нотации `/work`'
+done
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"

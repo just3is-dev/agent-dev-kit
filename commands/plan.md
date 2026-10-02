@@ -108,7 +108,8 @@ argument-hint: "[номер или путь спеки; по умолчанию 
      docs/specs/NNN-<слаг>.md && git commit -m "..."`, `git push origin
      spec/NNN-<слаг>`). При отставании от main — актуализируй тем же
      рецептом, что шаг 6 `/work` (`git fetch origin && git rev-list
-     --count HEAD..origin/main`; при отставании — способ из
+     --count HEAD..origin/<default>`, где `<default>` — default branch
+     репозитория, определение — в нотации `/work`; при отставании — способ из
      `conventions.branchUpdate`, затем зелёные `./scripts/check` и
      `./scripts/test` и только потом `git push --force-with-lease`).
      Дальше переведи PR спеки в ready (`gh pr ready <PR>`) и попробуй
