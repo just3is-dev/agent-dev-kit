@@ -8858,8 +8858,9 @@ assert_exit "issue #201: 'key:value' без пробела — красный ch
 assert_contains "issue #201: ошибка называет файл без пробела после ':'" "$fm_out" "no-space-after-colon.md"
 rm -f "$FM/commands/no-space-after-colon.md"
 
-# Повторяющийся ключ — предупреждение в stderr, не ошибка (гейт остаётся
-# зелёным, но не молчит).
+# Повторяющийся ключ — ошибка разбора, не предупреждение с перезаписью
+# (круг 9 ревью PR #243: рантайм на дубле ключа теряет весь документ, гейт
+# обязан отказать той же дорогой, не молча брать последнее значение).
 cat > "$FM/commands/duplicate-key.md" <<'EOF'
 ---
 description: первое значение
@@ -8869,9 +8870,9 @@ description: второе значение
 тело
 EOF
 fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
-assert_exit "issue #201: повторяющийся ключ — check остаётся зелёным" 0 $?
-assert_contains "issue #201: повторяющийся ключ — предупреждение называет файл" "$fm_out" "duplicate-key.md"
-assert_contains "issue #201: повторяющийся ключ — предупреждение называет сам ключ" "$fm_out" "'description'"
+assert_exit "issue #201 (круг 9): повторяющийся ключ — красный check" 1 $?
+assert_contains "issue #201 (круг 9): ошибка называет файл с повторяющимся ключом" "$fm_out" "duplicate-key.md"
+assert_contains "issue #201 (круг 9): ошибка называет сам повторяющийся ключ" "$fm_out" "'description'"
 rm -f "$FM/commands/duplicate-key.md"
 
 # description в одинарных кавычках, пустое значение ('') — тоже считается
@@ -9363,6 +9364,33 @@ fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
 assert_exit "issue #201 (круг 8): CRLF-файл с ': ' в значении — красный check" 1 $?
 assert_contains "issue #201 (круг 8): ошибка называет файл с CRLF" "$fm_out" "crlf-colon-space.md"
 rm -f "$FM/commands/crlf-colon-space.md"
+
+# ── Круг 9 ревью PR #243: независимый фаззинг (216 000 случайных
+# документов) нашёл три оставшихся класса, на которых белый список
+# круга 7/8 давал exit 0, а рантайм терял или искажал обязательный ключ.
+# Фикстуры ниже — каждый класс (дубль ключа — регресс выше). ───────────
+
+# NBSP (U+00A0) внутри значения строки-продолжения, не рядом с ":" —
+# str.strip()/.isspace() видит его пробелом и молча пропускает мимо всех
+# существующих проверок scalar_safe, но это не обычный ASCII-пробел и не
+# перевод строки; безопасность формы не доказана, отказ на уровне всего
+# блока фронтматтера безусловно.
+printf -- '---\ndescription: первая строка\n  продолжение с\xc2\xa0переносом\nargument-hint: "[x]"\n---\nтело\n' > "$FM/commands/nbsp-inside-value.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 9): NBSP внутри значения строки-продолжения — красный check" 1 $?
+assert_contains "issue #201 (круг 9): ошибка называет файл с NBSP внутри значения" "$fm_out" "nbsp-inside-value.md"
+rm -f "$FM/commands/nbsp-inside-value.md"
+
+# Хвостовой пробел после закавыченного значения (как в commands/work.md,
+# но с одним добавленным пробелом после закрывающей кавычки) — v =
+# value_remainder.strip() стирает этот хвост до вызова quoted_safe(), и
+# форма выглядит "чистой" кавыченной строкой, хотя сам value_remainder
+# его несёт; безопасность такого хвоста не доказана, отказ безусловно.
+printf -- '---\ndescription: Взять задачу (issue) в работу: ветка \xe2\x86\x92 тесты \xe2\x86\x92 код \xe2\x86\x92 гейты \xe2\x86\x92 PR \xe2\x86\x92 ревью\nargument-hint: "[номер issue; по умолчанию следующий незаблокированный из текущего milestone]" \n---\nтело\n' > "$FM/commands/quoted-trailing-space.md"
+fm_out=$("$HOOKS/frontmatter-check.sh" "$FM" 2>&1)
+assert_exit "issue #201 (круг 9): хвостовой пробел после закавыченного значения — красный check" 1 $?
+assert_contains "issue #201 (круг 9): ошибка называет файл с хвостовым пробелом после кавычки" "$fm_out" "quoted-trailing-space.md"
+rm -f "$FM/commands/quoted-trailing-space.md"
 
 # ── scripts/check кита реально зовёт frontmatter-check.sh, не только сам
 # скрипт по отдельности — изолированная копия по образцу фикстуры issue #24

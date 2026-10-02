@@ -104,7 +104,15 @@ def extract_frontmatter(text):
     after_ok = after == "" or after[0] == "\n"
     if not (before_ok and after_ok):
         return None, "первое вхождение --- после открывающей строки не на отдельной строке — фронтматтер обрезан посреди значения"
-    return rest[:idx].split("\n"), None
+    fm = rest[:idx]
+    # Нестандартные пробельные/непечатаемые символы (NBSP, U+3000,
+    # вертикальная табуляция и т. п.) внутри блока фронтматтера: str.strip()
+    # и построчное сравнение видят их иначе, чем isspace() — рантайм может
+    # обработать их не так, как обычный пробел/перевод строки. Безопасность
+    # формы не доказана, отказ безусловно (круг 8 ревью PR #243).
+    if any(c != " " and c != "\n" and (c.isspace() or not c.isprintable()) for c in fm):
+        return None, "фронтматтер содержит нестандартный пробельный или непечатаемый символ"
+    return fm.split("\n"), None
 
 
 def quoted_safe(v):
@@ -127,6 +135,11 @@ def quoted_safe(v):
 def scalar_safe(value_remainder, continuation_texts):
     v = value_remainder.strip()
     if v[:1] in QUOTE_CHARS:
+        # Хвостовые пробелы после закавыченного значения: quoted_safe()
+        # получает уже обрезанный v и их не увидит — безопасность формы с
+        # таким хвостом не доказана, отказ безусловно (круг 8 ревью PR #243).
+        if value_remainder != value_remainder.rstrip():
+            return False, None
         if continuation_texts:
             return False, None
         return quoted_safe(v)
@@ -183,12 +196,11 @@ def build_records(fm_lines, kind, errors, warnings):
                 )
                 return None
             if key in index:
-                # Повторяющийся ключ — предупреждение, не ошибка
-                # (осознанное решение, ADR-022).
-                warnings.append("строка %d: повторяющийся ключ %r, предыдущее значение перезаписано" % (lineno, key))
-                record = index[key]
-                record["value"] = value
-                record["continuations"] = []
+                # Повторяющийся ключ — ошибка разбора, не предупреждение с
+                # перезаписью: рантайм на дубле ключа теряет весь документ,
+                # гейт обязан отказать той же дорогой (круг 8 ревью PR #243).
+                errors.append("строка %d: повторяющийся ключ %r" % (lineno, key))
+                return None
             else:
                 record = {"key": key, "value": value, "continuations": []}
                 index[key] = record
