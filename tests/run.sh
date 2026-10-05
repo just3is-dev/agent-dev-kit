@@ -3895,7 +3895,7 @@ assert_exit "AC-1 (issue #158): adk-ralph: owner:human — headless-процес
 assert_not_contains "AC-1 (issue #158): adk-ralph: owner:human — headless-процесс не вызывался с номером #90" \
   "$oh_claude_calls" "issue #90"
 
-# ── Спека вехи ещё не в main (issue #218, ADR-021): очередь из двух issues,
+# ── Спека вехи ещё не в main (issue #218, ADR-024): очередь из двух issues,
 # у первого (#90) тело ссылается на «Спека: docs/specs/900-missing.md» —
 # файла нет в origin/main — ralph пропускает его молча (не берёт в работу,
 # не мержит, не помечает needs-human, не логирует), симметрично owner:human
@@ -8531,7 +8531,7 @@ assert_contains "AC-5: adk-stats: (issue #154) смешанный каталог
 # policies.merge» (issue #218): issues вехи уже созданы (/plan шаг 4), но
 # файл спеки ещё не в main, пока policies.merge=human-review-required|
 # human-only не даёт агенту смержить PR спеки (/plan шаг 5, ADR-009).
-# Решение (вариант б из issue #218, ADR-021): /work не берёт issue вехи,
+# Решение (вариант б из issue #218, ADR-024): /work не берёт issue вехи,
 # пока файла спеки нет в main — тот же класс, что незакрытая
 # «Blocked by #N». Переиспользуем уже нарезанные срезы команд:
 # $work_type_step1 (работа шаг 1), $plan_step4/$plan_landing (план шаги
@@ -8583,10 +8583,10 @@ check_ac_doc "issue #218" "autopilot.md шаг 1 выводит такой issue
 # на фикстурах RALPH_SPEC/RALPH_SPEC_TRUNK/RALPH_SPECFMT ниже — здесь
 # только doc-проверка заголовка (ссылка на issue/ADR в комментарии, не код).
 check_ac_doc "issue #218" "adk-ralph.sh header упоминает issue #218 в описании правила выбора" \
-  "$KIT/hooks/scripts/adk-ralph.sh" "issue #218, ADR-021"
+  "$KIT/hooks/scripts/adk-ralph.sh" "issue #218, ADR-024"
 
-check_ac_doc "issue #218" "ADR-021 описывает spec_missing() в select_next как симметричную owner:human проверку" \
-  "$KIT/docs/adr/021-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"
+check_ac_doc "issue #218" "ADR-024 описывает spec_missing() в select_next как симметричную owner:human проверку" \
+  "$KIT/docs/adr/024-work-gates-on-spec-in-main.md" "тем же способом, что уже применён к"
 
 # ── Гейт: фронтматтер commands/*.md, agents/*.md, skills/*/SKILL.md
 # (issue #201, hooks/scripts/frontmatter-check.sh) ───────────────────────────
