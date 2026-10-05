@@ -23,6 +23,15 @@ done
 # редактируемому файлу.
 hooks/scripts/frontmatter-check.sh .
 
+# номера docs/adr/NNN-*.md уникальны (issue #251): два параллельных PR берут
+# один «следующий свободный» номер, и ссылка «ADR-NNN» становится
+# неоднозначной. Пропуски в нумерации допустимы — проверяются только дубли.
+dup_adr=$(ls docs/adr 2>/dev/null | grep -E '^[0-9]+-.*\.md$' | sed -E 's/^([0-9]+)-.*/\1/' | sort | uniq -d || true)
+if [ -n "$dup_adr" ]; then
+  echo "check: дубль номера ADR в docs/adr: $(echo $dup_adr | tr '\n' ' ')" >&2
+  exit 1
+fi
+
 if command -v claude >/dev/null 2>&1; then
   claude plugin validate . >/dev/null 2>&1
 fi
