@@ -39,7 +39,8 @@ symbolic-ref --short refs/remotes/origin/HEAD` (срезать префикс
 - Doc-тесты `tests/run.sh` (issue #249) закрепляют: в `commands/*.md` нет
   буквального `origin/main`; рецепт (`symbolic-ref`) встречается ровно в
   одном месте; остальные команды отсылают к нотации `/work`.
-- Прозаические упоминания «main» без `origin/` (конфликт с main,
-  `git checkout main && git pull` в шаге 2 `/work`, `git diff main...` в
-  шаге 7) этим решением не затронуты; в `commands/` остаются как отдельный
-  хвост того же класса.
+- Прозаические упоминания «main» без `origin/` (конфликт с main) этим
+  решением не затронуты. Голый `main` в исполняемых командах (`git checkout
+  main && git pull` в шаге 2 `/work`, `git diff main...` в шаге 7,
+  `git checkout main` в `/autopilot`, `git diff main...HEAD` в
+  `agents/reviewer.md`) заменён на `<default>` в issue #252.
