@@ -1273,7 +1273,7 @@ assert_contains "AC-1: work.md шаг 7 логирует event=outcome (схем
 
 assert_contains "AC-1: work.md шаг 7 пишет result=merged|stuck (не outcome=ready, issue #21)" "$step7" 'result=<merged|stuck>'
 
-assert_contains "AC-1: work.md шаг 7 считает размер диффа git diff main... --shortstat" "$step7" 'git diff main\.\.\. --shortstat'
+assert_contains "AC-1: work.md шаг 7 считает размер диффа git diff <default>... --shortstat" "$step7" 'git diff <default>\.\.\. --shortstat'
 
 assert_contains "AC-1: work.md шаг 7 пишет diff= (не diffstat=, issue #21)" "$step7" 'diff='
 
@@ -9483,6 +9483,38 @@ for cmd_name in review plan autopilot; do
   assert_contains "issue #249: $cmd_name.md отсылает за определением <default> к нотации /work" \
     "$(doc_text "$KIT/commands/$cmd_name.md")" 'определение — в нотации `/work`'
 done
+
+# ── Голый `main` в исполняемых git-командах (issue #252): #249 убрал
+# `origin/main`, но `git checkout main` / `git diff main...` без `origin/`
+# остались — на репозитории с default branch `trunk` оркестратор-LLM
+# переключился бы на несуществующую ветку, а diff в журнале считался бы
+# не от той базы. Прозу («в main») не трогаем — только команды ──
+work_step7=$(md_section "$WORKMD" '^7\. \*\*' '$')
+reviewer_head=$(doc_text "$KIT/agents/reviewer.md")
+assert_contains "issue #252: work.md шаг 2 — «Кандидатов нет» обновляет <default>, а не литерал main" \
+  "$work_step2" 'git checkout <default> && git pull'
+assert_not_contains "issue #252: work.md шаг 2 не содержит git checkout main" \
+  "$work_step2" 'git checkout main'
+assert_contains "issue #252: work.md шаг 7 считает размер диффа от <default>" \
+  "$work_step7" 'git diff <default>\.\.\. --shortstat'
+assert_not_contains "issue #252: work.md шаг 7 не содержит git diff main" \
+  "$work_step7" 'git diff main'
+assert_contains "issue #252: autopilot.md шаг 3 — возврат дерева на <default>" \
+  "$autopilot_step3" 'git checkout <default>'
+assert_not_contains "issue #252: autopilot.md шаг 3 не содержит git checkout main" \
+  "$autopilot_step3" 'git checkout main'
+assert_contains "issue #252: reviewer.md собирает дифф от <default>" \
+  "$reviewer_head" 'git diff <default>\.\.\.HEAD'
+assert_contains "issue #252: reviewer.md отсылает за определением <default> к нотации /work (рецепт не дублируется)" \
+  "$reviewer_head" '`<default>` — default branch репозитория, определение — в нотации `/work`'
+assert_not_contains "issue #252: reviewer.md не содержит git diff main" \
+  "$reviewer_head" 'git diff main'
+assert_exit "issue #252: reviewer.md не копирует рецепт определения default branch (он живёт только в work.md)" \
+  0 "$(printf '%s' "$reviewer_head" | grep -c 'refs/remotes/origin/HEAD\|defaultBranchRef')"
+bare_main_cmds=$(grep -rnE 'git (checkout|diff|log|rebase|merge|rev-list|switch)[^`]* main([^[:alnum:]_/-]|$)' \
+  "$KIT/commands" "$KIT/agents" "$KIT/skills" "$KIT/templates" || true)
+assert_exit "issue #252: в commands/ agents/ skills/ templates/ нет git-команд с голым main (grep из issue; найдено: $(truncate_actual "$bare_main_cmds"))" \
+  0 "$(printf '%s' "$bare_main_cmds" | grep -c .)"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 echo "─────"
