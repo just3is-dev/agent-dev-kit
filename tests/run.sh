@@ -9446,9 +9446,22 @@ assert_contains "issue #201: scripts/check без аргументов назы�
 # работу не с той веткой на репозитории с default branch, отличным от
 # `main` (в adk-ralph.sh это уже `$default_branch`, ADR-007 §6). Нотация
 # `<default>` определена один раз в work.md, остальные команды ссылаются ──
-for cmd_name in work review plan autopilot; do
+# Сторож идёт по glob, а не по списку имён (issue #253): хардкод, вернувшийся
+# в любой commands/*.md, agents/*.md или skills/*/SKILL.md, краснит тест
+for cmd_file in "$KIT"/commands/*.md; do
+  cmd_name=$(basename "$cmd_file" .md)
   assert_not_contains "issue #249: $cmd_name.md не содержит буквального origin/main (default branch — через <default>)" \
-    "$(doc_text "$KIT/commands/$cmd_name.md")" 'origin/main'
+    "$(doc_text "$cmd_file")" 'origin/main'
+done
+for guarded_file in "$KIT"/agents/*.md "$KIT"/skills/*/SKILL.md; do
+  guarded_rel=${guarded_file#"$KIT"/}
+  assert_not_contains "issue #253: $guarded_rel не содержит буквального origin/main (default branch — через <default>)" \
+    "$(doc_text "$guarded_file")" 'origin/main'
+done
+guarded_files=$(ls "$KIT"/commands/*.md "$KIT"/agents/*.md "$KIT"/skills/*/SKILL.md 2>/dev/null)
+for anchor_rel in commands/work.md agents/reviewer.md skills/tdd/SKILL.md; do
+  assert_contains "issue #253: сторож origin/main покрывает $anchor_rel (glob не пуст и не выродился)" \
+    "$guarded_files" "/$anchor_rel\$"
 done
 assert_contains "issue #249: work.md шаг 1 сверяет спеку с origin/<default>" \
   "$work_type_step1" 'origin/<default>:docs/specs/NNN-<слаг>'
@@ -9476,6 +9489,8 @@ assert_contains "issue #249: work.md — последний запасной в�
   "$work_default_notation" 'не удалось — `main`'
 assert_contains "issue #249: work.md — origin/HEAD печатает префикс origin/, его срезают" \
   "$work_default_notation" 'отрежь префикс `origin/`'
+assert_contains "issue #253: work.md — порядок рецепта <default>: symbolic-ref → gh repo view → main (как \$default_branch в adk-ralph.sh)" \
+  "$work_default_notation" 'git symbolic-ref .*gh repo view .*не удалось — `main`'
 default_recipe_copies=$(for f in "$KIT"/commands/*.md; do [ "$f" = "$WORKMD" ] || doc_text "$f"; done | grep -c 'refs/remotes/origin/HEAD\|defaultBranchRef')
 assert_exit "issue #249: рецепт определения default branch живёт только в work.md — в остальных командах его копий нет" \
   0 "$default_recipe_copies"
