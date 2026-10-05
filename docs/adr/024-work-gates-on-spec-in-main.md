@@ -1,4 +1,4 @@
-# ADR-021: `/work` не берёт issue, пока файл его спеки не в main
+# ADR-024: `/work` не берёт issue, пока файл его спеки не в main
 
 Дата: 2026-09-30
 Статус: accepted <!-- accepted | superseded by ADR-XXX -->
