@@ -7346,10 +7346,14 @@ claude_stub "$RBIN_SZ" <<'EOF'
 echo "$*" >> "$d/claude-calls.log"
 case "$issue_num" in
   981)
-    # дольше базового бюджета времени (8s), но с запасом меньше умноженного
-    # (16s): $SECONDS квантует до +1s, и под нагрузкой старт стаба сам
-    # занимает секунды
-    sleep 10
+    # Бюджет задачи 10s (maxMinutes ниже), у size:large ×2 = 20s. Гвард
+    # сравнивает разность целых $SECONDS: она отличается от реального
+    # элапседа меньше чем на 1s в обе стороны, опрос — раз в 0.2s. Сон 12s:
+    # - нижняя граница: база убила бы при реальных >9s, сон выше на 3s —
+    #   фикстура по-прежнему отличает «множитель применён» от «не применён»;
+    # - верхняя граница: ×2 убил бы при реальных >19s; нагрузка только
+    #   удлиняет элапсед (старт стаба, опрос), запас сверху 19 - 12.2 = 6.8s
+    sleep 12
     cat > "$d/prs-fixture.json" <<'PRJSON'
 [{"number": 9981, "isDraft": false, "headRefName": "issue-981-x"}]
 PRJSON
@@ -7374,7 +7378,7 @@ exit 0
 EOF
 RALPH_SZ_CFG="$TMP/ralph-sized-config.json"
 cat > "$RALPH_SZ_CFG" <<'EOF'
-{"policies": {"autopilot": {"canMerge": false, "breaker": {"maxStuckPerRun": 5}, "budget": {"task": {"maxMinutes": 0.1333333, "maxTokens": 1000}}}}}
+{"policies": {"autopilot": {"canMerge": false, "breaker": {"maxStuckPerRun": 5}, "budget": {"task": {"maxMinutes": 0.1666667, "maxTokens": 1000}}}}}
 EOF
 RALPH_SZ_LOGS="$TMP/ralph-sized-logs"
 ralph_sz_out=$(run_ralph "$RALPH_SZ" "$RBIN_SZ" "$RALPH_SZ_LOGS" "$TMP/ralph-sized-notify.log" "$RALPH_SZ_CFG")
