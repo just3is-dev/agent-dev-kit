@@ -6906,6 +6906,21 @@ assert_contains "issue #196: workflow с не-ASCII именем файла и �
   "$ci_wfunicode_out" "#2305 (проверки CI не появились за"
 [ ! -f "$CI_BIN/pr-merge-calls.log" ]
 assert_exit "issue #196: workflow с не-ASCII именем файла — gh pr merge не вызван" 0 $?
+CI_WORKFLOW_FILE='CI.YML'
+ci_case wfupper 2306 5306 $'name: CI\non: push\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfupper_out=$(ci_run)
+assert_contains "issue #196: расширение workflow в верхнем регистре — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfupper_out" "#2306 (проверки CI не появились за"
+ci_case wfsub 2307 5307 yes yes
+mkdir -p "$CI_PROJ/app"
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfsub_out=$(run_ralph "$CI_PROJ/app" "$CI_BIN" "$CI_LOGS" "$CI_NOTIFY" "$CI_CFG")
+assert_contains "issue #196: корень проекта — подкаталог репозитория, workflow в корне репозитория виден — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfsub_out" "#2307 (проверки CI не появились за"
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: корень проекта — подкаталог репозитория — gh pr merge не вызван" 0 $?
 unset ADK_RALPH_CI_APPEAR_SECONDS
 
 ci_case lstreefail 2215 5215 yes yes
@@ -6919,6 +6934,56 @@ assert_exit "issue #196: сбой git ls-tree по workflow — gh pr merge не
 assert_contains "issue #196: сбой git ls-tree по workflow — причина застревания" \
   "$ci_lstreefail_out" "#2215 (не удалось определить, настроен ли CI"
 assert_exit "issue #196: сбой git ls-tree по workflow — статус проверок не запрашивался" 0 "$(ci_poll_count)"
+
+ci_check_run() {
+  printf '{"__typename":"CheckRun","name":"gates","status":"%s","conclusion":%s,"workflowName":"CI"}' "$1" "$2"
+}
+ci_status_ctx() {
+  printf '{"__typename":"StatusContext","context":"ext-ci","state":"%s"}' "$1"
+}
+
+ci_cls_n=0
+for ci_cls in \
+  "red|gates|$(ci_check_run COMPLETED '"CANCELLED"')" \
+  "red|gates|$(ci_check_run COMPLETED '"TIMED_OUT"')" \
+  "red|gates|$(ci_check_run COMPLETED '"ACTION_REQUIRED"')" \
+  "red|gates|$(ci_check_run COMPLETED '"STARTUP_FAILURE"')" \
+  "red|gates|$(ci_check_run COMPLETED '"STALE"')" \
+  "red|ext-ci|$(ci_status_ctx FAILURE)" \
+  "red|ext-ci|$(ci_status_ctx ERROR)" \
+  "unknown|gates|$(ci_check_run COMPLETED null)" \
+  "unknown|x|{\"__typename\":\"SomethingNew\",\"name\":\"x\"}"; do
+  ci_cls_n=$((ci_cls_n + 1))
+  ci_cls_kind="${ci_cls%%|*}"
+  ci_cls_rest="${ci_cls#*|}"
+  ci_cls_name="${ci_cls_rest%%|*}"
+  ci_cls_item="${ci_cls_rest#*|}"
+  ci_case "cls$ci_cls_n" "$((2400 + ci_cls_n))" "$((5400 + ci_cls_n))" yes yes
+  ci_view "$CI_ITEM_OK,$ci_cls_item" > "$CI_BIN/ci-view-last.json"
+  ci_cls_out=$(ci_run)
+  if [ "$ci_cls_kind" = red ]; then
+    ci_cls_want="#$((2400 + ci_cls_n)) (CI красный: $ci_cls_name)"
+  else
+    ci_cls_want="#$((2400 + ci_cls_n)) (неизвестное состояние проверки CI: $ci_cls_name"
+  fi
+  assert_contains "issue #196: классификация проверки $ci_cls_n ($ci_cls_kind) — застревание, а не зелёный" \
+    "$ci_cls_out" "$ci_cls_want"
+  [ ! -f "$CI_BIN/pr-merge-calls.log" ]
+  assert_exit "issue #196: классификация проверки $ci_cls_n ($ci_cls_kind) — gh pr merge не вызван" 0 $?
+done
+
+for ci_ctx_state in EXPECTED PENDING; do
+  ci_cls_n=$((ci_cls_n + 1))
+  ci_case "cls$ci_cls_n" "$((2400 + ci_cls_n))" "$((5400 + ci_cls_n))" yes yes
+  ci_view "$(ci_status_ctx "$ci_ctx_state")" > "$CI_BIN/ci-view-1.json"
+  ci_view "$(ci_status_ctx "$ci_ctx_state")" > "$CI_BIN/ci-view-2.json"
+  ci_view "$(ci_status_ctx SUCCESS)" > "$CI_BIN/ci-view-last.json"
+  ci_ctx_out=$(ci_run)
+  assert_contains "issue #196: внешний статус $ci_ctx_state — ожидание, после SUCCESS merge выполнен" \
+    "$ci_ctx_out" "Смержено:  #$((2400 + ci_cls_n))"
+  [ "$(ci_poll_count)" -ge 4 ]
+  assert_exit "issue #196: внешний статус $ci_ctx_state не засчитан зелёным — опрос шёл до двух зелёных SUCCESS подряд" 0 $?
+done
 
 ci_case partial 2214 5214 yes yes
 ci_view "$CI_ITEM_SKIPPED" > "$CI_BIN/ci-view-1.json"

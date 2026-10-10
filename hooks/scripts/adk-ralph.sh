@@ -700,20 +700,22 @@ except Exception:
 }
 
 # ci_workflows_configured <sha> — «yes», если в запушенной голове (по SHA, не
-# по рабочему дереву) в .github/workflows есть любой файл *.yml|*.yaml; «no» —
-# каталога нет или таких файлов нет; «error» — git не смог прочитать дерево.
-# Содержимое и триггеры не разбираются сознательно (ADR-025 п.4): любая
-# неоднозначность — «настроен», -z держит пути с не-ASCII без квотирования.
+# по рабочему дереву) в .github/workflows КОРНЯ РЕПОЗИТОРИЯ (--full-tree: корень
+# проекта может быть подкаталогом) есть любой файл *.yml|*.yaml (регистр
+# расширения не важен); «no» — каталога нет или таких файлов нет; «error» — git
+# не смог прочитать дерево. Содержимое и триггеры не разбираются сознательно
+# (ADR-025 п.4): любая неоднозначность — «настроен», -z держит пути с
+# не-ASCII без квотирования.
 ci_workflows_configured() {
   local sha="$1" listing="$work_dir/git-ls-tree-workflows.out" entry
-  if ! (cd "$root" && git ls-tree -z --name-only "$sha" -- .github/workflows/) \
+  if ! (cd "$root" && git ls-tree --full-tree -z --name-only "$sha" -- .github/workflows/) \
     >"$listing" 2>"$work_dir/git-ls-tree-workflows.err"; then
     printf 'error'
     return
   fi
   while IFS= read -r -d '' entry; do
     case "$entry" in
-      *.yml|*.yaml)
+      *.[yY][mM][lL]|*.[yY][aA][mM][lL])
         printf 'yes'
         return
         ;;
