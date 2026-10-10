@@ -36,7 +36,8 @@ fi
 #   доказательство апрува.
 # Тестовые обходы сетевых вызовов: ADK_GUARD_PR_STATE=draft|ready|unknown,
 # ADK_GUARD_PR_REVIEW_DECISION=<reviewDecision, например APPROVED>.
-if printf '%s' "$cmd" | grep -Eq 'gh +pr +merge'; then
+. "$(cd "$(dirname "$0")" && pwd)/lib/command-invocation.sh"
+if adk_command_invokes_pr_merge "$cmd"; then
   . "$(cd "$(dirname "$0")" && pwd)/lib/config.sh"
   # Корень конфига — правило и обоснование в adk_hook_config_root
   # (lib/config.sh, issue #78); финальный фолбэк здесь не изменился.

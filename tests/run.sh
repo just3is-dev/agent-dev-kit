@@ -329,6 +329,150 @@ printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$P/sub" | ADK_GU
 assert_exit "AC-2: human-only действует из подкаталога репозитория (конфиг от toplevel)" 2 $?
 rm "$P/adk.config.json"
 
+# issue #260: хук реагирует на вызов merge, а не на упоминание фразы в тексте
+# команды. Состояние PR draft — значит, любой ложный матч даёт exit 2.
+guard_exit() { # guard_exit <команда> [состояние PR] — exit-код bash-guard для Bash-команды
+  local payload
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}}))' "$1")
+  printf '%s' "$payload" | ADK_GUARD_PR_STATE="${2:-draft}" CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+}
+
+for c in \
+  'grep -n "gh pr merge" commands/autopilot.md' \
+  "grep -rn 'gh pr merge' . | sort | head -5" \
+  'grep -n "gh pr merge" a.md; grep -c "gh pr merge" b.md' \
+  'gh pr merge --help' \
+  'gh pr merge -h' \
+  'echo "gh pr merge 5"' \
+  "echo 'gh pr merge 5' > notes.txt" \
+  'printf "%s\n" "gh pr merge 5" >> log.txt' \
+  'echo ok # gh pr merge 5' \
+  'git commit -m "docs: объяснить gh pr merge в autopilot"' \
+  $'git commit -m "строка один\nстрока два: gh pr merge 5\nстрока три"' \
+  $'git commit -m "$(cat <<\'EOF\'\nfix: gh pr merge в тексте\n\nтело: gh pr merge 5\nEOF\n)"' \
+  'git tag -a v1 -m "gh pr merge"' \
+  $'cat <<\'EOF\' > notes.md\nсначала gh pr merge 5\nEOF' \
+  $'cat <<EOF\nсначала gh pr merge 5\nEOF' \
+  $'cat <<-EOF\n\tgh pr merge 5\n\tEOF' \
+  'gh pr comment 5 --body "потом gh pr merge 5" && gh pr ready 5' \
+  'gh issue create --title "x" --body "gh pr merge 5"' \
+  './hooks/scripts/adk-log.sh issue-260 event=outcome reason="gh pr merge отклонён"' \
+  'cd repo && grep -n "gh pr merge" file' \
+  'echo "it'\''s gh pr merge 5"'
+do
+  guard_exit "$c"
+  assert_exit "issue #260: упоминание фразы — не вызов, не блокируется: $c" 0 $?
+done
+
+for c in \
+  'gh pr merge 5 --squash' \
+  'cd repo && gh pr merge 5' \
+  'cd repo; gh pr merge 5' \
+  '(cd repo && gh pr merge 5)' \
+  'VAR=1 gh pr merge 5' \
+  'GH_TOKEN=x VAR=1 gh pr merge 5' \
+  'gh -R o/r pr merge 5' \
+  'gh --repo o/r pr merge 5' \
+  'gh pr -R o/r merge 5' \
+  'gh pr merge 5 -R o/r' \
+  '/usr/local/bin/gh pr merge 5' \
+  'command gh pr merge 5' \
+  'sudo gh pr merge 5' \
+  'env gh pr merge 5' \
+  'time gh pr merge 5' \
+  "bash -c 'gh pr merge 5'" \
+  'sh -c "gh pr merge 5"' \
+  'eval "gh pr merge 5"' \
+  'eval gh pr merge 5' \
+  'echo $(gh pr merge 5)' \
+  'echo "$(gh pr merge 5)"' \
+  'echo `gh pr merge 5`' \
+  'echo "`gh pr merge 5`"' \
+  'x=$(gh pr merge 5)' \
+  'echo 5 | xargs gh pr merge' \
+  'xargs -I{} gh pr merge {}' \
+  'echo "gh pr merge 5" | bash' \
+  "printf 'gh pr merge 5' | sh" \
+  $'bash <<\'EOF\'\ngh pr merge 5\nEOF' \
+  $'cat <<EOF | sh\ngh pr merge 5\nEOF' \
+  'bash <<< "gh pr merge 5"' \
+  'bash <(echo "gh pr merge 5")' \
+  'ssh host "gh pr merge 5"' \
+  'python3 -c "import os; os.system(\"gh pr merge 5\")"' \
+  $'echo ok\ngh pr merge 5' \
+  $'gh pr \\\nmerge 5' \
+  'echo "x"; gh pr merge 5' \
+  'echo "x" && gh pr merge 5' \
+  'false || gh pr merge 5' \
+  'true & gh pr merge 5' \
+  'grep -n "gh pr merge" file; gh pr merge 5' \
+  $'git commit -m "$(cat <<\'EOF\'\ngh pr merge\nEOF\n)" && gh pr merge 5' \
+  'if true; then gh pr merge 5; fi' \
+  '"gh" pr merge 5' \
+  'g'\'''\''h pr merge 5' \
+  'gh pr merge 5 --body "--help"' \
+  'gh pr merge 5 --help' \
+  '$GH pr merge 5' \
+  '"$(command -v gh)" pr merge 5' \
+  'echo "gh pr merge 5" > run.sh && bash run.sh' \
+  $'cat > run.sh <<\'EOF\'\ngh pr merge 5\nEOF\nsh run.sh' \
+  'X="gh pr merge 5"; $X' \
+  'alias m="gh pr merge 5"' \
+  'echo "it'\''s; gh pr merge 5' \
+  "echo 'gh pr merge 5" \
+  'echo "$(gh pr merge 5"'
+do
+  guard_exit "$c"
+  assert_exit "issue #260: вызов merge блокируется (draft): $c" 2 $?
+done
+
+deep_open=""
+deep_close=""
+deep_i=0
+while [ "$deep_i" -lt 1200 ]; do
+  deep_open="$deep_open\$(echo "
+  deep_close="$deep_close)"
+  deep_i=$((deep_i + 1))
+done
+guard_exit "echo ${deep_open}gh pr merge 5${deep_close}"
+assert_exit "issue #260: сбой разбора (вложенность глубже лимита рекурсии) — fail-closed, вызов блокируется" 2 $?
+
+guard_exit 'cd repo && gh pr merge 5' ready
+assert_exit "issue #260: распознанный вызов проходит обычную проверку политики — ready разрешён" 0 $?
+guard_exit 'gh -R o/r pr merge 5' ready
+assert_exit "issue #260: gh -R o/r ... merge при ready проходит политику, а не глухой отказ" 0 $?
+guard_exit 'gh pr merge 5' unknown
+assert_exit "issue #260: вызов при непроверяемом статусе PR блокируется" 2 $?
+
+printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
+guard_exit 'grep -n "gh pr merge" commands/autopilot.md' ready
+assert_exit "issue #260: human-only не блокирует упоминание фразы в grep" 0 $?
+guard_exit $'git commit -m "$(cat <<\'EOF\'\ngh pr merge 5\nEOF\n)"' ready
+assert_exit "issue #260: human-only не блокирует упоминание фразы в heredoc коммит-сообщения" 0 $?
+guard_exit 'cd repo && gh pr merge 5' ready
+assert_exit "issue #260: human-only блокирует вызов после cd ... &&" 2 $?
+guard_exit "bash -c 'gh pr merge 5'" ready
+assert_exit "issue #260: human-only блокирует вызов через bash -c" 2 $?
+printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
+guard_exit 'VAR=1 gh pr merge 5' ready
+assert_exit "issue #260: human-review-required без approve блокирует вызов с префиксом VAR=" 2 $?
+guard_exit 'echo "gh pr merge 5"' ready
+assert_exit "issue #260: human-review-required не блокирует упоминание фразы в echo" 0 $?
+rm "$P/adk.config.json"
+
+for c in \
+  'git merge main' \
+  'git commit -m "merge main"' \
+  'git merge main -m "незакрытая кавычка' \
+  'grep -n "gh pr merge" commands/autopilot.md && ./scripts/check' \
+  'gh pr view 5 --json mergeStateStatus' \
+  'gh pr create --title "merge fix"' \
+  'gh pr checks 5'
+do
+  guard_exit "$c"
+  assert_exit "issue #260: команда без вызова merge PR не блокируется: $c" 0 $?
+done
+
 # issue #78: проект — подкаталог более крупного репозитория со своим
 # adk.config.json (toplevel репозитория без конфига); корень конфига —
 # первый кандидат, где файл реально есть (cwd команды → git toplevel этой
