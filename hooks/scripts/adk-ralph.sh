@@ -796,6 +796,7 @@ wait_ci_green() {
   local pr="$1" sha="$2" configured started elapsed status errors=0 greens=0
   configured=$(ci_workflows_configured "$sha")
   if [ "$configured" = "error" ]; then
+    cat "$work_dir/git-ls-tree-workflows.err" >&2 2>/dev/null
     printf 'CI_STUCK не удалось определить, настроен ли CI (чтение .github/workflows в запушенной голове)'
     return 0
   fi
@@ -1462,7 +1463,7 @@ try:
     ok = math.isfinite(value) and value > 0
 except ValueError:
     ok = False
-print("%.3f" % value if ok else "10")
+print("%.3f" % max(value, 0.001) if ok else "10")
 ' "${ADK_RALPH_CI_POLL_SECONDS:-10}")
 ci_appear_seconds="${ADK_RALPH_CI_APPEAR_SECONDS:-120}"
 case "$ci_appear_seconds" in
