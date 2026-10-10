@@ -708,29 +708,63 @@ root, sha = sys.argv[1], sys.argv[2]
 EVENTS = {"push", "pull_request", "pull_request_target"}
 
 def git(*args):
-    return subprocess.run(["git"] + list(args), cwd=root, capture_output=True, text=True)
+    return subprocess.run(["git"] + list(args), cwd=root, capture_output=True, encoding="utf-8", errors="replace")
+
+def scan(line):
+    code = []
+    bare = []
+    quote = ""
+    depth = 0
+    prev = " "
+    for ch in line:
+        if quote:
+            code.append(ch)
+            if ch == quote:
+                quote = ""
+        elif ch in ("\x22", "\x27"):
+            quote = ch
+            code.append(ch)
+        elif ch == "#" and prev.isspace():
+            break
+        else:
+            if ch in "[{":
+                depth += 1
+            elif ch in "]}":
+                depth -= 1
+            code.append(ch)
+            bare.append(ch)
+        prev = ch
+    return "".join(code), "".join(bare), depth
 
 def runs_on_head(text):
     block = []
+    bare_block = []
     inside = False
-    for line in text.split("\n"):
+    depth = 0
+    for line in text.replace("\r", "").split("\n"):
         top = re.match(r"^[\"\x27]?on[\"\x27]?\s*:(.*)$", line)
         if top:
             inside = True
-            block.append(top.group(1))
+            code, bare, depth = scan(top.group(1))
+            block.append(code)
+            bare_block.append(bare)
             continue
         if inside:
-            if line.strip() == "" or line.lstrip().startswith("#") or line[0] in " \t-":
-                block.append(line)
+            if depth > 0 or line.strip() == "" or line.lstrip().startswith("#") or line[0] in " \t-":
+                code, bare, delta = scan(line)
+                depth += delta
+                block.append(code)
+                bare_block.append(bare)
             else:
                 inside = False
     if not block:
         return True
-    cleaned = re.sub(r"(^|\s)#.*$", "", "\n".join(block), flags=re.M)
-    tokens = re.split(r"[\s\[\]{},:\"\x27]+", cleaned)
+    if re.search(r"(^|[\s\[,{])\*\w|<<", "\n".join(bare_block)):
+        return True
+    tokens = re.split(r"[\s\[\]{},:\"\x27]+", "\n".join(block))
     return bool(EVENTS.intersection(tokens))
 
-listing = git("grep", "-lE", ".", sha, "--", ".github/workflows")
+listing = git("grep", "-z", "-lE", ".", sha, "--", ".github/workflows")
 if listing.returncode == 1:
     print("no")
     sys.exit(0)
@@ -738,9 +772,12 @@ if listing.returncode != 0:
     print("error")
     sys.exit(0)
 prefix = sha + ":"
-for entry in listing.stdout.split("\n"):
-    if not entry.startswith(prefix):
+for entry in listing.stdout.split("\0"):
+    if entry == "":
         continue
+    if not entry.startswith(prefix):
+        print("error")
+        sys.exit(0)
     path = entry[len(prefix):]
     if not path.endswith((".yml", ".yaml")):
         continue
@@ -831,7 +868,7 @@ wait_ci_green() {
   local pr="$1" sha="$2" configured started elapsed status errors=0 greens=0
   configured=$(ci_workflows_configured "$sha")
   if [ "$configured" = "error" ]; then
-    printf 'CI_STUCK не удалось определить, настроен ли CI (git grep по .github/workflows)'
+    printf 'CI_STUCK не удалось определить, настроен ли CI (чтение .github/workflows в запушенной голове)'
     return 0
   fi
   started=$SECONDS

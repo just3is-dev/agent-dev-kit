@@ -3170,7 +3170,7 @@ ralph_init() {
   ralph_bin "$2"
 }
 
-# ralph_clone <origin> <proj> [--branch <b>] [--advance <msg>] [--workflow | --workflow-body <yaml>] <ветки…> —
+# ralph_clone <origin> <proj> [--branch <b>] [--advance <msg>] [--workflow | --workflow-body <yaml>] [--workflow-file <имя>] <ветки…> —
 # фикстура «клон с origin» (issue #208: блок повторялся в 10 фикстурах).
 # origin — обычный репозиторий с рабочим деревом, НЕ bare: тесты коммитят
 # прямо в него. Базовый коммит f.txt, ветки задач, опциональный доп-коммит
@@ -3178,13 +3178,14 @@ ralph_init() {
 # локальная identity клона.
 ralph_clone() {
   local origin="$1" proj="$2"; shift 2
-  local branch=main advance="" workflow="" workflow_body="" b
+  local branch=main advance="" workflow="" workflow_body="" workflow_file="ci.yml" b
   while [ $# -gt 0 ]; do
     case "$1" in
       --branch) branch="$2"; shift 2 ;;
       --advance) advance="$2"; shift 2 ;;
       --workflow) workflow=1; shift ;;
       --workflow-body) workflow=1; workflow_body="$2"; shift 2 ;;
+      --workflow-file) workflow_file="$2"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -3193,9 +3194,9 @@ ralph_clone() {
   if [ -n "$workflow" ]; then
     mkdir -p "$origin/.github/workflows"
     if [ -n "$workflow_body" ]; then
-      printf '%s\n' "$workflow_body" > "$origin/.github/workflows/ci.yml"
+      printf '%s\n' "$workflow_body" > "$origin/.github/workflows/$workflow_file"
     else
-      printf 'name: CI\non:\n  pull_request:\n    branches: [%s]\njobs: {}\n' "$branch" > "$origin/.github/workflows/ci.yml"
+      printf 'name: CI\non:\n  pull_request:\n    branches: [%s]\njobs: {}\n' "$branch" > "$origin/.github/workflows/$workflow_file"
     fi
     (cd "$origin" && git add .github && git_c commit -qm workflow)
   fi
@@ -6709,6 +6710,7 @@ ci_case() {
     no) ;;
     *) opts+=(--workflow-body "$wf") ;;
   esac
+  [ -n "${CI_WORKFLOW_FILE:-}" ] && opts+=(--workflow-file "$CI_WORKFLOW_FILE")
   [ "$adv" = yes ] && opts+=(--advance "advance main")
   ralph_clone "$CI_ORIGIN" "$CI_PROJ" ${opts[@]+"${opts[@]}"} "$branch"
   ralph_bin "$CI_BIN"
@@ -6879,7 +6881,14 @@ for ci_wf_body in \
   $'name: CI\non:\n  - pull_request # PRs\njobs: {}' \
   $'name: CI\non: push\njobs: {}' \
   $'name: CI\non:\n  push:\n    branches: [main]\njobs: {}' \
-  $'name: CI\njobs: {}'; do
+  $'name: CI\njobs: {}' \
+  $'name: CI\non:\n- push\n- pull_request\njobs: {}' \
+  $'name: CI\non:\n  pull_request:\n\njobs: {}' \
+  $'name: CI\non:\n\n  push:\njobs: {}' \
+  $'name: CI\non:\n# c\n  push:\njobs: {}' \
+  $'name: CI\nx: &t [pull_request]\non: *t\njobs: {}' \
+  $'name: CI\non: {workflow_dispatch: {inputs: {x: {description: "a #b"}}}, pull_request: {}}\njobs: {}' \
+  $'name: CI\non: [\npull_request]\njobs: {}'; do
   ci_wf_n=$((ci_wf_n + 1))
   ci_case "wf$ci_wf_n" "$((2300 + ci_wf_n))" "$((5300 + ci_wf_n))" "$ci_wf_body" yes
   ci_view "" > "$CI_BIN/ci-view-last.json"
@@ -6887,7 +6896,14 @@ for ci_wf_body in \
   assert_contains "issue #196: форма workflow $ci_wf_n распознана как настроенный CI — пустой список ждёт окно появления, не merge" \
     "$ci_wf_out" "#$((2300 + ci_wf_n)) (проверки CI не появились за"
 done
-ci_case wfneg 2330 5330 $'name: CI\n# on: push\non:\n  schedule:\n    - cron: "0 0 * * *"\n  workflow_dispatch: # push button\n  workflow_call:\n  pull_request_review:\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n    runs-on: x\n    steps:\n      - run: git push origin HEAD\n    env:\n      SHA: ${{ github.event.pull_request.head.sha }}' yes
+CI_WORKFLOW_FILE='тест "q".yml'
+ci_case wfunicode 2340 5340 $'name: CI\non: push\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfunicode_out=$(ci_run)
+assert_contains "issue #196: workflow с не-ASCII именем файла и кавычкой в имени читается — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfunicode_out" "#2340 (проверки CI не появились за"
+ci_case wfneg 2330 5330 $'name: CI\n# on: push\non:\n  schedule:\n    - cron: "0 0 * * *"\n  workflow_dispatch: # push button\n  workflow_call:\n\n  pull_request_review:\n\n# trailing\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n    runs-on: x\n    steps:\n      - run: git push origin HEAD\n    env:\n      SHA: ${{ github.event.pull_request.head.sha }}' yes
 ci_view "" > "$CI_BIN/ci-view-last.json"
 ci_wfneg_out=$(ci_run)
 assert_contains "issue #196: pull_request/push вне блока on (комментарий, выражение, run) и другие события — CI не настроен, merge без ожидания" \
@@ -6904,6 +6920,16 @@ assert_exit "issue #196: сбой git grep по workflow — прогон зав
 assert_exit "issue #196: сбой git grep по workflow — gh pr merge не вызван (сбой не принят за «CI не настроен»)" 0 $?
 assert_contains "issue #196: сбой git grep по workflow — причина застревания" \
   "$ci_grepfail_out" "#2215 (не удалось определить, настроен ли CI"
+
+ci_case grepjunk 2216 5216 yes yes
+ci_view "" > "$CI_BIN/ci-view-last.json"
+printf '#!/usr/bin/env bash\nif [ "$1" = grep ]; then printf "unparseable\\0"; exit 0; fi\nexec %s "$@"\n' "$(command -v git)" > "$CI_BIN/git"
+chmod +x "$CI_BIN/git"
+ci_grepjunk_out=$(ci_run)
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: нераспознанная строка списка workflow — gh pr merge не вызван (не пропущена молча)" 0 $?
+assert_contains "issue #196: нераспознанная строка списка workflow — причина застревания" \
+  "$ci_grepjunk_out" "#2216 (не удалось определить, настроен ли CI"
 
 ci_case partial 2214 5214 yes yes
 ci_view "$CI_ITEM_SKIPPED" > "$CI_BIN/ci-view-1.json"
