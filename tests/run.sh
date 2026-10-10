@@ -6869,67 +6869,56 @@ assert_not_contains "issue #196: актуальная ветка — без --ma
   "$ci_current_merge" "match-head-commit"
 
 export ADK_RALPH_CI_APPEAR_SECONDS=1
-ci_wf_n=0
-for ci_wf_body in \
-  $'name: CI\non: pull_request\njobs: {}' \
-  $'name: CI\non: [push, pull_request]\njobs: {}' \
-  $'name: CI\non: {push: {}, pull_request: {branches: [main]}}\njobs: {}' \
-  $'name: CI\non:\n  push:\n  pull_request_target:\njobs: {}' \
-  $'name: CI\non: ["push", "pull_request"]\njobs: {}' \
-  $'name: CI\n"on":\n  "pull_request":\n    branches: [main]\njobs: {}' \
-  $'name: CI\non: pull_request  # PR CI\njobs: {}' \
-  $'name: CI\non:\n  - pull_request # PRs\njobs: {}' \
-  $'name: CI\non: push\njobs: {}' \
-  $'name: CI\non:\n  push:\n    branches: [main]\njobs: {}' \
-  $'name: CI\njobs: {}' \
-  $'name: CI\non:\n- push\n- pull_request\njobs: {}' \
-  $'name: CI\non:\n  pull_request:\n\njobs: {}' \
-  $'name: CI\non:\n\n  push:\njobs: {}' \
-  $'name: CI\non:\n# c\n  push:\njobs: {}' \
-  $'name: CI\nx: &t [pull_request]\non: *t\njobs: {}' \
-  $'name: CI\non: {workflow_dispatch: {inputs: {x: {description: "a #b"}}}, pull_request: {}}\njobs: {}' \
-  $'name: CI\non: [\npull_request]\njobs: {}'; do
-  ci_wf_n=$((ci_wf_n + 1))
-  ci_case "wf$ci_wf_n" "$((2300 + ci_wf_n))" "$((5300 + ci_wf_n))" "$ci_wf_body" yes
-  ci_view "" > "$CI_BIN/ci-view-last.json"
-  ci_wf_out=$(ci_run)
-  assert_contains "issue #196: форма workflow $ci_wf_n распознана как настроенный CI — пустой список ждёт окно появления, не merge" \
-    "$ci_wf_out" "#$((2300 + ci_wf_n)) (проверки CI не появились за"
-done
+CI_WORKFLOW_FILE='README.md'
+ci_case wfreadme 2301 5301 $'# Workflows\n\non: push\n' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfreadme_out=$(ci_run)
+assert_contains "issue #196: в workflows только README.md и нет проверок — CI не настроен, merge без ожидания" \
+  "$ci_wfreadme_out" "Смержено:  #2301"
+CI_WORKFLOW_FILE='ci.yml.disabled'
+ci_case wfdisabled 2302 5302 $'name: CI\non: push\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfdisabled_out=$(ci_run)
+assert_contains "issue #196: в workflows только ci.yml.disabled и нет проверок — CI не настроен, merge без ожидания" \
+  "$ci_wfdisabled_out" "Смержено:  #2302"
+ci_case wfschedule 2303 5303 $'name: Nightly\non:\n  schedule:\n    - cron: "0 0 * * *"\njobs: {}' yes
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfschedule_out=$(ci_run)
+assert_contains "issue #196: workflow только по schedule — файл есть, CI настроен, пустой список ждёт окно появления, не merge" \
+  "$ci_wfschedule_out" "#2303 (проверки CI не появились за"
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: workflow только по schedule — gh pr merge не вызван" 0 $?
+CI_WORKFLOW_FILE='dispatch.yaml'
+ci_case wfyaml 2304 5304 $'name: Manual\non: workflow_dispatch\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfyaml_out=$(ci_run)
+assert_contains "issue #196: файл .yaml — CI настроен независимо от триггера, пустой список ждёт окно появления" \
+  "$ci_wfyaml_out" "#2304 (проверки CI не появились за"
 CI_WORKFLOW_FILE='тест "q".yml'
-ci_case wfunicode 2340 5340 $'name: CI\non: push\njobs: {}' yes
+ci_case wfunicode 2305 5305 $'name: CI\non: push\njobs: {}' yes
 unset CI_WORKFLOW_FILE
 ci_view "" > "$CI_BIN/ci-view-last.json"
 ci_wfunicode_out=$(ci_run)
-assert_contains "issue #196: workflow с не-ASCII именем файла и кавычкой в имени читается — CI настроен, пустой список ждёт окно появления" \
-  "$ci_wfunicode_out" "#2340 (проверки CI не появились за"
-ci_case wfneg 2330 5330 $'name: CI\n# on: push\non:\n  schedule:\n    - cron: "0 0 * * *"\n  workflow_dispatch: # push button\n  workflow_call:\n\n  pull_request_review:\n\n# trailing\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n    runs-on: x\n    steps:\n      - run: git push origin HEAD\n    env:\n      SHA: ${{ github.event.pull_request.head.sha }}' yes
-ci_view "" > "$CI_BIN/ci-view-last.json"
-ci_wfneg_out=$(ci_run)
-assert_contains "issue #196: pull_request/push вне блока on (комментарий, выражение, run) и другие события — CI не настроен, merge без ожидания" \
-  "$ci_wfneg_out" "Смержено:  #2330"
+assert_contains "issue #196: workflow с не-ASCII именем файла и кавычкой в имени виден — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfunicode_out" "#2305 (проверки CI не появились за"
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: workflow с не-ASCII именем файла — gh pr merge не вызван" 0 $?
 unset ADK_RALPH_CI_APPEAR_SECONDS
 
-ci_case grepfail 2215 5215 yes yes
+ci_case lstreefail 2215 5215 yes yes
 ci_view "" > "$CI_BIN/ci-view-last.json"
-printf '#!/usr/bin/env bash\n[ "$1" = grep ] && exit 128\nexec %s "$@"\n' "$(command -v git)" > "$CI_BIN/git"
+printf '#!/usr/bin/env bash\n[ "$1" = ls-tree ] && exit 128\nexec %s "$@"\n' "$(command -v git)" > "$CI_BIN/git"
 chmod +x "$CI_BIN/git"
-ci_grepfail_out=$(ci_run)
-assert_exit "issue #196: сбой git grep по workflow — прогон завершается штатно" 0 $?
+ci_lstreefail_out=$(ci_run)
+assert_exit "issue #196: сбой git ls-tree по workflow — прогон завершается штатно" 0 $?
 [ ! -f "$CI_BIN/pr-merge-calls.log" ]
-assert_exit "issue #196: сбой git grep по workflow — gh pr merge не вызван (сбой не принят за «CI не настроен»)" 0 $?
-assert_contains "issue #196: сбой git grep по workflow — причина застревания" \
-  "$ci_grepfail_out" "#2215 (не удалось определить, настроен ли CI"
-
-ci_case grepjunk 2216 5216 yes yes
-ci_view "" > "$CI_BIN/ci-view-last.json"
-printf '#!/usr/bin/env bash\nif [ "$1" = grep ]; then printf "unparseable\\0"; exit 0; fi\nexec %s "$@"\n' "$(command -v git)" > "$CI_BIN/git"
-chmod +x "$CI_BIN/git"
-ci_grepjunk_out=$(ci_run)
-[ ! -f "$CI_BIN/pr-merge-calls.log" ]
-assert_exit "issue #196: нераспознанная строка списка workflow — gh pr merge не вызван (не пропущена молча)" 0 $?
-assert_contains "issue #196: нераспознанная строка списка workflow — причина застревания" \
-  "$ci_grepjunk_out" "#2216 (не удалось определить, настроен ли CI"
+assert_exit "issue #196: сбой git ls-tree по workflow — gh pr merge не вызван (сбой не принят за «CI не настроен»)" 0 $?
+assert_contains "issue #196: сбой git ls-tree по workflow — причина застревания" \
+  "$ci_lstreefail_out" "#2215 (не удалось определить, настроен ли CI"
+assert_exit "issue #196: сбой git ls-tree по workflow — статус проверок не запрашивался" 0 "$(ci_poll_count)"
 
 ci_case partial 2214 5214 yes yes
 ci_view "$CI_ITEM_SKIPPED" > "$CI_BIN/ci-view-1.json"

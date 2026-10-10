@@ -699,101 +699,27 @@ except Exception:
 ' "$issue_num"
 }
 
+# ci_workflows_configured <sha> — «yes», если в запушенной голове (по SHA, не
+# по рабочему дереву) в .github/workflows есть любой файл *.yml|*.yaml; «no» —
+# каталога нет или таких файлов нет; «error» — git не смог прочитать дерево.
+# Содержимое и триггеры не разбираются сознательно (ADR-025 п.4): любая
+# неоднозначность — «настроен», -z держит пути с не-ASCII без квотирования.
 ci_workflows_configured() {
-  local out
-  out=$(python3 -c '
-import re, subprocess, sys
-
-root, sha = sys.argv[1], sys.argv[2]
-EVENTS = {"push", "pull_request", "pull_request_target"}
-
-def git(*args):
-    return subprocess.run(["git"] + list(args), cwd=root, capture_output=True, encoding="utf-8", errors="replace")
-
-def scan(line):
-    code = []
-    bare = []
-    quote = ""
-    depth = 0
-    prev = " "
-    for ch in line:
-        if quote:
-            code.append(ch)
-            if ch == quote:
-                quote = ""
-        elif ch in ("\x22", "\x27"):
-            quote = ch
-            code.append(ch)
-        elif ch == "#" and prev.isspace():
-            break
-        else:
-            if ch in "[{":
-                depth += 1
-            elif ch in "]}":
-                depth -= 1
-            code.append(ch)
-            bare.append(ch)
-        prev = ch
-    return "".join(code), "".join(bare), depth
-
-def runs_on_head(text):
-    block = []
-    bare_block = []
-    inside = False
-    depth = 0
-    for line in text.replace("\r", "").split("\n"):
-        top = re.match(r"^[\"\x27]?on[\"\x27]?\s*:(.*)$", line)
-        if top:
-            inside = True
-            code, bare, depth = scan(top.group(1))
-            block.append(code)
-            bare_block.append(bare)
-            continue
-        if inside:
-            if depth > 0 or line.strip() == "" or line.lstrip().startswith("#") or line[0] in " \t-":
-                code, bare, delta = scan(line)
-                depth += delta
-                block.append(code)
-                bare_block.append(bare)
-            else:
-                inside = False
-    if not block:
-        return True
-    if re.search(r"(^|[\s\[,{])\*\w|<<", "\n".join(bare_block)):
-        return True
-    tokens = re.split(r"[\s\[\]{},:\"\x27]+", "\n".join(block))
-    return bool(EVENTS.intersection(tokens))
-
-listing = git("grep", "-z", "-lE", ".", sha, "--", ".github/workflows")
-if listing.returncode == 1:
-    print("no")
-    sys.exit(0)
-if listing.returncode != 0:
-    print("error")
-    sys.exit(0)
-prefix = sha + ":"
-for entry in listing.stdout.split("\0"):
-    if entry == "":
-        continue
-    if not entry.startswith(prefix):
-        print("error")
-        sys.exit(0)
-    path = entry[len(prefix):]
-    if not path.endswith((".yml", ".yaml")):
-        continue
-    shown = git("show", sha + ":" + path)
-    if shown.returncode != 0:
-        print("error")
-        sys.exit(0)
-    if runs_on_head(shown.stdout):
-        print("yes")
-        sys.exit(0)
-print("no")
-' "$root" "$1" 2>/dev/null)
-  case "$out" in
-    yes|no) printf '%s' "$out" ;;
-    *) printf 'error' ;;
-  esac
+  local sha="$1" listing="$work_dir/git-ls-tree-workflows.out" entry
+  if ! (cd "$root" && git ls-tree -z --name-only "$sha" -- .github/workflows/) \
+    >"$listing" 2>"$work_dir/git-ls-tree-workflows.err"; then
+    printf 'error'
+    return
+  fi
+  while IFS= read -r -d '' entry; do
+    case "$entry" in
+      *.yml|*.yaml)
+        printf 'yes'
+        return
+        ;;
+    esac
+  done <"$listing"
+  printf 'no'
 }
 
 ci_poll_status() {
@@ -897,7 +823,7 @@ wait_ci_green() {
           return 0
         fi
         if [ "$elapsed" -ge "$ci_appear_seconds" ]; then
-          printf 'CI_STUCK проверки CI не появились за %ss после push (в .github/workflows есть workflow с триггером push/pull_request)' "$elapsed"
+          printf 'CI_STUCK проверки CI не появились за %ss после push (в .github/workflows есть workflow-файл)' "$elapsed"
           return 0
         fi
         ;;
