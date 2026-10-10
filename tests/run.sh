@@ -3170,7 +3170,7 @@ ralph_init() {
   ralph_bin "$2"
 }
 
-# ralph_clone <origin> <proj> [--branch <b>] [--advance <msg>] <ветки…> —
+# ralph_clone <origin> <proj> [--branch <b>] [--advance <msg>] [--workflow | --workflow-body <yaml>] [--workflow-file <имя>] <ветки…> —
 # фикстура «клон с origin» (issue #208: блок повторялся в 10 фикстурах).
 # origin — обычный репозиторий с рабочим деревом, НЕ bare: тесты коммитят
 # прямо в него. Базовый коммит f.txt, ветки задач, опциональный доп-коммит
@@ -3178,16 +3178,28 @@ ralph_init() {
 # локальная identity клона.
 ralph_clone() {
   local origin="$1" proj="$2"; shift 2
-  local branch=main advance="" b
+  local branch=main advance="" workflow="" workflow_body="" workflow_file="ci.yml" b
   while [ $# -gt 0 ]; do
     case "$1" in
       --branch) branch="$2"; shift 2 ;;
       --advance) advance="$2"; shift 2 ;;
+      --workflow) workflow=1; shift ;;
+      --workflow-body) workflow=1; workflow_body="$2"; shift 2 ;;
+      --workflow-file) workflow_file="$2"; shift 2 ;;
       *) break ;;
     esac
   done
   mkdir -p "$origin"
   (cd "$origin" && git_c init -q -b "$branch" && echo base > f.txt && git add f.txt && git_c commit -qm base)
+  if [ -n "$workflow" ]; then
+    mkdir -p "$origin/.github/workflows"
+    if [ -n "$workflow_body" ]; then
+      printf '%s\n' "$workflow_body" > "$origin/.github/workflows/$workflow_file"
+    else
+      printf 'name: CI\non:\n  pull_request:\n    branches: [%s]\njobs: {}\n' "$branch" > "$origin/.github/workflows/$workflow_file"
+    fi
+    (cd "$origin" && git add .github && git_c commit -qm workflow)
+  fi
   for b in "$@"; do (cd "$origin" && git_c branch "$b"); done
   if [ -n "$advance" ]; then
     (cd "$origin" && echo more > g.txt && git add g.txt && git_c commit -qm "$advance")
@@ -6522,7 +6534,12 @@ cat > "$RBIN_TRUNK/issues-fixture.json" <<'EOF'
 EOF
 claude_stub_one_pr "$RBIN_TRUNK" args '5060' false 'issue-2060-x'
 IFS= read -r -d '' trunk_gh_extra <<EXTRA || true
-  "pr view") echo "MERGEABLE null issue-2060-x"; exit 0 ;;
+  "pr view")
+    case "\$*" in
+      *statusCheckRollup*) printf '{"headRefOid":"%s","statusCheckRollup":[]}\n' "\$(git rev-parse HEAD)" ;;
+      *) echo "MERGEABLE null issue-2060-x" ;;
+    esac
+    exit 0 ;;
   "pr checkout") (cd "$RALPH_TRUNK" && git checkout -B issue-2060-x origin/issue-2060-x) >/dev/null 2>&1; exit \$? ;;
   "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
 EXTRA
@@ -6666,6 +6683,340 @@ assert_not_contains "AC-1: adk-ralph: (issue #129) #2081 не осталась �
 ralph_mb_log=$(cat "$(ralph_journal "$TMP/ralph-mb-logs")" 2>/dev/null)
 assert_contains "AC-1: adk-ralph: (issue #129) журнал содержит запись по #2081 (не пропала молча)" \
   "$ralph_mb_log" '"issue": "2081"'
+
+export ADK_RALPH_CI_POLL_SECONDS=0.05
+
+CI_ITEM_OK='{"__typename":"CheckRun","name":"gates","status":"COMPLETED","conclusion":"SUCCESS","workflowName":"CI"}'
+CI_ITEM_SKIPPED='{"__typename":"CheckRun","name":"optional","status":"COMPLETED","conclusion":"SKIPPED","workflowName":"CI"}'
+CI_ITEM_PENDING='{"__typename":"CheckRun","name":"gates","status":"IN_PROGRESS","conclusion":null,"workflowName":"CI"}'
+CI_ITEM_RED='{"__typename":"CheckRun","name":"version-bump-check","status":"COMPLETED","conclusion":"FAILURE","workflowName":"Version bump gate"}'
+CI_ITEM_MYSTERY='{"__typename":"CheckRun","name":"gates","status":"COMPLETED","conclusion":"MYSTERY","workflowName":"CI"}'
+
+ci_view() {
+  printf '{"headRefOid":"%s","statusCheckRollup":[%s]}\n' "${2:-@HEAD@}" "$1"
+}
+
+ci_case() {
+  local name="$1" issue="$2" pr="$3" wf="$4" adv="$5" cfg_json="${6:-}"
+  local branch="issue-$issue-x" opts=() extra
+  CI_ORIGIN="$TMP/ralph-ci-$name-origin"
+  CI_PROJ="$TMP/ralph-ci-$name-proj"
+  CI_BIN="$TMP/ralph-ci-$name-bin"
+  CI_LOGS="$TMP/ralph-ci-$name-logs"
+  CI_NOTIFY="$TMP/ralph-ci-$name-notify.log"
+  CI_CFG="$RALPH_MERGE_ON_CFG"
+  case "$wf" in
+    yes) opts+=(--workflow) ;;
+    no) ;;
+    *) opts+=(--workflow-body "$wf") ;;
+  esac
+  [ -n "${CI_WORKFLOW_FILE:-}" ] && opts+=(--workflow-file "$CI_WORKFLOW_FILE")
+  [ "$adv" = yes ] && opts+=(--advance "advance main")
+  ralph_clone "$CI_ORIGIN" "$CI_PROJ" ${opts[@]+"${opts[@]}"} "$branch"
+  ralph_bin "$CI_BIN"
+  printf '[{"number": %s, "labels": [{"name":"type:task"}], "body": "Зависит от: —"}]\n' "$issue" > "$CI_BIN/issues-fixture.json"
+  claude_stub_one_pr "$CI_BIN" args "$pr" false "$branch"
+  IFS= read -r -d '' extra <<EXTRA || true
+  "pr view")
+    case "\$*" in
+      *statusCheckRollup*)
+        n=\$(( \$(cat "\$d/ci-view-calls" 2>/dev/null || echo 0) + 1 ))
+        echo "\$n" > "\$d/ci-view-calls"
+        if [ "\$(cat "\$d/ci-stop-at" 2>/dev/null)" = "\$n" ]; then mkdir -p .adk; : > .adk/stop; fi
+        if [ -f "\$d/ci-view-fail" ]; then echo "gh: HTTP 502" >&2; exit 1; fi
+        f="\$d/ci-view-\$n.json"; [ -f "\$f" ] || f="\$d/ci-view-last.json"
+        sed "s/@HEAD@/\$(git rev-parse HEAD)/" "\$f"
+        exit 0 ;;
+      *) echo "MERGEABLE null $branch"; exit 0 ;;
+    esac ;;
+  "pr checkout") (cd "$CI_PROJ" && git checkout -B $branch origin/$branch) >/dev/null 2>&1; exit \$? ;;
+  "pr merge") echo "\$*" >> "\$d/pr-merge-calls.log"; exit 0 ;;
+EXTRA
+  gh_ralph_stub "$CI_BIN" "$CI_BIN/issues-fixture.json" "$CI_BIN/prs-fixture.json" log "$extra"
+  if [ -n "$cfg_json" ]; then
+    CI_CFG="$TMP/ralph-ci-$name-config.json"
+    printf '%s\n' "$cfg_json" > "$CI_CFG"
+  fi
+}
+
+ci_run() {
+  run_ralph "$CI_PROJ" "$CI_BIN" "$CI_LOGS" "$CI_NOTIFY" "$CI_CFG"
+}
+
+ci_poll_count() { cat "$CI_BIN/ci-view-calls" 2>/dev/null || echo 0; }
+
+ci_case none 2201 5201 no yes
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_none_out=$(ci_run)
+assert_exit "issue #196: актуализированная ветка без CI — прогон завершается штатно" 0 $?
+ci_none_merge=$(cat "$CI_BIN/pr-merge-calls.log" 2>/dev/null)
+ci_none_sha=$(git -C "$CI_ORIGIN" rev-parse issue-2201-x)
+assert_contains "issue #196: CI не настроен — merge выполнен с --match-head-commit запушенной головы" \
+  "$ci_none_merge" "pr merge 5201 --squash --delete-branch --match-head-commit $ci_none_sha"
+assert_exit "issue #196: CI не настроен — статус проверок запрошен ровно один раз, без ожидания" \
+  1 "$(ci_poll_count)"
+assert_contains "issue #196: CI не настроен — сводка: смержено" "$ci_none_out" "Смержено:  #2201"
+
+ci_case wait 2202 5202 yes yes
+ci_view "" > "$CI_BIN/ci-view-1.json"
+ci_view "$CI_ITEM_PENDING" > "$CI_BIN/ci-view-2.json"
+ci_view "$CI_ITEM_OK,$CI_ITEM_SKIPPED" > "$CI_BIN/ci-view-last.json"
+ci_wait_out=$(ci_run)
+assert_exit "issue #196: пустой список → pending → зелёный — прогон завершается штатно" 0 $?
+ci_wait_merge=$(cat "$CI_BIN/pr-merge-calls.log" 2>/dev/null)
+assert_contains "issue #196: дождались зелёного CI — merge выполнен" "$ci_wait_merge" "pr merge 5202 --squash"
+[ "$(ci_poll_count)" -ge 3 ]
+assert_exit "issue #196: пустой ответ сразу после push не принят за «CI не настроен» — опрос продолжался до зелёного" 0 $?
+assert_contains "issue #196: сводка — #2202 смержена после ожидания" "$ci_wait_out" "Смержено:  #2202"
+
+ci_case ext 2203 5203 no yes
+ci_view "$CI_ITEM_PENDING" > "$CI_BIN/ci-view-1.json"
+ci_view "$CI_ITEM_OK" > "$CI_BIN/ci-view-last.json"
+ci_ext_out=$(ci_run)
+assert_exit "issue #196: видимые проверки без workflow в репозитории — прогон завершается штатно" 0 $?
+ci_ext_merge=$(cat "$CI_BIN/pr-merge-calls.log" 2>/dev/null)
+assert_contains "issue #196: видимые проверки без workflow — merge после зелёного" "$ci_ext_merge" "pr merge 5203 --squash"
+[ "$(ci_poll_count)" -ge 2 ]
+assert_exit "issue #196: видимые проверки без workflow — pending дождались, а не смержили по первому ответу" 0 $?
+
+ci_case red 2204 5204 yes yes
+ci_view "$CI_ITEM_OK,$CI_ITEM_RED" > "$CI_BIN/ci-view-last.json"
+ci_red_out=$(ci_run)
+assert_exit "issue #196: красный CI — прогон завершается штатно (застревает задача, не прогон)" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: красный CI — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: красный CI — застревание называет упавшую проверку" \
+  "$ci_red_out" "#2204 (CI красный: version-bump-check)"
+assert_contains "issue #196: красный CI — причина остановки прогона «очередь пуста», не полный стоп" \
+  "$ci_red_out" "Причина остановки: очередь пуста"
+assert_contains "issue #196: красный CI — issue помечен needs-human" \
+  "$(cat "$CI_BIN/issue-edit.log" 2>/dev/null)" "issue edit 2204 --add-label needs-human"
+assert_contains "issue #196: красный CI — журнал: result=stuck с причиной" \
+  "$(cat "$(ralph_journal "$CI_LOGS")" 2>/dev/null)" '"reason": "CI красный: version-bump-check"'
+[ "$(git -C "$CI_PROJ" rev-parse --abbrev-ref HEAD)" = "main" ]
+assert_exit "issue #196: красный CI — дерево вернулось на default branch" 0 $?
+
+ci_case timeout 2205 5205 yes yes '{"policies": {"autopilot": {"canMerge": true, "budget": {"ci": {"maxMinutes": 0.01}}}}}'
+ci_view "$CI_ITEM_PENDING" > "$CI_BIN/ci-view-last.json"
+ci_timeout_out=$(ci_run)
+assert_exit "issue #196: таймаут ожидания CI — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: таймаут ожидания CI — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: таймаут ожидания CI — застревание называет таймаут" \
+  "$ci_timeout_out" "#2205 (CI не завершился за"
+
+ci_case ghfail 2206 5206 yes yes
+: > "$CI_BIN/ci-view-fail"
+ci_ghfail_out=$(ci_run)
+assert_exit "issue #196: gh не отдаёт статус CI — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: gh не отдаёт статус CI — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: gh не отдаёт статус CI — причина застревания" \
+  "$ci_ghfail_out" "#2206 (не удалось получить статус CI (gh pr view))"
+assert_exit "issue #196: gh не отдаёт статус CI — ровно 3 попытки, не бесконечный ретрай" 3 "$(ci_poll_count)"
+assert_contains "issue #196: gh не отдаёт статус CI — stderr gh показан в выводе прогона" \
+  "$ci_ghfail_out" "gh: HTTP 502"
+
+ci_case badjson 2207 5207 yes yes
+printf 'this is not json\n' > "$CI_BIN/ci-view-last.json"
+ci_badjson_out=$(ci_run)
+assert_exit "issue #196: нераспознанный ответ gh — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: нераспознанный ответ gh — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: нераспознанный ответ gh — причина застревания" \
+  "$ci_badjson_out" "#2207 (не удалось получить статус CI (gh pr view))"
+
+ci_case mystery 2208 5208 yes yes
+ci_view "$CI_ITEM_OK,$CI_ITEM_MYSTERY" > "$CI_BIN/ci-view-last.json"
+ci_mystery_out=$(ci_run)
+assert_exit "issue #196: неизвестный исход проверки — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: неизвестный исход проверки — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: неизвестный исход проверки — причина застревания" \
+  "$ci_mystery_out" "#2208 (неизвестное состояние проверки CI"
+
+ci_case stale 2209 5209 yes yes
+ci_view "$CI_ITEM_OK" "0000000000000000000000000000000000000000" > "$CI_BIN/ci-view-last.json"
+export ADK_RALPH_CI_APPEAR_SECONDS=1
+ci_stale_out=$(ci_run)
+unset ADK_RALPH_CI_APPEAR_SECONDS
+assert_exit "issue #196: зелёные проверки чужой головы — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: зелёные проверки чужой головы — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: зелёные проверки чужой головы — причина застревания" \
+  "$ci_stale_out" "#2209 (GitHub не показал запушенную голову PR"
+
+ci_case noappear 2210 5210 yes yes
+ci_view "" > "$CI_BIN/ci-view-last.json"
+export ADK_RALPH_CI_APPEAR_SECONDS=1
+ci_noappear_out=$(ci_run)
+unset ADK_RALPH_CI_APPEAR_SECONDS
+assert_exit "issue #196: проверки не появились — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: проверки не появились при настроенном CI — gh pr merge не вызван" 0 $?
+assert_contains "issue #196: проверки не появились — причина застревания" \
+  "$ci_noappear_out" "#2210 (проверки CI не появились за"
+
+ci_case current 2211 5211 yes no
+ci_view "$CI_ITEM_PENDING" > "$CI_BIN/ci-view-last.json"
+ci_current_out=$(ci_run)
+assert_exit "issue #196: актуальная ветка — прогон завершается штатно" 0 $?
+assert_exit "issue #196: актуальная ветка — статус CI не запрашивался вовсе" 0 "$(ci_poll_count)"
+ci_current_merge=$(cat "$CI_BIN/pr-merge-calls.log" 2>/dev/null)
+assert_contains "issue #196: актуальная ветка — merge прежней командой" \
+  "$ci_current_merge" "pr merge 5211 --squash --delete-branch"
+assert_not_contains "issue #196: актуальная ветка — без --match-head-commit" \
+  "$ci_current_merge" "match-head-commit"
+
+export ADK_RALPH_CI_APPEAR_SECONDS=1
+CI_WORKFLOW_FILE='README.md'
+ci_case wfreadme 2301 5301 $'# Workflows\n\non: push\n' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfreadme_out=$(ci_run)
+assert_contains "issue #196: в workflows только README.md и нет проверок — CI не настроен, merge без ожидания" \
+  "$ci_wfreadme_out" "Смержено:  #2301"
+CI_WORKFLOW_FILE='ci.yml.disabled'
+ci_case wfdisabled 2302 5302 $'name: CI\non: push\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfdisabled_out=$(ci_run)
+assert_contains "issue #196: в workflows только ci.yml.disabled и нет проверок — CI не настроен, merge без ожидания" \
+  "$ci_wfdisabled_out" "Смержено:  #2302"
+ci_case wfschedule 2303 5303 $'name: Nightly\non:\n  schedule:\n    - cron: "0 0 * * *"\njobs: {}' yes
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfschedule_out=$(ci_run)
+assert_contains "issue #196: workflow только по schedule — файл есть, CI настроен, пустой список ждёт окно появления, не merge" \
+  "$ci_wfschedule_out" "#2303 (проверки CI не появились за"
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: workflow только по schedule — gh pr merge не вызван" 0 $?
+CI_WORKFLOW_FILE='dispatch.yaml'
+ci_case wfyaml 2304 5304 $'name: Manual\non: workflow_dispatch\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfyaml_out=$(ci_run)
+assert_contains "issue #196: файл .yaml — CI настроен независимо от триггера, пустой список ждёт окно появления" \
+  "$ci_wfyaml_out" "#2304 (проверки CI не появились за"
+CI_WORKFLOW_FILE='тест "q".yml'
+ci_case wfunicode 2305 5305 $'name: CI\non: push\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfunicode_out=$(ci_run)
+assert_contains "issue #196: workflow с не-ASCII именем файла и кавычкой в имени виден — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfunicode_out" "#2305 (проверки CI не появились за"
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: workflow с не-ASCII именем файла — gh pr merge не вызван" 0 $?
+CI_WORKFLOW_FILE='CI.YML'
+ci_case wfupper 2306 5306 $'name: CI\non: push\njobs: {}' yes
+unset CI_WORKFLOW_FILE
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfupper_out=$(ci_run)
+assert_contains "issue #196: расширение workflow в верхнем регистре — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfupper_out" "#2306 (проверки CI не появились за"
+ci_case wfsub 2307 5307 yes yes
+mkdir -p "$CI_PROJ/app"
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_wfsub_out=$(run_ralph "$CI_PROJ/app" "$CI_BIN" "$CI_LOGS" "$CI_NOTIFY" "$CI_CFG")
+assert_contains "issue #196: корень проекта — подкаталог репозитория, workflow в корне репозитория виден — CI настроен, пустой список ждёт окно появления" \
+  "$ci_wfsub_out" "#2307 (проверки CI не появились за"
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: корень проекта — подкаталог репозитория — gh pr merge не вызван" 0 $?
+unset ADK_RALPH_CI_APPEAR_SECONDS
+
+ci_case lstreefail 2215 5215 yes yes
+ci_view "" > "$CI_BIN/ci-view-last.json"
+printf '#!/usr/bin/env bash\n[ "$1" = ls-tree ] && exit 128\nexec %s "$@"\n' "$(command -v git)" > "$CI_BIN/git"
+chmod +x "$CI_BIN/git"
+ci_lstreefail_out=$(ci_run)
+assert_exit "issue #196: сбой git ls-tree по workflow — прогон завершается штатно" 0 $?
+[ ! -f "$CI_BIN/pr-merge-calls.log" ]
+assert_exit "issue #196: сбой git ls-tree по workflow — gh pr merge не вызван (сбой не принят за «CI не настроен»)" 0 $?
+assert_contains "issue #196: сбой git ls-tree по workflow — причина застревания" \
+  "$ci_lstreefail_out" "#2215 (не удалось определить, настроен ли CI"
+assert_exit "issue #196: сбой git ls-tree по workflow — статус проверок не запрашивался" 0 "$(ci_poll_count)"
+
+ci_check_run() {
+  printf '{"__typename":"CheckRun","name":"gates","status":"%s","conclusion":%s,"workflowName":"CI"}' "$1" "$2"
+}
+ci_status_ctx() {
+  printf '{"__typename":"StatusContext","context":"ext-ci","state":"%s"}' "$1"
+}
+
+ci_cls_n=0
+for ci_cls in \
+  "red|gates|$(ci_check_run COMPLETED '"CANCELLED"')" \
+  "red|gates|$(ci_check_run COMPLETED '"TIMED_OUT"')" \
+  "red|gates|$(ci_check_run COMPLETED '"ACTION_REQUIRED"')" \
+  "red|gates|$(ci_check_run COMPLETED '"STARTUP_FAILURE"')" \
+  "red|gates|$(ci_check_run COMPLETED '"STALE"')" \
+  "red|ext-ci|$(ci_status_ctx FAILURE)" \
+  "red|ext-ci|$(ci_status_ctx ERROR)" \
+  "unknown|gates|$(ci_check_run COMPLETED null)" \
+  "unknown|x|{\"__typename\":\"SomethingNew\",\"name\":\"x\"}"; do
+  ci_cls_n=$((ci_cls_n + 1))
+  ci_cls_kind="${ci_cls%%|*}"
+  ci_cls_rest="${ci_cls#*|}"
+  ci_cls_name="${ci_cls_rest%%|*}"
+  ci_cls_item="${ci_cls_rest#*|}"
+  ci_case "cls$ci_cls_n" "$((2400 + ci_cls_n))" "$((5400 + ci_cls_n))" yes yes
+  ci_view "$CI_ITEM_OK,$ci_cls_item" > "$CI_BIN/ci-view-last.json"
+  ci_cls_out=$(ci_run)
+  if [ "$ci_cls_kind" = red ]; then
+    ci_cls_want="#$((2400 + ci_cls_n)) (CI красный: $ci_cls_name)"
+  else
+    ci_cls_want="#$((2400 + ci_cls_n)) (неизвестное состояние проверки CI: $ci_cls_name"
+  fi
+  assert_contains "issue #196: классификация проверки $ci_cls_n ($ci_cls_kind) — застревание, а не зелёный" \
+    "$ci_cls_out" "$ci_cls_want"
+  [ ! -f "$CI_BIN/pr-merge-calls.log" ]
+  assert_exit "issue #196: классификация проверки $ci_cls_n ($ci_cls_kind) — gh pr merge не вызван" 0 $?
+done
+
+for ci_ctx_state in EXPECTED PENDING; do
+  ci_cls_n=$((ci_cls_n + 1))
+  ci_case "cls$ci_cls_n" "$((2400 + ci_cls_n))" "$((5400 + ci_cls_n))" yes yes
+  ci_view "$(ci_status_ctx "$ci_ctx_state")" > "$CI_BIN/ci-view-1.json"
+  ci_view "$(ci_status_ctx "$ci_ctx_state")" > "$CI_BIN/ci-view-2.json"
+  ci_view "$(ci_status_ctx SUCCESS)" > "$CI_BIN/ci-view-last.json"
+  ci_ctx_out=$(ci_run)
+  assert_contains "issue #196: внешний статус $ci_ctx_state — ожидание, после SUCCESS merge выполнен" \
+    "$ci_ctx_out" "Смержено:  #$((2400 + ci_cls_n))"
+  [ "$(ci_poll_count)" -ge 4 ]
+  assert_exit "issue #196: внешний статус $ci_ctx_state не засчитан зелёным — опрос шёл до двух зелёных SUCCESS подряд" 0 $?
+done
+
+ci_case partial 2214 5214 yes yes
+ci_view "$CI_ITEM_SKIPPED" > "$CI_BIN/ci-view-1.json"
+ci_view "$CI_ITEM_SKIPPED,$CI_ITEM_PENDING" > "$CI_BIN/ci-view-2.json"
+ci_view "$CI_ITEM_SKIPPED,$CI_ITEM_OK" > "$CI_BIN/ci-view-last.json"
+ci_partial_out=$(ci_run)
+assert_exit "issue #196: частичная регистрация — прогон завершается штатно" 0 $?
+assert_contains "issue #196: частичная регистрация — после опоздавшей медленной проверки merge выполнен" \
+  "$(cat "$CI_BIN/pr-merge-calls.log" 2>/dev/null)" "pr merge 5214 --squash"
+[ "$(ci_poll_count)" -ge 4 ]
+assert_exit "issue #196: один зелёный опрос не засчитан — merge только после двух подряд идущих зелёных" 0 $?
+
+ci_case stopwait 2212 5212 yes yes
+ci_view "$CI_ITEM_PENDING" > "$CI_BIN/ci-view-1.json"
+ci_view "$CI_ITEM_OK" > "$CI_BIN/ci-view-last.json"
+echo 1 > "$CI_BIN/ci-stop-at"
+ci_stopwait_out=$(ci_run)
+ci_stopwait_merge=$(cat "$CI_BIN/pr-merge-calls.log" 2>/dev/null)
+assert_contains "issue #196: стоп-файл во время ожидания CI — задача доведена до merge" \
+  "$ci_stopwait_merge" "pr merge 5212 --squash"
+assert_contains "issue #196: стоп-файл во время ожидания CI — прогон остановлен на границе итерации" \
+  "$ci_stopwait_out" "Причина остановки: стоп-файл"
+
+ci_case badcfg 2213 5213 no yes '{"policies": {"autopilot": {"canMerge": true, "budget": {"ci": {"maxMinutes": 0}}}}}'
+ci_view "" > "$CI_BIN/ci-view-last.json"
+ci_badcfg_out=$(ci_run)
+assert_contains "issue #196: ci.maxMinutes=0 — предупреждение и дефолт 15, не «без лимита»" \
+  "$ci_badcfg_out" "policies.autopilot.budget.ci.maxMinutes='0' — не положительное число минут, использован дефолт 15"
+assert_contains "issue #196: ci.maxMinutes=0 — прогон всё равно доводит задачу до merge" \
+  "$ci_badcfg_out" "Смержено:  #2213"
+
+unset ADK_RALPH_CI_POLL_SECONDS
+
 
 # ── issue #131, ADR-017: бюджет времени на задачу — превышение прерывает
 # claude -p (SIGTERM/SIGKILL группе процессов, стаб #911 сам заменяет себя
@@ -7556,6 +7907,8 @@ assert_contains "AC-8: дефолт task.maxMinutes в коде — 45" "$ralph_
 assert_contains "AC-8: дефолт task.maxMinutes в docs/config.md — 45" "$config_doc" '| `policies.autopilot.budget.task.maxMinutes` | число (положительное, минуты) | `45` |'
 assert_contains "AC-8: дефолт run.maxMinutes в коде — 240" "$ralph_src" '"policies.autopilot.budget.run.maxMinutes" "240"'
 assert_contains "AC-8: дефолт run.maxMinutes в docs/config.md — 240" "$config_doc" '| `policies.autopilot.budget.run.maxMinutes` | число (положительное, минуты) | `240` |'
+assert_contains "AC-8: дефолт ci.maxMinutes в коде — 15" "$ralph_src" '"policies.autopilot.budget.ci.maxMinutes" "15"'
+assert_contains "AC-8: дефолт ci.maxMinutes в docs/config.md — 15" "$config_doc" '| `policies.autopilot.budget.ci.maxMinutes` | число (положительное, минуты) | `15` |'
 assert_contains "AC-8: дефолт task.maxTokens в коде — 300000" "$ralph_src" '"policies.autopilot.budget.task.maxTokens" "300000"'
 assert_contains "AC-8: дефолт task.maxTokens в docs/config.md — 300000" "$config_doc" '| `policies.autopilot.budget.task.maxTokens` | число (положительное, токены) | `300000` |'
 assert_contains "AC-8: дефолт run.maxTokens в коде — 2000000" "$ralph_src" '"policies.autopilot.budget.run.maxTokens" "2000000"'
