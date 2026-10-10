@@ -329,6 +329,243 @@ printf '{"tool_input":{"command":"gh pr merge 5"},"cwd":"%s"}' "$P/sub" | ADK_GU
 assert_exit "AC-2: human-only действует из подкаталога репозитория (конфиг от toplevel)" 2 $?
 rm "$P/adk.config.json"
 
+# issue #260: хук реагирует на вызов merge, а не на упоминание фразы в тексте
+# команды. Состояние PR draft — значит, любой ложный матч даёт exit 2.
+guard_exit() { # guard_exit <команда> [состояние PR] — exit-код bash-guard для Bash-команды
+  local payload
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}}))' "$1")
+  printf '%s' "$payload" | ADK_GUARD_PR_STATE="${2:-draft}" CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" >/dev/null 2>&1
+}
+
+guard_err() { # guard_err <команда> [состояние PR] — stderr bash-guard для Bash-команды
+  local payload
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}}))' "$1")
+  printf '%s' "$payload" | ADK_GUARD_PR_STATE="${2:-draft}" CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null
+}
+
+for c in \
+  'grep -n "gh pr merge" commands/autopilot.md' \
+  'grep -n "gh pr merge" commands/autopilot.md && gh pr checkout 7' \
+  'echo "gh pr merge 5" && gh pr comment 5 --body ok' \
+  "grep -rn 'gh pr merge' . | head -5 | cut -c1-80" \
+  'grep -n "gh pr merge" file 2>&1 >/dev/null' \
+  'gh pr merge "--help"' \
+  'grep -n "gh pr merge" a.md; grep -c "gh pr merge" b.md' \
+  'gh pr merge --help' \
+  'gh pr merge -h' \
+  'echo "gh pr merge 5"' \
+  "echo 'gh pr merge 5' > notes.txt" \
+  'printf "%s\n" "gh pr merge 5" >> log.txt' \
+  'echo ok # gh pr merge 5' \
+  'git commit -m "docs: объяснить gh pr merge в autopilot"' \
+  $'git commit -m "строка один\nстрока два: gh pr merge 5\nстрока три"' \
+  $'git commit -m "$(cat <<\'EOF\'\nfix: gh pr merge в тексте\n\nтело: gh pr merge 5\nEOF\n)"' \
+  'git tag -a v1 -m "gh pr merge"' \
+  $'cat <<\'EOF\' > notes.md\nсначала gh pr merge 5\nEOF' \
+  $'cat <<EOF\nсначала gh pr merge 5\nEOF' \
+  $'cat <<-EOF\n\tgh pr merge 5\n\tEOF' \
+  'gh pr comment 5 --body "потом gh pr merge 5" && gh pr ready 5' \
+  'gh issue create --title "x" --body "gh pr merge 5"' \
+  './hooks/scripts/adk-log.sh issue-260 event=outcome reason="gh pr merge отклонён"' \
+  'cd repo && grep -n "gh pr merge" file' \
+  'echo "it'\''s gh pr merge 5"'
+do
+  guard_exit "$c"
+  assert_exit "issue #260: упоминание фразы — не вызов, не блокируется: $c" 0 $?
+done
+
+for c in \
+  'gh pr merge 5 --squash' \
+  'cd repo && gh pr merge 5' \
+  'cd repo; gh pr merge 5' \
+  '(cd repo && gh pr merge 5)' \
+  'VAR=1 gh pr merge 5' \
+  'GH_TOKEN=x VAR=1 gh pr merge 5' \
+  'gh -R o/r pr merge 5' \
+  'gh --repo o/r pr merge 5' \
+  'gh pr -R o/r merge 5' \
+  'gh pr merge 5 -R o/r' \
+  '/usr/local/bin/gh pr merge 5' \
+  'command gh pr merge 5' \
+  'sudo gh pr merge 5' \
+  'env gh pr merge 5' \
+  'time gh pr merge 5' \
+  "bash -c 'gh pr merge 5'" \
+  'sh -c "gh pr merge 5"' \
+  'eval "gh pr merge 5"' \
+  'eval gh pr merge 5' \
+  'echo $(gh pr merge 5)' \
+  'echo "$(gh pr merge 5)"' \
+  'echo `gh pr merge 5`' \
+  'echo "`gh pr merge 5`"' \
+  'x=$(gh pr merge 5)' \
+  'echo 5 | xargs gh pr merge' \
+  'xargs -I{} gh pr merge {}' \
+  'echo "gh pr merge 5" | bash' \
+  "printf 'gh pr merge 5' | sh" \
+  $'bash <<\'EOF\'\ngh pr merge 5\nEOF' \
+  $'cat <<EOF | sh\ngh pr merge 5\nEOF' \
+  'bash <<< "gh pr merge 5"' \
+  'bash <(echo "gh pr merge 5")' \
+  'ssh host "gh pr merge 5"' \
+  'python3 -c "import os; os.system(\"gh pr merge 5\")"' \
+  $'echo ok\ngh pr merge 5' \
+  $'gh pr \\\nmerge 5' \
+  'echo "x"; gh pr merge 5' \
+  'echo "x" && gh pr merge 5' \
+  'false || gh pr merge 5' \
+  'true & gh pr merge 5' \
+  'grep -n "gh pr merge" file; gh pr merge 5' \
+  'grep -n "gh pr merge" commands/autopilot.md && ./scripts/check' \
+  'grep -n "gh pr merge" f | sort' \
+  'for f in a b; do grep -n "gh pr merge" "$f"; done' \
+  'if grep -q "gh pr merge" f; then echo found; fi' \
+  'git commit -m "gh pr merge 5" && git push' \
+  'git commit -m "docs: $(date +%F) gh pr merge"' \
+  'X=1 grep -n "gh pr merge" file' \
+  'GIT_EDITOR='\''gh pr merge 5; true'\'' git commit --allow-empty' \
+  'GIT_EXTERNAL_DIFF='\''gh pr merge 5; true'\'' git diff' \
+  'GIT_PAGER="gh pr merge 5" git log' \
+  'FOO='\''gh pr merge 5'\'' echo ok' \
+  "git grep -e foo --open-files-in-pager='gh pr merge 5;:'" \
+  "git grep -O'gh pr merge 5;:' foo" \
+  "git grep -n 'gh pr merge' commands/" \
+  "git -c core.editor='gh pr merge 5' commit --allow-empty" \
+  "rg --pre 'gh pr merge 5' foo ." \
+  "sort --compress-program='gh pr merge 5' file" \
+  "printf -v X 'gh pr merge 5'; \$X" \
+  "printf -v X 'gh pr merge 5' && \$X" \
+  "printf -v X 'gh pr merge 5'; \${=X}" \
+  "printf -v X 'gh pr merge 5'; echo ok && eval \"\$X\"" \
+  "echo 'gh pr merge 5' > f; \$(<f)" \
+  "echo 'gh pr merge 5' > f; \$(cat f)" \
+  "echo 'gh pr merge 5' > f && \`cat f\`" \
+  "echo 'gh pr merge 5' > run.sh && chmod +x run.sh && ./run.sh" \
+  "echo 'gh pr merge 5' > run.sh && env bash run.sh" \
+  "echo 'gh pr merge 5' > run.sh; sudo sh run.sh" \
+  "echo 'gh pr merge 5' | tee run.sh; nohup sh run.sh" \
+  "printf 'all:\n\tgh pr merge 5\n' > Makefile && make" \
+  "echo 'import os; os.system(\"gh pr merge 5\")' > m.py && python3 m.py" \
+  $'cat > run.sh <<\'EOF\'\ngh pr merge 5\nEOF\n./run.sh' \
+  "gh alias set --shell m 'gh pr merge 5'" \
+  "gh extension exec foo 'gh pr merge 5'" \
+  "gh codespace ssh -- 'gh pr merge 5'" \
+  $'cat <<EOF\n$(gh pr merge 5)\nEOF' \
+  $'cat <<EOF\n`gh pr merge 5`\nEOF' \
+  $'cat <<EOF\nтекст $(echo gh pr merge 5)\nEOF' \
+  $'git commit -m "$(cat <<\'EOF\'\ngh pr merge\nEOF\n)" && gh pr merge 5' \
+  'if true; then gh pr merge 5; fi' \
+  '"gh" pr merge 5' \
+  'g'\'''\''h pr merge 5' \
+  'gh pr merge 5 --body "--help"' \
+  'gh pr merge 5 --help' \
+  '$GH pr merge 5' \
+  '"$(command -v gh)" pr merge 5' \
+  'echo "gh pr merge 5" > run.sh && bash run.sh' \
+  $'cat > run.sh <<\'EOF\'\ngh pr merge 5\nEOF\nsh run.sh' \
+  'X="gh pr merge 5"; $X' \
+  'alias m="gh pr merge 5"' \
+  'echo "it'\''s; gh pr merge 5' \
+  "echo 'gh pr merge 5" \
+  'echo "$(gh pr merge 5"'
+do
+  guard_exit "$c"
+  assert_exit "issue #260: вызов merge блокируется (draft): $c" 2 $?
+done
+
+deep_open=""
+deep_close=""
+deep_i=0
+while [ "$deep_i" -lt 1200 ]; do
+  deep_open="$deep_open\$(echo "
+  deep_close="$deep_close)"
+  deep_i=$((deep_i + 1))
+done
+guard_exit "echo ${deep_open}gh pr merge 5${deep_close}"
+assert_exit "issue #260: сбой разбора (вложенность глубже лимита рекурсии) — fail-closed, вызов блокируется" 2 $?
+
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort')
+assert_contains "issue #260: упоминание в составной команде — отказ называет причину" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: упоминание в составной команде — исходная причина отказа сохранена" "$guard_msg" 'PR ещё черновик'
+guard_msg=$(guard_err 'gh pr merge 5 --squash')
+assert_contains "issue #260: настоящий вызов — прежний текст отказа про черновик" "$guard_msg" 'PR ещё черновик'
+assert_not_contains "issue #260: настоящий вызов — нет текста про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+guard_msg=$(guard_err 'gh pr merge 5 --squash' unknown)
+assert_contains "issue #260: настоящий вызов при неизвестном статусе — прежний текст отказа" "$guard_msg" 'статус PR проверить не удалось'
+
+python3 -c 'import json; print(json.dumps({"tool_input": {"command": "git commit -m \"" + "a" * 1100000 + " merge main\""}}))' > "$TMP/big-payload.json"
+ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" < "$TMP/big-payload.json" >/dev/null 2>&1
+assert_exit "issue #260: команда сверх ARG_MAX без фразы не даёт ложного отказа (stdin, не argv)" 0 $?
+rm -f "$TMP/big-payload.json"
+
+printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort' ready)
+assert_contains "issue #260: human-only + упоминание — есть пояснение про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: human-only + упоминание — видна политика-причина" "$guard_msg" 'policies.merge=human-only'
+printf '{"policies": {"merge": "human_only"}}' > "$P/adk.config.json"
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort' ready)
+assert_contains "issue #260: опечатка в policies.merge + упоминание — есть пояснение про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: опечатка в policies.merge + упоминание — видна причина" "$guard_msg" 'неизвестное значение policies.merge'
+printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort' ready)
+assert_contains "issue #260: human-review-required без approve + упоминание — есть пояснение про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: human-review-required без approve + упоминание — видна политика-причина" "$guard_msg" 'policies.merge=human-review-required'
+rm "$P/adk.config.json"
+
+. "$HOOKS/lib/command-invocation.sh"
+mkdir -p "$TMP/no-python-bin"
+(PATH="$TMP/no-python-bin"; adk_command_invokes_pr_merge 'git merge main')
+assert_exit "issue #260: python3 недоступен — хелпер трактует команду как вызов (fail-closed)" 0 $?
+(adk_command_invokes_pr_merge 'git merge main')
+assert_exit "issue #260: хелпер — команда про merge без вызова даёт 1 (не вызов)" 1 $?
+(adk_command_invokes_pr_merge 'grep "gh pr merge" f | sort')
+assert_exit "issue #260: хелпер — упоминание рядом с неинертной командой даёт 2" 2 $?
+(adk_command_invokes_pr_merge 'echo "gh pr merge 5')
+assert_exit "issue #260: хелпер — разобрать не удалось (незакрытая кавычка) даёт 0, не 2" 0 $?
+(adk_command_invokes_pr_merge "echo ${deep_open}gh pr merge 5${deep_close}")
+assert_exit "issue #260: хелпер — сбой разбора (исключение) даёт 0, не 2" 0 $?
+(adk_command_invokes_pr_merge 'gh pr merge 5')
+assert_exit "issue #260: хелпер — прямой вызов даёт 0" 0 $?
+(adk_command_invokes_pr_merge 'echo hello')
+assert_exit "issue #260: хелпер — команда без слова merge даёт 1, python не нужен" 1 $?
+
+guard_exit 'cd repo && gh pr merge 5' ready
+assert_exit "issue #260: распознанный вызов проходит обычную проверку политики — ready разрешён" 0 $?
+guard_exit 'gh -R o/r pr merge 5' ready
+assert_exit "issue #260: gh -R o/r ... merge при ready проходит политику, а не глухой отказ" 0 $?
+guard_exit 'gh pr merge 5' unknown
+assert_exit "issue #260: вызов при непроверяемом статусе PR блокируется" 2 $?
+
+printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
+guard_exit 'grep -n "gh pr merge" commands/autopilot.md' ready
+assert_exit "issue #260: human-only не блокирует упоминание фразы в grep" 0 $?
+guard_exit $'git commit -m "$(cat <<\'EOF\'\ngh pr merge 5\nEOF\n)"' ready
+assert_exit "issue #260: human-only не блокирует упоминание фразы в heredoc коммит-сообщения" 0 $?
+guard_exit 'cd repo && gh pr merge 5' ready
+assert_exit "issue #260: human-only блокирует вызов после cd ... &&" 2 $?
+guard_exit "bash -c 'gh pr merge 5'" ready
+assert_exit "issue #260: human-only блокирует вызов через bash -c" 2 $?
+printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
+guard_exit 'VAR=1 gh pr merge 5' ready
+assert_exit "issue #260: human-review-required без approve блокирует вызов с префиксом VAR=" 2 $?
+guard_exit 'echo "gh pr merge 5"' ready
+assert_exit "issue #260: human-review-required не блокирует упоминание фразы в echo" 0 $?
+rm "$P/adk.config.json"
+
+for c in \
+  'git merge main' \
+  'git commit -m "merge main"' \
+  'git merge main -m "незакрытая кавычка' \
+  'git commit -m "gh pr merge 5" 2>&1' \
+  'git commit -m "gh pr merge 5" >/dev/null' \
+  'gh pr view 5 --json mergeStateStatus' \
+  'gh pr create --title "merge fix"' \
+  'gh pr checks 5'
+do
+  guard_exit "$c"
+  assert_exit "issue #260: команда без вызова merge PR не блокируется: $c" 0 $?
+done
+
 # issue #78: проект — подкаталог более крупного репозитория со своим
 # adk.config.json (toplevel репозитория без конфига); корень конфига —
 # первый кандидат, где файл реально есть (cwd команды → git toplevel этой
