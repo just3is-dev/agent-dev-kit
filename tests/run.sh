@@ -6812,6 +6812,8 @@ assert_exit "issue #196: gh не отдаёт статус CI — gh pr merge н
 assert_contains "issue #196: gh не отдаёт статус CI — причина застревания" \
   "$ci_ghfail_out" "#2206 (не удалось получить статус CI (gh pr view))"
 assert_exit "issue #196: gh не отдаёт статус CI — ровно 3 попытки, не бесконечный ретрай" 3 "$(ci_poll_count)"
+assert_contains "issue #196: gh не отдаёт статус CI — stderr gh показан в выводе прогона" \
+  "$ci_ghfail_out" "gh: HTTP 502"
 
 ci_case badjson 2207 5207 yes yes
 printf 'this is not json\n' > "$CI_BIN/ci-view-last.json"
@@ -6870,19 +6872,26 @@ for ci_wf_body in \
   $'name: CI\non: pull_request\njobs: {}' \
   $'name: CI\non: [push, pull_request]\njobs: {}' \
   $'name: CI\non: {push: {}, pull_request: {branches: [main]}}\njobs: {}' \
-  $'name: CI\non:\n  push:\n  pull_request_target:\njobs: {}'; do
+  $'name: CI\non:\n  push:\n  pull_request_target:\njobs: {}' \
+  $'name: CI\non: ["push", "pull_request"]\njobs: {}' \
+  $'name: CI\n"on":\n  "pull_request":\n    branches: [main]\njobs: {}' \
+  $'name: CI\non: pull_request  # PR CI\njobs: {}' \
+  $'name: CI\non:\n  - pull_request # PRs\njobs: {}' \
+  $'name: CI\non: push\njobs: {}' \
+  $'name: CI\non:\n  push:\n    branches: [main]\njobs: {}' \
+  $'name: CI\njobs: {}'; do
   ci_wf_n=$((ci_wf_n + 1))
-  ci_case "wf$ci_wf_n" "$((2220 + ci_wf_n))" "$((5220 + ci_wf_n))" "$ci_wf_body" yes
+  ci_case "wf$ci_wf_n" "$((2300 + ci_wf_n))" "$((5300 + ci_wf_n))" "$ci_wf_body" yes
   ci_view "" > "$CI_BIN/ci-view-last.json"
   ci_wf_out=$(ci_run)
-  assert_contains "issue #196: форма триггера $ci_wf_n распознана как настроенный CI — пустой список ждёт окно появления, не merge" \
-    "$ci_wf_out" "#$((2220 + ci_wf_n)) (проверки CI не появились за"
+  assert_contains "issue #196: форма workflow $ci_wf_n распознана как настроенный CI — пустой список ждёт окно появления, не merge" \
+    "$ci_wf_out" "#$((2300 + ci_wf_n)) (проверки CI не появились за"
 done
-ci_case wfneg 2230 5230 $'name: CI\n# on: pull_request\non:\n  push:\n  pull_request_review:\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n    runs-on: x\n    env:\n      SHA: ${{ github.event.pull_request.head.sha }}' yes
+ci_case wfneg 2330 5330 $'name: CI\n# on: push\non:\n  schedule:\n    - cron: "0 0 * * *"\n  workflow_dispatch: # push button\n  workflow_call:\n  pull_request_review:\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n    runs-on: x\n    steps:\n      - run: git push origin HEAD\n    env:\n      SHA: ${{ github.event.pull_request.head.sha }}' yes
 ci_view "" > "$CI_BIN/ci-view-last.json"
 ci_wfneg_out=$(ci_run)
-assert_contains "issue #196: упоминания pull_request в комментарии/выражении/другом событии — CI не настроен, merge без ожидания" \
-  "$ci_wfneg_out" "Смержено:  #2230"
+assert_contains "issue #196: pull_request/push вне блока on (комментарий, выражение, run) и другие события — CI не настроен, merge без ожидания" \
+  "$ci_wfneg_out" "Смержено:  #2330"
 unset ADK_RALPH_CI_APPEAR_SECONDS
 
 ci_case grepfail 2215 5215 yes yes

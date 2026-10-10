@@ -700,21 +700,68 @@ except Exception:
 }
 
 ci_workflows_configured() {
-  local sha="$1" rc
-  (cd "$root" && git grep -qE \
-    '^[^#]*[[:space:],[{:-]pull_request(_target)?[[:space:]]*([],:}]|$)' \
-    "$sha" -- .github/workflows) >/dev/null 2>&1
-  rc=$?
-  case "$rc" in
-    0) printf 'yes' ;;
-    1) printf 'no' ;;
+  local out
+  out=$(python3 -c '
+import re, subprocess, sys
+
+root, sha = sys.argv[1], sys.argv[2]
+EVENTS = {"push", "pull_request", "pull_request_target"}
+
+def git(*args):
+    return subprocess.run(["git"] + list(args), cwd=root, capture_output=True, text=True)
+
+def runs_on_head(text):
+    block = []
+    inside = False
+    for line in text.split("\n"):
+        top = re.match(r"^[\"\x27]?on[\"\x27]?\s*:(.*)$", line)
+        if top:
+            inside = True
+            block.append(top.group(1))
+            continue
+        if inside:
+            if line.strip() == "" or line.lstrip().startswith("#") or line[0] in " \t-":
+                block.append(line)
+            else:
+                inside = False
+    if not block:
+        return True
+    cleaned = re.sub(r"(^|\s)#.*$", "", "\n".join(block), flags=re.M)
+    tokens = re.split(r"[\s\[\]{},:\"\x27]+", cleaned)
+    return bool(EVENTS.intersection(tokens))
+
+listing = git("grep", "-lE", ".", sha, "--", ".github/workflows")
+if listing.returncode == 1:
+    print("no")
+    sys.exit(0)
+if listing.returncode != 0:
+    print("error")
+    sys.exit(0)
+prefix = sha + ":"
+for entry in listing.stdout.split("\n"):
+    if not entry.startswith(prefix):
+        continue
+    path = entry[len(prefix):]
+    if not path.endswith((".yml", ".yaml")):
+        continue
+    shown = git("show", sha + ":" + path)
+    if shown.returncode != 0:
+        print("error")
+        sys.exit(0)
+    if runs_on_head(shown.stdout):
+        print("yes")
+        sys.exit(0)
+print("no")
+' "$root" "$1" 2>/dev/null)
+  case "$out" in
+    yes|no) printf '%s' "$out" ;;
     *) printf 'error' ;;
   esac
 }
 
 ci_poll_status() {
   local pr="$1" sha="$2" body
-  if ! body=$(cd "$root" && gh pr view "$pr" --json headRefOid,statusCheckRollup 2>"$work_dir/gh-pr-checks.err"); then
+  if ! body=$(cd "$root" && gh pr view "$pr" --json headRefOid,statusCheckRollup 2>"$work_dir/gh-pr-view-ci.err"); then
     printf 'ERROR'
     return
   fi
@@ -813,7 +860,7 @@ wait_ci_green() {
           return 0
         fi
         if [ "$elapsed" -ge "$ci_appear_seconds" ]; then
-          printf 'CI_STUCK проверки CI не появились за %ss после push (в .github/workflows есть workflow с pull_request)' "$elapsed"
+          printf 'CI_STUCK проверки CI не появились за %ss после push (в .github/workflows есть workflow с триггером push/pull_request)' "$elapsed"
           return 0
         fi
         ;;
@@ -837,6 +884,7 @@ wait_ci_green() {
         greens=0
         errors=$((errors + 1))
         if [ "$errors" -ge 3 ]; then
+          cat "$work_dir/gh-pr-view-ci.err" >&2 2>/dev/null
           printf 'CI_STUCK не удалось получить статус CI (gh pr view)'
           return 0
         fi
