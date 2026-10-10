@@ -37,7 +37,15 @@ fi
 # Тестовые обходы сетевых вызовов: ADK_GUARD_PR_STATE=draft|ready|unknown,
 # ADK_GUARD_PR_REVIEW_DECISION=<reviewDecision, например APPROVED>.
 . "$(cd "$(dirname "$0")" && pwd)/lib/command-invocation.sh"
-if adk_command_invokes_pr_merge "$cmd"; then
+merge_rc=0
+adk_command_invokes_pr_merge "$cmd" || merge_rc=$?
+deny_merge() {
+  if [ "$merge_rc" -eq 2 ]; then
+    deny "Запрещено: команда содержит фразу про merge PR рядом с командой вне списка безопасных — хук не может отличить упоминание от вызова. Разделите на отдельные вызовы (поиск или чтение файла отдельно от остальных команд) либо проверьте статус PR: merge возможен только для ready-PR."
+  fi
+  deny "$1"
+}
+if [ "$merge_rc" -ne 1 ]; then
   . "$(cd "$(dirname "$0")" && pwd)/lib/config.sh"
   # Корень конфига — правило и обоснование в adk_hook_config_root
   # (lib/config.sh, issue #78); финальный фолбэк здесь не изменился.
@@ -51,11 +59,11 @@ if adk_command_invokes_pr_merge "$cmd"; then
   # policies.merge — умышленно разрешающий, поэтому опечатку нельзя молча
   # трактовать как его осознанный выбор (docs/config.md) — fail-closed.
   if [ "$merge_policy_rc" -ne 0 ]; then
-    deny "Запрещено: неизвестное значение policies.merge в adk.config.json — merge заблокирован, чтобы опечатка молча не откатилась в разрешающий дефолт. Допустимо: agent-after-approve | human-review-required | human-only."
+    deny_merge "Запрещено: неизвестное значение policies.merge в adk.config.json — merge заблокирован, чтобы опечатка молча не откатилась в разрешающий дефолт. Допустимо: agent-after-approve | human-review-required | human-only."
   fi
 
   if [ "$merge_policy" = "human-only" ]; then
-    deny "Запрещено: policies.merge=human-only — merge из агентской сессии запрещён при любом статусе PR; merge делает человек вне процесса."
+    deny_merge "Запрещено: policies.merge=human-only — merge из агентской сессии запрещён при любом статусе PR; merge делает человек вне процесса."
   fi
 
   state="${ADK_GUARD_PR_STATE:-}"
@@ -82,14 +90,14 @@ if adk_command_invokes_pr_merge "$cmd"; then
   fi
   case "$state" in
     ready) ;;
-    draft) deny "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
-    *) deny "Запрещено: статус PR проверить не удалось (нет git-репозитория в контексте команды или gh недоступен) — merge только для PR со статусом ready. Подсказка: выполняй merge из директории репозитория или с флагом -R owner/repo." ;;
+    draft) deny_merge "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
+    *) deny_merge "Запрещено: статус PR проверить не удалось (нет git-репозитория в контексте команды или gh недоступен) — merge только для PR со статусом ready. Подсказка: выполняй merge из директории репозитория или с флагом -R owner/repo." ;;
   esac
 
   if [ "$merge_policy" = "human-review-required" ]; then
     [ -n "$decision" ] || decision="$gh_decision"
     if [ "$decision" != "APPROVED" ]; then
-      deny "Запрещено: policies.merge=human-review-required — merge только при человеческом approve на PR (reviewDecision=APPROVED); сейчас: ${decision:-approve отсутствует или статус недоступен}."
+      deny_merge "Запрещено: policies.merge=human-review-required — merge только при человеческом approve на PR (reviewDecision=APPROVED); сейчас: ${decision:-approve отсутствует или статус недоступен}."
     fi
   fi
 fi

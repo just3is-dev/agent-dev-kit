@@ -7,7 +7,9 @@
 #   if adk_command_invokes_pr_merge "$cmd"; then ...
 #
 # Код возврата 0 — команда вызывает merge или разобрать её однозначно не
-# удалось (fail-closed); 1 — вызова нет. Правила — в ADR-026.
+# удалось (fail-closed); 1 — вызова нет; 2 — прямого вызова не найдено, но
+# фраза упомянута рядом с командой, про которую нельзя доказать, что она её
+# не исполнит (fail-closed). Правила — в ADR-026.
 adk_command_invokes_pr_merge() {
   case "$1" in
     *merge*) ;;
@@ -325,7 +327,7 @@ def tier(cmd):
                 return 2 if cmd[k] in GIT_SUBS else 0
         return 0
     if head == "gh":
-        return 1 if len(cmd) > 1 and cmd[1] in GH_GROUPS else 0
+        return 2 if len(cmd) > 1 and cmd[1] in GH_GROUPS else 0
     return 0
 
 
@@ -345,23 +347,27 @@ def verdict(text):
     try:
         cmds = Parser(text).run()
     except Ambiguous:
-        return in_order(text)
+        return "call" if in_order(text) else "inert"
     if any(invokes_merge(c) for c in cmds):
-        return True
+        return "call"
     if not any(mentions(c) for c in cmds):
-        return False
+        return "inert"
     tiers = [tier(c) for c in cmds]
-    if 0 in tiers:
-        return True
-    return 2 in tiers and any(writes(c) for c in cmds)
+    if 0 in tiers or (2 in tiers and any(writes(c) for c in cmds)):
+        return "mention"
+    return "inert"
 
 
 try:
-    call = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+    result = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
 except Exception:
-    call = True
-print("call" if call else "inert")
+    result = "call"
+print(result)
 PY
   verdict=$(printf '%s' "$1" | python3 -c "$src" 2>/dev/null) || verdict=call
-  [ "$verdict" != inert ]
+  case "$verdict" in
+    inert) return 1 ;;
+    mention) return 2 ;;
+    *) return 0 ;;
+  esac
 }
