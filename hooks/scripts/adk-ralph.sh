@@ -699,6 +699,157 @@ except Exception:
 ' "$issue_num"
 }
 
+ci_workflows_configured() {
+  local sha="$1" rc
+  (cd "$root" && git grep -qE \
+    '^[^#]*[[:space:],[{:-]pull_request(_target)?[[:space:]]*([],:}]|$)' \
+    "$sha" -- .github/workflows) >/dev/null 2>&1
+  rc=$?
+  case "$rc" in
+    0) printf 'yes' ;;
+    1) printf 'no' ;;
+    *) printf 'error' ;;
+  esac
+}
+
+ci_poll_status() {
+  local pr="$1" sha="$2" body
+  if ! body=$(cd "$root" && gh pr view "$pr" --json headRefOid,statusCheckRollup 2>"$work_dir/gh-pr-checks.err"); then
+    printf 'ERROR'
+    return
+  fi
+  printf '%s' "$body" | python3 -c '
+import json, sys
+
+def clean(text):
+    return " ".join(str(text).replace(chr(34), chr(39)).split())[:80]
+
+def classify(item):
+    kind = item.get("__typename")
+    if kind == "CheckRun":
+        status = str(item.get("status") or "").upper()
+        conclusion = str(item.get("conclusion") or "").upper()
+        name = item.get("name") or "?"
+        if status in ("QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "REQUESTED"):
+            return "pending", name, ""
+        if status != "COMPLETED":
+            return "unknown", name, "status=" + status
+        if conclusion in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+            return "ok", name, ""
+        if conclusion in ("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"):
+            return "red", name, ""
+        return "unknown", name, "conclusion=" + conclusion
+    if kind == "StatusContext":
+        state = str(item.get("state") or "").upper()
+        name = item.get("context") or "?"
+        if state == "SUCCESS":
+            return "ok", name, ""
+        if state in ("PENDING", "EXPECTED"):
+            return "pending", name, ""
+        if state in ("FAILURE", "ERROR"):
+            return "red", name, ""
+        return "unknown", name, "state=" + state
+    return "unknown", str(item.get("name") or item.get("context") or "?"), "type=" + str(kind)
+
+try:
+    data = json.load(sys.stdin)
+    head = data["headRefOid"]
+    rollup = data["statusCheckRollup"]
+    if not isinstance(head, str) or not isinstance(rollup, list):
+        raise ValueError
+    results = [classify(item) for item in rollup]
+except Exception:
+    print("ERROR")
+    sys.exit(0)
+
+if head != sys.argv[1]:
+    print("STALE_HEAD")
+elif not results:
+    print("NONE")
+else:
+    red = [clean(n) for k, n, _ in results if k == "red"]
+    unknown = [clean(n + " (" + d + ")") for k, n, d in results if k == "unknown"]
+    if red:
+        print("RED " + ", ".join(red[:5]))
+    elif unknown:
+        print("UNKNOWN " + ", ".join(unknown[:5]))
+    elif any(k == "pending" for k, _, _ in results):
+        print("PENDING")
+    else:
+        print("GREEN")
+' "$sha" 2>/dev/null
+}
+
+wait_ci_green() {
+  local pr="$1" sha="$2" configured started elapsed status errors=0 greens=0
+  configured=$(ci_workflows_configured "$sha")
+  if [ "$configured" = "error" ]; then
+    printf 'CI_STUCK не удалось определить, настроен ли CI (git grep по .github/workflows)'
+    return 0
+  fi
+  started=$SECONDS
+  echo "adk-ralph: ожидание CI PR #$pr (до ${ci_wait_seconds}s, голова ${sha:0:12})" >&2
+  while :; do
+    status=$(ci_poll_status "$pr" "$sha")
+    elapsed=$((SECONDS - started))
+    case "$status" in
+      GREEN)
+        errors=0
+        greens=$((greens + 1))
+        if [ "$greens" -ge 2 ]; then
+          printf 'CI_GREEN'
+          return 0
+        fi
+        ;;
+      PENDING)
+        errors=0
+        greens=0
+        ;;
+      NONE)
+        errors=0
+        greens=0
+        if [ "$configured" = "no" ]; then
+          printf 'CI_NONE'
+          return 0
+        fi
+        if [ "$elapsed" -ge "$ci_appear_seconds" ]; then
+          printf 'CI_STUCK проверки CI не появились за %ss после push (в .github/workflows есть workflow с pull_request)' "$elapsed"
+          return 0
+        fi
+        ;;
+      STALE_HEAD)
+        errors=0
+        greens=0
+        if [ "$elapsed" -ge "$ci_appear_seconds" ]; then
+          printf 'CI_STUCK GitHub не показал запушенную голову PR за %ss (headRefOid не совпал с локальным HEAD)' "$elapsed"
+          return 0
+        fi
+        ;;
+      RED\ *)
+        printf 'CI_STUCK CI красный: %s' "${status#RED }"
+        return 0
+        ;;
+      UNKNOWN\ *)
+        printf 'CI_STUCK неизвестное состояние проверки CI: %s' "${status#UNKNOWN }"
+        return 0
+        ;;
+      *)
+        greens=0
+        errors=$((errors + 1))
+        if [ "$errors" -ge 3 ]; then
+          printf 'CI_STUCK не удалось получить статус CI (gh pr view)'
+          return 0
+        fi
+        ;;
+    esac
+    if [ "$elapsed" -ge "$ci_wait_seconds" ]; then
+      printf 'CI_STUCK CI не завершился за %ss (policies.autopilot.budget.ci.maxMinutes)' "$elapsed"
+      return 0
+    fi
+    sleep "$ci_poll_interval"
+  done
+}
+
 # resolve_ready_pr <issue_num> — исход «PR ready» (issue #129,
 # SPEC-003 AC-1, ADR-019): решает, мержить ли ready-PR по политике проекта,
 # и при необходимости актуализирует ветку и мержит. Печатает ровно одну из
@@ -726,10 +877,7 @@ except Exception:
 #   неопределённость — тоже причина застревания, не бесконечный ретрай;
 # - policies.merge=human-review-required требует человеческого approve —
 #   ralph берёт факт из `gh pr view --json reviewDecision` (тот же признак,
-#   что канон /autopilot и bash-guard.sh);
-# - CI-watch (`gh pr checks --watch` из канона шага 3 /autopilot) сознательно
-#   не реализован в этой версии — задокументированное ограничение ADR-019 §4
-#   (задача на реализацию — issue #196), не пропуск по невнимательности.
+#   что канон /autopilot и bash-guard.sh).
 resolve_ready_pr() {
   local issue_num="$1"
   local can_merge can_merge_rc merge_policy merge_policy_rc
@@ -754,7 +902,7 @@ resolve_ready_pr() {
     return 0
   fi
 
-  local pr_number
+  local pr_number pushed_sha=""
   pr_number=$(find_pr_number "$issue_num")
   if [ "$pr_number" = "error" ]; then
     printf 'STUCK не удалось определить номер PR для merge'
@@ -902,6 +1050,23 @@ resolve_ready_pr() {
       printf 'STUCK не удалось запушить актуализированную ветку'
       return 0
     fi
+
+    pushed_sha=$(cd "$root" && git rev-parse HEAD 2>/dev/null)
+    case "$pushed_sha" in
+      ''|*[!0-9a-f]*)
+        printf 'STUCK не удалось определить запушенную голову ветки (git rev-parse HEAD)'
+        return 0
+        ;;
+    esac
+
+    local ci_result ci_reason
+    ci_result=$(wait_ci_green "$pr_number" "$pushed_sha")
+    if [ "$ci_result" != "CI_GREEN" ] && [ "$ci_result" != "CI_NONE" ]; then
+      ci_reason="${ci_result#CI_STUCK }"
+      [ -n "$ci_reason" ] || ci_reason="не удалось дождаться CI (пустой ответ ожидания)"
+      printf 'STUCK %s' "$ci_reason"
+      return 0
+    fi
   fi
 
   # Флаг слияния — производная conventions.squash × conventions.branchUpdate
@@ -919,7 +1084,8 @@ resolve_ready_pr() {
     merge-commit) merge_flag="--merge" ;;
   esac
 
-  if ! (cd "$root" && gh pr merge "$pr_number" "$merge_flag" --delete-branch) \
+  if ! (cd "$root" && gh pr merge "$pr_number" "$merge_flag" --delete-branch \
+    ${pushed_sha:+--match-head-commit "$pushed_sha"}) \
     >"$work_dir/gh-pr-merge.err" 2>&1; then
     cat "$work_dir/gh-pr-merge.err" >&2
     printf 'STUCK gh pr merge не удался'
@@ -1275,6 +1441,20 @@ task_token_budget=$(config_number "policies.autopilot.budget.task.maxTokens" "30
 # противоречие смыслу атрибута), иначе предупреждение и дефолт 2.
 size_multiplier=$(config_number "policies.autopilot.budget.sizeLargeMultiplier" "2" multiplier_ge1)
 run_token_budget=$(config_number "policies.autopilot.budget.run.maxTokens" "2000000" positive_tokens)
+ci_wait_seconds=$(config_number "policies.autopilot.budget.ci.maxMinutes" "15" positive_minutes)
+ci_poll_interval=$(python3 -c '
+import math, sys
+try:
+    value = float(sys.argv[1])
+    ok = math.isfinite(value) and value > 0
+except ValueError:
+    ok = False
+print("%.3f" % value if ok else "10")
+' "${ADK_RALPH_CI_POLL_SECONDS:-10}")
+ci_appear_seconds="${ADK_RALPH_CI_APPEAR_SECONDS:-120}"
+case "$ci_appear_seconds" in
+  ''|*[!0-9]*) ci_appear_seconds=120 ;;
+esac
 run_tokens_used=0  # сумма расхода прогона (issue #132) — токеновая половина
                    # бюджета прогона и поле tokens= в event=run_end
 
