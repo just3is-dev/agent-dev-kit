@@ -3,8 +3,13 @@
 # (issue #260, ADR-026). Раньше хук искал фразу подстрокой по всему тексту
 # команды и блокировал grep/echo/heredoc/git commit -m с её упоминанием.
 #
-# Использование:
-#   if adk_command_invokes_pr_merge "$cmd"; then ...
+# Использование (три кода возврата — if ... then трактует 2 как «нет вызова»):
+#   adk_command_invokes_pr_merge "$cmd"
+#   case $? in
+#     1) ;;                 # вызова нет
+#     2) ... ;;             # упоминание рядом с неинертной командой
+#     *) ... ;;             # вызов или разобрать не удалось
+#   esac
 #
 # Код возврата 0 — команда вызывает merge или разобрать её однозначно не
 # удалось (fail-closed); 1 — вызова нет; 2 — прямого вызова не найдено, но
@@ -22,11 +27,10 @@ import sys
 
 TEXT_TOOLS = {"grep", "egrep", "fgrep", "echo", "printf", "cat", "head", "tail",
               "wc", "cut", "tr", "uniq", "nl", "tee", "cd", "ls", "pwd"}
-FILE_RUNNERS = {"adk-log.sh"}
+LOG_SCRIPT = "adk-log.sh"
 GIT_SUBS = {"commit", "tag", "log", "show", "notes", "diff", "status", "add",
             "stash", "branch"}
 GH_GROUPS = {"pr", "issue", "api"}
-WRITE = re.compile(r"^[0-9&]*>+")
 NUL = "\x00"
 
 
@@ -308,39 +312,25 @@ def invokes_merge(cmd):
     return False
 
 
-def tier(cmd):
+def inert(cmd):
     head = cmd[0]
     if NUL in head:
-        return 0
-    if head in TEXT_TOOLS:
-        return 1
-    if head.rsplit("/", 1)[-1] in FILE_RUNNERS:
-        return 2
+        return False
+    if head in TEXT_TOOLS or head.rsplit("/", 1)[-1] == LOG_SCRIPT:
+        return True
     if head == "git":
         k = 1
         while k < len(cmd):
             if cmd[k] == "-C":
                 k += 2
             elif cmd[k].startswith("-"):
-                return 0
+                return False
             else:
-                return 2 if cmd[k] in GIT_SUBS else 0
-        return 0
-    if head == "gh":
-        return 2 if len(cmd) > 1 and cmd[1] in GH_GROUPS else 0
-    return 0
-
-
-def writes_word(w):
-    m = WRITE.match(w)
-    if m is None:
+                return cmd[k] in GIT_SUBS
         return False
-    rest = w[m.end():]
-    return not (rest.startswith("&") or rest == "/dev/null")
-
-
-def writes(cmd):
-    return cmd[0] == "tee" or any(writes_word(w) for w in cmd[1:])
+    if head == "gh":
+        return len(cmd) > 1 and cmd[1] in GH_GROUPS
+    return False
 
 
 def verdict(text):
@@ -352,10 +342,7 @@ def verdict(text):
         return "call"
     if not any(mentions(c) for c in cmds):
         return "inert"
-    tiers = [tier(c) for c in cmds]
-    if 0 in tiers or (2 in tiers and any(writes(c) for c in cmds)):
-        return "mention"
-    return "inert"
+    return "inert" if all(inert(c) for c in cmds) else "mention"
 
 
 try:

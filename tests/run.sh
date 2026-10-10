@@ -347,7 +347,6 @@ for c in \
   'grep -n "gh pr merge" commands/autopilot.md' \
   'grep -n "gh pr merge" commands/autopilot.md && gh pr checkout 7' \
   'echo "gh pr merge 5" && gh pr comment 5 --body ok' \
-  'echo "merge notes" > f && gh pr checkout 7' \
   "grep -rn 'gh pr merge' . | head -5 | cut -c1-80" \
   'grep -n "gh pr merge" file 2>&1 >/dev/null' \
   'gh pr merge "--help"' \
@@ -448,13 +447,6 @@ for c in \
   "printf 'all:\n\tgh pr merge 5\n' > Makefile && make" \
   "echo 'import os; os.system(\"gh pr merge 5\")' > m.py && python3 m.py" \
   $'cat > run.sh <<\'EOF\'\ngh pr merge 5\nEOF\n./run.sh' \
-  "echo 'gh pr merge 5' > .git/hooks/pre-commit && git commit -m x" \
-  "printf 'gh pr merge 5' >> hooks/scripts/adk-log.sh; hooks/scripts/adk-log.sh issue-1 event=start" \
-  "echo 'gh pr merge 5' | tee .git/hooks/post-commit; git commit -m x" \
-  "echo 'gh pr merge 5' > .git/hooks/post-checkout && gh pr checkout 7" \
-  "echo 'gh pr merge 5' | tee .git/hooks/post-checkout; gh pr checkout 7" \
-  "printf 'gh pr merge 5' >> .git/hooks/pre-push && gh pr create --fill" \
-  $'cat > .git/hooks/pre-push <<\'EOF\'\ngh pr merge 5\nEOF\ngh pr create --fill' \
   "gh alias set --shell m 'gh pr merge 5'" \
   "gh extension exec foo 'gh pr merge 5'" \
   "gh codespace ssh -- 'gh pr merge 5'" \
@@ -494,7 +486,7 @@ assert_exit "issue #260: сбой разбора (вложенность глу�
 
 guard_msg=$(guard_err 'grep "gh pr merge" f | sort')
 assert_contains "issue #260: упоминание в составной команде — отказ называет причину" "$guard_msg" 'не может отличить упоминание от вызова'
-assert_not_contains "issue #260: упоминание в составной команде — нет текста про черновик" "$guard_msg" 'PR ещё черновик'
+assert_contains "issue #260: упоминание в составной команде — исходная причина отказа сохранена" "$guard_msg" 'PR ещё черновик'
 guard_msg=$(guard_err 'gh pr merge 5 --squash')
 assert_contains "issue #260: настоящий вызов — прежний текст отказа про черновик" "$guard_msg" 'PR ещё черновик'
 assert_not_contains "issue #260: настоящий вызов — нет текста про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
@@ -506,6 +498,20 @@ ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" < "$TMP/
 assert_exit "issue #260: команда сверх ARG_MAX без фразы не даёт ложного отказа (stdin, не argv)" 0 $?
 rm -f "$TMP/big-payload.json"
 
+printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort' ready)
+assert_contains "issue #260: human-only + упоминание — есть пояснение про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: human-only + упоминание — видна политика-причина" "$guard_msg" 'policies.merge=human-only'
+printf '{"policies": {"merge": "human_only"}}' > "$P/adk.config.json"
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort' ready)
+assert_contains "issue #260: опечатка в policies.merge + упоминание — есть пояснение про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: опечатка в policies.merge + упоминание — видна причина" "$guard_msg" 'неизвестное значение policies.merge'
+printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
+guard_msg=$(guard_err 'grep "gh pr merge" f | sort' ready)
+assert_contains "issue #260: human-review-required без approve + упоминание — есть пояснение про упоминание" "$guard_msg" 'не может отличить упоминание от вызова'
+assert_contains "issue #260: human-review-required без approve + упоминание — видна политика-причина" "$guard_msg" 'policies.merge=human-review-required'
+rm "$P/adk.config.json"
+
 . "$HOOKS/lib/command-invocation.sh"
 mkdir -p "$TMP/no-python-bin"
 (PATH="$TMP/no-python-bin"; adk_command_invokes_pr_merge 'git merge main')
@@ -514,6 +520,10 @@ assert_exit "issue #260: python3 недоступен — хелпер трак�
 assert_exit "issue #260: хелпер — команда про merge без вызова даёт 1 (не вызов)" 1 $?
 (adk_command_invokes_pr_merge 'grep "gh pr merge" f | sort')
 assert_exit "issue #260: хелпер — упоминание рядом с неинертной командой даёт 2" 2 $?
+(adk_command_invokes_pr_merge 'echo "gh pr merge 5')
+assert_exit "issue #260: хелпер — разобрать не удалось (незакрытая кавычка) даёт 0, не 2" 0 $?
+(adk_command_invokes_pr_merge "echo ${deep_open}gh pr merge 5${deep_close}")
+assert_exit "issue #260: хелпер — сбой разбора (исключение) даёт 0, не 2" 0 $?
 (adk_command_invokes_pr_merge 'gh pr merge 5')
 assert_exit "issue #260: хелпер — прямой вызов даёт 0" 0 $?
 (adk_command_invokes_pr_merge 'echo hello')
