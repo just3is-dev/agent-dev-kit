@@ -18,14 +18,13 @@ adk_command_invokes_pr_merge() {
 import re
 import sys
 
-SIMPLE = {"grep", "egrep", "fgrep", "rg", "echo", "printf", "cat", "head",
-          "tail", "wc", "sort", "uniq", "cut", "tr", "tee", "nl", "adk-log.sh"}
-GIT_SUBS = {"commit", "tag", "log", "show", "notes", "diff", "grep", "status",
-            "add", "stash", "branch"}
+TEXT_TOOLS = {"grep", "egrep", "fgrep", "echo", "printf", "cat", "head", "tail",
+              "wc", "cut", "tr", "uniq", "nl", "tee", "cd", "ls", "pwd"}
+FILE_RUNNERS = {"adk-log.sh"}
+GIT_SUBS = {"commit", "tag", "log", "show", "notes", "diff", "status", "add",
+            "stash", "branch"}
 GH_GROUPS = {"pr", "issue", "api"}
-RUNNERS = {"bash", "sh", "zsh", "dash", "ksh", "source", ".", "eval", "exec"}
-KEYWORDS = {"if", "then", "elif", "else", "while", "until", "do", "!", "{"}
-ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+WRITE = re.compile(r"^[0-9&]*>+")
 NUL = "\x00"
 
 
@@ -33,54 +32,47 @@ class Ambiguous(Exception):
     pass
 
 
-def in_order(text, words):
+PHRASE = (r"gh\b", r"\bpr\b", r"\bmerge\b")
+
+
+def in_order(text):
     pos = 0
-    for w in words:
-        m = re.compile(r"\b" + re.escape(w) + r"\b").search(text, pos)
+    for pattern in PHRASE:
+        m = re.compile(pattern).search(text, pos)
         if m is None:
             return False
         pos = m.end()
     return True
 
 
-def mentions_merge(text):
-    return any(in_order(line, ("gh", "pr", "merge")) for line in text.split("\n"))
+def mentions(cmd):
+    return any(in_order(line) for word in cmd for line in word.split("\n"))
 
 
 class Frame:
     def __init__(self):
-        self.units = [[]]
+        self.cmds = []
         self.cmd = []
         self.chars = None
-        self.quoted = False
 
-    def add(self, text, quoted=False):
+    def add(self, text):
         if self.chars is None:
             self.chars = []
         self.chars.append(text)
-        if quoted:
-            self.quoted = True
 
     def flush_word(self):
         if self.chars is not None:
-            self.cmd.append(("".join(self.chars), self.quoted))
+            self.cmd.append("".join(self.chars))
         self.chars = None
-        self.quoted = False
 
     def end_cmd(self):
         self.flush_word()
         if self.cmd:
-            self.units[-1].append(self.cmd)
+            self.cmds.append(self.cmd)
             self.cmd = []
 
-    def end_unit(self):
-        self.end_cmd()
-        if self.units[-1]:
-            self.units.append([])
-
-    def absorb(self, units):
-        for u in units:
-            self.units[-1].extend(u)
+    def absorb(self, cmds):
+        self.cmds.extend(cmds)
 
 
 class Parser:
@@ -91,10 +83,10 @@ class Parser:
         self.pending = []
 
     def run(self):
-        units = self.lex(False)
+        cmds = self.lex(False)
         if self.pending:
             raise Ambiguous()
-        return units
+        return cmds
 
     def lex(self, nested):
         f = Frame()
@@ -110,41 +102,37 @@ class Parser:
                 f.flush_word()
                 self.i += 1
             elif c == "\n":
-                f.end_unit()
+                f.end_cmd()
                 self.i += 1
                 self.read_heredocs()
             elif c == "#" and f.chars is None:
                 while self.i < n and s[self.i] != "\n":
                     self.i += 1
             elif c == ";":
-                f.end_unit()
+                f.end_cmd()
                 self.i += 1
             elif c == "|":
-                if nxt == "|":
-                    f.end_unit()
-                    self.i += 2
-                else:
-                    f.end_cmd()
-                    self.i += 2 if nxt == "&" else 1
+                f.end_cmd()
+                self.i += 2 if nxt in ("|", "&") else 1
             elif c == "&":
                 prev = s[self.i - 1] if self.i else ""
                 if nxt == "&":
-                    f.end_unit()
+                    f.end_cmd()
                     self.i += 2
                 elif prev in ("<", ">") or nxt == ">":
                     f.add(c)
                     self.i += 1
                 else:
-                    f.end_unit()
+                    f.end_cmd()
                     self.i += 1
             elif c == "(":
                 self.i += 1
                 f.absorb(self.lex(True))
             elif c == ")":
-                f.end_unit()
+                f.end_cmd()
                 self.i += 1
                 if nested:
-                    return f.units
+                    return f.cmds
             elif c == "\\":
                 if nxt == "\n":
                     self.i += 2
@@ -152,13 +140,13 @@ class Parser:
                     f.add("\\")
                     self.i += 1
                 else:
-                    f.add(nxt, True)
+                    f.add(nxt)
                     self.i += 2
             elif c == "'":
                 j = s.find("'", self.i + 1)
                 if j < 0:
                     raise Ambiguous()
-                f.add(s[self.i + 1:j], True)
+                f.add(s[self.i + 1:j])
                 self.i = j + 1
             elif c == '"':
                 self.i += 1
@@ -169,7 +157,7 @@ class Parser:
                 if nxt == "(":
                     self.i += 2
                     f.absorb(self.lex(True))
-                    f.add(NUL, True)
+                    f.add(NUL)
                 elif nxt == "'":
                     self.ansi_c(f)
                 else:
@@ -183,16 +171,16 @@ class Parser:
             elif c in "<>" and nxt == "(":
                 self.i += 2
                 f.absorb(self.lex(True))
-                f.add(NUL, True)
+                f.add(NUL)
             else:
                 f.add(c)
                 self.i += 1
-        f.end_unit()
-        return f.units
+        f.end_cmd()
+        return f.cmds
 
     def dquote(self, f):
         s, n = self.s, self.n
-        f.add("", True)
+        f.add("")
         while True:
             if self.i >= n:
                 raise Ambiguous()
@@ -203,16 +191,16 @@ class Parser:
             if c == "\\" and self.i + 1 < n:
                 nx = s[self.i + 1]
                 if nx != "\n":
-                    f.add(nx if nx in '$`"\\' else "\\" + nx, True)
+                    f.add(nx if nx in '$`"\\' else "\\" + nx)
                 self.i += 2
             elif c == "$" and s.startswith("$(", self.i):
                 self.i += 2
                 f.absorb(self.lex(True))
-                f.add(NUL, True)
+                f.add(NUL)
             elif c == "`":
                 self.backtick(f)
             else:
-                f.add(c, True)
+                f.add(c)
                 self.i += 1
 
     def backtick(self, f):
@@ -222,9 +210,8 @@ class Parser:
             j += 2 if s[j] == "\\" else 1
         if j >= n:
             raise Ambiguous()
-        inner = Parser(s[self.i + 1:j].replace("\\`", "`"))
-        f.absorb(inner.run())
-        f.add(NUL, True)
+        f.absorb(Parser(s[self.i + 1:j].replace("\\`", "`")).run())
+        f.add(NUL)
         self.i = j + 1
 
     def ansi_c(self, f):
@@ -242,7 +229,7 @@ class Parser:
             else:
                 buf.append(s[j])
                 j += 1
-        f.add("".join(buf), True)
+        f.add("".join(buf))
         self.i = j + 1
 
     def heredoc_op(self, f):
@@ -299,100 +286,82 @@ class Parser:
             body = "\n".join(lines)
             if not literal and ("$(" in body or "`" in body):
                 raise Ambiguous()
-            cmd.append((body, True))
+            cmd.append(body)
         self.pending = []
 
 
-def command_words(cmd):
-    i = 0
-    while i < len(cmd):
-        text, quoted = cmd[i]
-        if (not quoted and text in KEYWORDS) or ASSIGN.match(text):
-            i += 1
-        else:
-            break
-    return cmd[i:]
-
-
-def inert_head(words):
-    if not words or NUL in words[0][0]:
-        return False
-    name = words[0][0].rsplit("/", 1)[-1]
-    if name in SIMPLE:
-        return True
-    if name == "git":
-        k = 1
-        while k < len(words):
-            t = words[k][0]
-            if t == "-C":
-                k += 2
-            elif t.startswith("-"):
-                return False
-            else:
-                return t in GIT_SUBS
-        return False
-    if name == "gh":
-        return len(words) > 1 and words[1][0] in GH_GROUPS
-    return False
-
-
 def invokes_merge(cmd):
-    texts = [t for t, _ in cmd]
-    for g, t in enumerate(texts):
-        if t.rsplit("/", 1)[-1] != "gh" and "$" not in t and NUL not in t:
+    for g, w in enumerate(cmd):
+        if w.rsplit("/", 1)[-1] != "gh" and "$" not in w and NUL not in w:
             continue
-        if "pr" not in texts[g + 1:]:
+        if "pr" not in cmd[g + 1:]:
             continue
-        p = texts.index("pr", g + 1)
-        if "merge" not in texts[p + 1:]:
+        p = cmd.index("pr", g + 1)
+        if "merge" not in cmd[p + 1:]:
             continue
-        m = texts.index("merge", p + 1)
-        rest = cmd[m + 1:m + 2]
-        if rest and rest[0][0] in ("--help", "-h") and not rest[0][1]:
+        m = cmd.index("merge", p + 1)
+        if cmd[m + 1:m + 2] in (["--help"], ["-h"]):
             continue
         return True
     return False
 
 
-def mentions(cmd):
-    return any(mentions_merge(t) for t, _ in cmd)
+def tier(cmd):
+    head = cmd[0]
+    if NUL in head:
+        return 0
+    if head in TEXT_TOOLS:
+        return 1
+    if head.rsplit("/", 1)[-1] in FILE_RUNNERS:
+        return 2
+    if head == "git":
+        k = 1
+        while k < len(cmd):
+            if cmd[k] == "-C":
+                k += 2
+            elif cmd[k].startswith("-"):
+                return 0
+            else:
+                return 2 if cmd[k] in GIT_SUBS else 0
+        return 0
+    if head == "gh":
+        return 1 if len(cmd) > 1 and cmd[1] in GH_GROUPS else 0
+    return 0
 
 
-def head_name(cmd):
-    words = command_words(cmd)
-    return words[0][0].rsplit("/", 1)[-1] if words else ""
+def writes_word(w):
+    m = WRITE.match(w)
+    if m is None:
+        return False
+    rest = w[m.end():]
+    return not (rest.startswith("&") or rest == "/dev/null")
 
 
-def unit_calls(unit):
-    mention = False
-    inert = True
-    for cmd in unit:
-        if invokes_merge(cmd):
-            return True
-        if mentions(cmd):
-            mention = True
-        if not inert_head(command_words(cmd)):
-            inert = False
-    return mention and not inert
+def writes(cmd):
+    return cmd[0] == "tee" or any(writes_word(w) for w in cmd[1:])
 
 
 def verdict(text):
     try:
-        units = Parser(text).run()
+        cmds = Parser(text).run()
     except Ambiguous:
-        return in_order(text, ("gh", "pr", "merge"))
-    if any(unit_calls(u) for u in units):
+        return in_order(text)
+    if any(invokes_merge(c) for c in cmds):
         return True
-    cmds = [c for u in units for c in u]
-    return any(mentions(c) for c in cmds) and any(head_name(c) in RUNNERS for c in cmds)
+    if not any(mentions(c) for c in cmds):
+        return False
+    tiers = [tier(c) for c in cmds]
+    if 0 in tiers:
+        return True
+    return 2 in tiers and any(writes(c) for c in cmds)
 
 
 try:
-    call = verdict(sys.argv[1])
+    call = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
 except Exception:
     call = True
 print("call" if call else "inert")
 PY
-  verdict=$(python3 -c "$src" "$1" 2>/dev/null) || verdict=call
+  verdict=$(printf '%s' "$1" | python3 -c "$src" 2>/dev/null) || verdict=call
   [ "$verdict" != inert ]
 }

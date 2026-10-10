@@ -339,7 +339,9 @@ guard_exit() { # guard_exit <команда> [состояние PR] — exit-к
 
 for c in \
   'grep -n "gh pr merge" commands/autopilot.md' \
-  "grep -rn 'gh pr merge' . | sort | head -5" \
+  "grep -rn 'gh pr merge' . | head -5 | cut -c1-80" \
+  'grep -n "gh pr merge" file 2>&1 >/dev/null' \
+  'gh pr merge "--help"' \
   'grep -n "gh pr merge" a.md; grep -c "gh pr merge" b.md' \
   'gh pr merge --help' \
   'gh pr merge -h' \
@@ -406,6 +408,43 @@ for c in \
   'false || gh pr merge 5' \
   'true & gh pr merge 5' \
   'grep -n "gh pr merge" file; gh pr merge 5' \
+  'grep -n "gh pr merge" commands/autopilot.md && ./scripts/check' \
+  'grep -n "gh pr merge" f | sort' \
+  'for f in a b; do grep -n "gh pr merge" "$f"; done' \
+  'if grep -q "gh pr merge" f; then echo found; fi' \
+  'git commit -m "gh pr merge 5" && git push' \
+  'git commit -m "docs: $(date +%F) gh pr merge"' \
+  'X=1 grep -n "gh pr merge" file' \
+  'GIT_EDITOR='\''gh pr merge 5; true'\'' git commit --allow-empty' \
+  'GIT_EXTERNAL_DIFF='\''gh pr merge 5; true'\'' git diff' \
+  'GIT_PAGER="gh pr merge 5" git log' \
+  'FOO='\''gh pr merge 5'\'' echo ok' \
+  "git grep -e foo --open-files-in-pager='gh pr merge 5;:'" \
+  "git grep -O'gh pr merge 5;:' foo" \
+  "git grep -n 'gh pr merge' commands/" \
+  "git -c core.editor='gh pr merge 5' commit --allow-empty" \
+  "rg --pre 'gh pr merge 5' foo ." \
+  "sort --compress-program='gh pr merge 5' file" \
+  "printf -v X 'gh pr merge 5'; \$X" \
+  "printf -v X 'gh pr merge 5' && \$X" \
+  "printf -v X 'gh pr merge 5'; \${=X}" \
+  "printf -v X 'gh pr merge 5'; echo ok && eval \"\$X\"" \
+  "echo 'gh pr merge 5' > f; \$(<f)" \
+  "echo 'gh pr merge 5' > f; \$(cat f)" \
+  "echo 'gh pr merge 5' > f && \`cat f\`" \
+  "echo 'gh pr merge 5' > run.sh && chmod +x run.sh && ./run.sh" \
+  "echo 'gh pr merge 5' > run.sh && env bash run.sh" \
+  "echo 'gh pr merge 5' > run.sh; sudo sh run.sh" \
+  "echo 'gh pr merge 5' | tee run.sh; nohup sh run.sh" \
+  "printf 'all:\n\tgh pr merge 5\n' > Makefile && make" \
+  "echo 'import os; os.system(\"gh pr merge 5\")' > m.py && python3 m.py" \
+  $'cat > run.sh <<\'EOF\'\ngh pr merge 5\nEOF\n./run.sh' \
+  "echo 'gh pr merge 5' > .git/hooks/pre-commit && git commit -m x" \
+  "printf 'gh pr merge 5' >> hooks/scripts/adk-log.sh; hooks/scripts/adk-log.sh issue-1 event=start" \
+  "echo 'gh pr merge 5' | tee .git/hooks/post-commit; git commit -m x" \
+  $'cat <<EOF\n$(gh pr merge 5)\nEOF' \
+  $'cat <<EOF\n`gh pr merge 5`\nEOF' \
+  $'cat <<EOF\nтекст $(echo gh pr merge 5)\nEOF' \
   $'git commit -m "$(cat <<\'EOF\'\ngh pr merge\nEOF\n)" && gh pr merge 5' \
   'if true; then gh pr merge 5; fi' \
   '"gh" pr merge 5' \
@@ -437,6 +476,15 @@ done
 guard_exit "echo ${deep_open}gh pr merge 5${deep_close}"
 assert_exit "issue #260: сбой разбора (вложенность глубже лимита рекурсии) — fail-closed, вызов блокируется" 2 $?
 
+. "$HOOKS/lib/command-invocation.sh"
+mkdir -p "$TMP/no-python-bin"
+(PATH="$TMP/no-python-bin"; adk_command_invokes_pr_merge 'git merge main')
+assert_exit "issue #260: python3 недоступен — хелпер трактует команду как вызов (fail-closed)" 0 $?
+(adk_command_invokes_pr_merge 'git merge main')
+assert_exit "issue #260: хелпер — команда про merge без вызова даёт 1 (не вызов)" 1 $?
+(adk_command_invokes_pr_merge 'echo hello')
+assert_exit "issue #260: хелпер — команда без слова merge даёт 1, python не нужен" 1 $?
+
 guard_exit 'cd repo && gh pr merge 5' ready
 assert_exit "issue #260: распознанный вызов проходит обычную проверку политики — ready разрешён" 0 $?
 guard_exit 'gh -R o/r pr merge 5' ready
@@ -464,7 +512,8 @@ for c in \
   'git merge main' \
   'git commit -m "merge main"' \
   'git merge main -m "незакрытая кавычка' \
-  'grep -n "gh pr merge" commands/autopilot.md && ./scripts/check' \
+  'git commit -m "gh pr merge 5" 2>&1' \
+  'git commit -m "gh pr merge 5" >/dev/null' \
   'gh pr view 5 --json mergeStateStatus' \
   'gh pr create --title "merge fix"' \
   'gh pr checks 5'
