@@ -798,8 +798,13 @@ for c in \
   'gh pr merge 7 --subject 5>f x' \
   'gh pr merge --subject 5>f 7' \
   'gh pr merge 7 --subject 5>f' \
-  'gh pr merge 5<<<7' \
-  $'gh pr merge 5<<EOF\nx\nEOF' \
+  'gh pr merge 7<<<x' \
+  'gh pr merge --squash 7<<<x' \
+  'gh pr merge --squash --delete-branch 7<<<x' \
+  $'gh pr merge 7<<EOF\nx\nEOF' \
+  $'gh pr merge --squash 7<<EOF\nx\nEOF' \
+  $'gh pr merge --squash --delete-branch 7<<EOF\nx\nEOF' \
+  'gh pr merge 7 5a>f' \
   'gh pr merge ٥>f' \
   'gh pr merge ²>f' \
   'gh pr merge 7 ٥>f' \
@@ -845,6 +850,16 @@ assert_not_contains "issue #266: цель перенаправления не з
 guard_msg=$(guard_pr_run 'gh pr merge 5&>/dev/null')
 assert_contains "issue #266: 5&>/dev/null — слово 5 вплотную к оператору не отбрасывается, PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
 assert_not_contains "issue #266: 5&>/dev/null — статус PR не запрашивался, нет отката на PR текущей ветки" "$(cat "$gh_stub_dir/calls")" '|'
+for c in \
+  'gh pr merge 7<<<x' \
+  'gh pr merge --squash 7<<<x' \
+  $'gh pr merge 7<<EOF\nx\nEOF' \
+  $'gh pr merge --squash 7<<EOF\nx\nEOF'
+do
+  guard_msg=$(guard_pr_run "$c")
+  assert_contains "issue #266: цифры вплотную к << и <<< в позиции селектора — PR не определён: $c" "$guard_msg" 'не удалось определить, какой PR мержится'
+  assert_not_contains "issue #266: цифры вплотную к << и <<< — статус PR не запрашивался: $c" "$(cat "$gh_stub_dir/calls")" '|'
+done
 guard_msg=$(guard_pr_run 'gh pr merge 5>f')
 assert_contains "issue #266: 5>f — слово 5 вплотную к оператору не считается дескриптором, PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
 assert_not_contains "issue #266: 5>f — статус PR не запрашивался, нет отката на PR текущей ветки" "$(cat "$gh_stub_dir/calls")" '|'
