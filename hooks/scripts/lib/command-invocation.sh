@@ -27,7 +27,6 @@ import sys
 
 TEXT_TOOLS = {"grep", "egrep", "fgrep", "echo", "printf", "cat", "head", "tail",
               "wc", "cut", "tr", "uniq", "nl", "tee", "cd", "ls", "pwd"}
-LOG_SCRIPT = "adk-log.sh"
 GIT_SUBS = {"commit", "tag", "log", "show", "notes", "diff", "status", "add",
             "stash", "branch"}
 GH_GROUPS = {"pr", "issue", "api"}
@@ -316,7 +315,7 @@ def inert(cmd):
     head = cmd[0]
     if NUL in head:
         return False
-    if head in TEXT_TOOLS or head.rsplit("/", 1)[-1] == LOG_SCRIPT:
+    if head in TEXT_TOOLS or head.rsplit("/", 1)[-1] == "adk-log.sh":
         return True
     if head == "git":
         k = 1
