@@ -669,8 +669,10 @@ for c in \
   'gh pr merge 7 2>&1 && gh pr merge 5 2>&1' \
   'gh pr merge 5 5>f'
 do
-  guard_pr_exit "$c"
+  guard_msg=$(guard_pr_run "$c")
   assert_exit "issue #266: draft-PR по селектору из слов вызова блокируется: $c" 2 $?
+  assert_contains "issue #266: draft-PR — причина отказа «черновик», а не неопределённый селектор: $c" "$guard_msg" 'PR ещё черновик'
+  assert_not_contains "issue #266: draft-PR — PR определён однозначно: $c" "$guard_msg" 'не удалось определить'
 done
 
 for c in \
@@ -734,6 +736,17 @@ for c in \
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: ready-PR по селектору из слов вызова проходит как раньше: $c" 0 $?
+done
+for c in \
+  'gh pr merge 7 --rebase --delete-branch' \
+  'gh pr merge 7 --merge --delete-branch' \
+  'gh pr merge -r 7 -d' \
+  'gh pr merge -m 7 -d' \
+  "gh pr merge \$'7' --squash"
+do
+  guard_pr_run "$c" >/dev/null
+  assert_exit "issue #266: штатные флаги метода слияния и $'…' без экранов — проходят: $c" 0 $?
+  assert_contains "issue #266: статус запрошен у PR 7: $c" "$(cat "$gh_stub_dir/calls")" '^7|$'
 done
 
 for c in \
@@ -810,8 +823,13 @@ for c in \
   'gh pr merge 7 ٥>f' \
   'gh pr merge 7 ²>f'
 do
-  guard_pr_exit "$c"
+  guard_msg=$(guard_pr_run "$c")
   assert_exit "issue #266: селектор не определён однозначно или PR не прочитан — блокируется (fail-closed): $c" 2 $?
+  case "$c" in
+    *99*) want='статус PR проверить не удалось' ;;
+    *) want='не удалось определить, какой PR мержится' ;;
+  esac
+  assert_contains "issue #266: fail-closed — причина отказа названа верно: $c" "$guard_msg" "$want"
 done
 
 guard_pr_run 'gh pr merge --squash --delete-branch 5' >/dev/null
@@ -881,8 +899,9 @@ for c in \
   '2>/dev/null bash -c "gh pr merge 5"' \
   '>grep eval "gh pr merge 5"'
 do
-  guard_exit "$c"
+  guard_msg=$(guard_err "$c")
   assert_exit "issue #266: перенаправление перед неинертной командой с упоминанием — отказ: $c" 2 $?
+  assert_contains "issue #266: перенаправление перед неинертной командой — упоминание не отличить от вызова: $c" "$guard_msg" 'не может отличить упоминание от вызова'
 done
 for c in \
   '> merge' \
@@ -895,8 +914,9 @@ guard_exit $'cat <<EOF\r\nmerge notes\r\nEOF\r\n'
 assert_exit "issue #266: heredoc с CRLF в инертной команде — фраза в теле не блокируется" 0 $?
 guard_exit $'cat <<EOF\r\ngh pr merge 5\r\nEOF\r\n'
 assert_exit "issue #266: heredoc с CRLF — \\r часть разделителя, как в bash; упоминание не блокируется" 0 $?
-guard_exit $'bash <<EOF\r\ngh pr merge 5\r\nEOF\r\n'
+guard_msg=$(guard_err $'bash <<EOF\r\ngh pr merge 5\r\nEOF\r\n')
 assert_exit "issue #266: heredoc с CRLF в неинертной команде — упоминание блокируется" 2 $?
+assert_contains "issue #266: heredoc с CRLF в неинертной команде — упоминание не отличить от вызова" "$guard_msg" 'не может отличить упоминание от вызова'
 guard_msg=$(guard_pr_run 'gh pr merge --squash 5 7')
 assert_contains "issue #266: селектор не определён — текст про то, что PR не удалось определить" "$guard_msg" 'не удалось определить, какой PR мержится'
 guard_msg=$(guard_pr_run 'echo 5 | xargs gh pr merge')
@@ -927,8 +947,14 @@ for c in \
   'gh pr merge 9 2>&1' \
   'gh pr merge --squash --delete-branch 9 2>&1 | tail -5'
 do
-  guard_pr_exit "$c"
+  guard_msg=$(guard_pr_run "$c")
   assert_exit "issue #266: human-review-required — PR без approve блокируется: $c" 2 $?
+  if [ "$c" = 'gh pr merge 5' ]; then
+    want='PR ещё черновик'
+  else
+    want='policies.merge=human-review-required'
+  fi
+  assert_contains "issue #266: human-review-required — причина отказа названа верно: $c" "$guard_msg" "$want"
 done
 printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
 guard_pr_exit 'gh pr merge --squash 7'
