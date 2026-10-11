@@ -108,6 +108,9 @@ adk_command_git_root() {
 # adk_command_repo_flag <cmd> — значение первого -R/--repo в команде (пусто,
 # если флага нет). Текстовая эвристика: ложное совпадение (например, grep -R)
 # даёт нерабочее значение repo, и вызывающие фейлятся открыто — приемлемо.
+# bash-guard.sh этой функцией и adk_command_pr_number больше не пользуется:
+# селектор и -R он берёт из слов вызова merge (command-invocation.sh, ADR-027);
+# для pr-title-check.sh (gh pr create|edit) остаётся текстовая эвристика.
 adk_command_repo_flag() {
   printf '%s' "$1" | grep -Eo -- '(-R|--repo)[= ][^ ]+' | head -1 | sed -E 's/^(-R|--repo)[= ]//'
 }

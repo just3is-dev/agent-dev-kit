@@ -15,7 +15,18 @@
 # удалось (fail-closed); 1 — вызова нет; 2 — прямого вызова не найдено, но
 # фраза упомянута рядом с командой, про которую нельзя доказать, что она её
 # не исполнит (fail-closed). Правила — в ADR-026.
+#
+# Кроме кода возврата функция выставляет глобальную переменную
+# ADK_PR_MERGE_TARGETS (issue #266, ADR-027): по записи на каждый найденный
+# вызов, по одной на строку. Запись — «<селектор>|<-R>»: селектор (номер, URL
+# или ветка из слов вызова; пустой — PR текущей ветки, семантика gh) и
+# значение -R/--repo из слов того же вызова. Запись «?» — PR не определён
+# однозначно (значение флага без селектора, подстановка, неизвестный флаг,
+# лишний аргумент, селектор от обёртки вроде xargs, фраза внутри строки для
+# bash -c/eval). Пусто при коде 1 и 2 и при сбое разбора — вызывающий
+# трактует пустое как «?».
 adk_command_invokes_pr_merge() {
+  ADK_PR_MERGE_TARGETS=""
   case "$1" in
     *merge*) ;;
     *) return 1 ;;
@@ -295,7 +306,72 @@ class Parser:
         self.pending = []
 
 
-def invokes_merge(cmd):
+VALUE_FLAGS = {"-t", "--subject", "-b", "--body", "-F", "--body-file",
+               "--match-head-commit", "-A", "--author-email", "-R", "--repo"}
+BOOL_FLAGS = {"--admin", "--auto", "-d", "--delete-branch", "--disable-auto",
+              "-m", "--merge", "-r", "--rebase", "-s", "--squash", "-h", "--help"}
+REPO_FLAGS = {"-R", "--repo"}
+TRANSPARENT = {"env", "command", "sudo", "time"}
+ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+SELECTOR = re.compile(r"[A-Za-z0-9#][A-Za-z0-9._/:@#+-]*\Z")
+REPO = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){1,2}\Z")
+
+
+def split_flag(word):
+    if word.startswith("--") and len(word) > 2:
+        name, eq, value = word.partition("=")
+        return [(name, value if eq else None)]
+    flags = []
+    for j in range(1, len(word)):
+        flag = "-" + word[j]
+        if flag in VALUE_FLAGS:
+            flags.append((flag, word[j + 1:] or None))
+            break
+        flags.append((flag, None))
+    return flags
+
+
+def scan(words):
+    positional, repos, k = [], [], 0
+    while k < len(words):
+        word = words[k]
+        k += 1
+        if not word.startswith("-") or len(word) < 2:
+            positional.append(word)
+            continue
+        for flag, value in split_flag(word):
+            if flag in VALUE_FLAGS:
+                if value is None:
+                    if k >= len(words):
+                        raise Ambiguous()
+                    value = words[k]
+                    k += 1
+                if flag in REPO_FLAGS:
+                    repos.append(value)
+            elif flag not in BOOL_FLAGS or value is not None:
+                raise Ambiguous()
+    return positional, repos
+
+
+def merge_target(cmd, g, p, m):
+    try:
+        before, before_repos = scan(cmd[g + 1:p] + cmd[p + 1:m])
+        positional, repos = scan(cmd[m + 1:])
+    except Ambiguous:
+        return "?"
+    repos = before_repos + repos
+    if before or len(positional) > 1 or len(repos) > 1:
+        return "?"
+    selector = positional[0] if positional else ""
+    repo = repos[0] if repos else ""
+    if (selector and not SELECTOR.match(selector)) or (repo and not REPO.match(repo)):
+        return "?"
+    if not selector and not all(ASSIGN.match(w) or w in TRANSPARENT for w in cmd[:g]):
+        return "?"
+    return selector + "|" + repo
+
+
+def merge_call(cmd):
     for g, w in enumerate(cmd):
         if w.rsplit("/", 1)[-1] != "gh" and "$" not in w and NUL not in w:
             continue
@@ -307,8 +383,8 @@ def invokes_merge(cmd):
         m = cmd.index("merge", p + 1)
         if cmd[m + 1:m + 2] in (["--help"], ["-h"]):
             continue
-        return True
-    return False
+        return merge_target(cmd, g, p, m)
+    return None
 
 
 def inert(cmd):
@@ -336,21 +412,27 @@ def verdict(text):
     try:
         cmds = Parser(text).run()
     except Ambiguous:
-        return "call" if in_order(text) else "inert"
-    if any(invokes_merge(c) for c in cmds):
-        return "call"
-    if not any(mentions(c) for c in cmds):
-        return "inert"
-    return "inert" if all(inert(c) for c in cmds) else "mention"
+        return ("call" if in_order(text) else "inert"), []
+    calls = [t for t in map(merge_call, cmds) if t is not None]
+    mention = any(mentions(c) for c in cmds)
+    quiet = all(inert(c) for c in cmds)
+    if calls:
+        return "call", calls + (["?"] if mention and not quiet else [])
+    if not mention:
+        return "inert", []
+    return ("inert" if quiet else "mention"), []
 
 
 try:
-    result = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+    kind, targets = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+    print("\n".join([kind] + targets))
 except Exception:
-    result = "call"
-print(result)
+    print("call")
 PY
   verdict=$(printf '%s' "$1" | python3 -c "$src" 2>/dev/null) || verdict=call
+  case "$verdict" in
+    *$'\n'*) ADK_PR_MERGE_TARGETS="${verdict#*$'\n'}"; verdict="${verdict%%$'\n'*}" ;;
+  esac
   case "$verdict" in
     inert) return 1 ;;
     mention) return 2 ;;

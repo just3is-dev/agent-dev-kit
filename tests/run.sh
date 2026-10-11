@@ -589,7 +589,7 @@ while [ $# -gt 0 ]; do
 done
 echo "$sel|$repo" >> "$GH_STUB_CALLS"
 case "$sel" in
-  ""|7|"#7") echo 'false APPROVED' ;;
+  ""|7|"#7"|https://github.com/o/r/pull/7|ready-branch) echo 'false APPROVED' ;;
   9) echo 'false REVIEW_REQUIRED' ;;
   5|https://github.com/o/r/pull/5|draft-branch) echo 'true REVIEW_REQUIRED' ;;
   *) exit 1 ;;
@@ -663,6 +663,10 @@ for c in \
   'gh pr merge --squash --delete-branch 7' \
   'gh pr merge -sd 7' \
   'gh pr merge "#7"' \
+  'gh pr merge https://github.com/o/r/pull/7' \
+  'gh pr merge --squash https://github.com/o/r/pull/7' \
+  'gh pr merge ready-branch' \
+  'gh pr merge --squash --delete-branch ready-branch' \
   'gh pr merge 7 && gh pr merge 7' \
   'gh pr merge --subject 5 7' \
   'gh pr merge -t 5 --squash 7' \
@@ -684,6 +688,8 @@ do
 done
 
 for c in \
+  'gh pr checkout merge' \
+  'gh pr list --search merge' \
   'gh pr merge 5 7' \
   'gh pr merge 7 5' \
   'gh pr merge --squash 7 draft-branch' \
@@ -728,6 +734,10 @@ guard_pr_run 'gh pr merge -R o/r --squash 5' >/dev/null
 assert_contains "issue #266: -R из слов вызова передаётся в запрос статуса вместе с номером" "$(cat "$gh_stub_dir/calls")" '^5|o/r$'
 guard_pr_run 'gh -R o/r pr merge 5' >/dev/null
 assert_contains "issue #266: -R до pr передаётся в запрос статуса вместе с номером" "$(cat "$gh_stub_dir/calls")" '^5|o/r$'
+guard_pr_run 'gh pr merge --squash https://github.com/o/r/pull/5' >/dev/null
+assert_contains "issue #266: URL PR передаётся в запрос статуса как селектор" "$(cat "$gh_stub_dir/calls")" '^https://github.com/o/r/pull/5|$'
+guard_pr_run 'gh pr merge --squash draft-branch' >/dev/null
+assert_contains "issue #266: имя ветки передаётся в запрос статуса как селектор" "$(cat "$gh_stub_dir/calls")" '^draft-branch|$'
 guard_pr_run 'gh pr merge --subject 7 --squash' >/dev/null
 assert_contains "issue #266: без селектора запрашивается PR текущей ветки (семантика gh)" "$(cat "$gh_stub_dir/calls")" '^|$'
 assert_not_contains "issue #266: значение флага --subject не принято за номер PR" "$(cat "$gh_stub_dir/calls")" '^7|'
