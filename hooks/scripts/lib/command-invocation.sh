@@ -52,6 +52,13 @@ class Redir(str):
     pass
 
 
+class Glued(str):
+    pass
+
+
+ASCII_DIGITS = re.compile(r"[0-9]+\Z")
+
+
 PHRASE = (r"gh\b", r"\bpr\b", r"\bmerge\b")
 
 
@@ -78,29 +85,20 @@ class Frame:
         self.cmds = []
         self.cmd = []
         self.chars = None
-        self.plain = True
         self.redir = False
 
-    def add(self, text, plain=False):
+    def add(self, text):
         if self.chars is None:
             self.chars = []
-            self.plain = True
-        if not plain:
-            self.plain = False
         self.chars.append(text)
 
-    def flush_word(self):
+    def flush_word(self, glued=False):
         if self.chars is not None:
             word = "".join(self.chars)
-            self.cmd.append(Redir(word) if self.redir else word)
+            kind = Redir if self.redir else Glued if glued and ASCII_DIGITS.match(word) else str
+            self.cmd.append(kind(word))
             self.redir = False
         self.chars = None
-
-    def redirect_word(self):
-        if self.chars is not None and self.plain and "".join(self.chars).isdigit():
-            self.chars = None
-        else:
-            self.flush_word()
 
     def end_cmd(self):
         self.flush_word()
@@ -200,7 +198,7 @@ class Parser:
                     f.add("$")
                     self.i += 1
             elif c == "<" and s.startswith("<<<", self.i):
-                f.redirect_word()
+                f.flush_word(True)
                 f.redir = True
                 self.i += 3
             elif c == "<" and nxt == "<":
@@ -212,14 +210,14 @@ class Parser:
             elif c in "<>":
                 self.redirect(f)
             else:
-                f.add(c, True)
+                f.add(c)
                 self.i += 1
         f.end_cmd()
         return f.cmds
 
     def redirect(self, f):
         s, n = self.s, self.n
-        f.redirect_word()
+        f.flush_word(True)
         if s[self.i] == "&":
             self.i += 1
         op = s[self.i]
@@ -296,10 +294,10 @@ class Parser:
             self.i += 1
         while self.i < n and s[self.i] in " \t":
             self.i += 1
-        f.redirect_word()
+        f.flush_word(True)
         literal = False
         buf = []
-        while self.i < n and s[self.i] not in " \t\r\n;&|()<>":
+        while self.i < n and s[self.i] not in " \t\n;&|()<>":
             ch = s[self.i]
             if ch in "'\"":
                 j = s.find(ch, self.i + 1)
@@ -374,6 +372,10 @@ def scan(args):
     while k < len(args):
         word = args[k]
         k += 1
+        if isinstance(word, Glued):
+            if positional:
+                continue
+            raise Ambiguous()
         if ODD_CHARS.search(word):
             raise Ambiguous()
         if not word.startswith("-") or len(word) < 2:
@@ -386,6 +388,8 @@ def scan(args):
                         raise Ambiguous()
                     value = args[k]
                     k += 1
+                    if isinstance(value, Glued):
+                        raise Ambiguous()
                 if flag in REPO_FLAGS:
                     repos.append(value)
             elif flag not in BOOL_FLAGS or value is not None:

@@ -657,13 +657,16 @@ for c in \
   'gh pr merge 5 &>/dev/null' \
   'gh pr merge 5 > /tmp/x 2>&1' \
   'gh pr merge 5 >> log' \
-  'gh pr merge --squash 2>&1 5' \
   'gh pr merge --squash >out 5' \
+  'gh pr merge &>f 5' \
+  'gh pr merge --squash &>f 5' \
+  'gh pr merge 5 >f' \
+  'gh pr merge 5 &>f' \
+  'gh pr merge 5 <f' \
   'gh pr merge 5 <<< "x"' \
   $'gh pr merge --body-file - 5 <<EOF\nbody\nEOF' \
   'cd /x && gh pr merge 5 --squash 2>&1; echo $?' \
   'gh pr merge 7 2>&1 && gh pr merge 5 2>&1' \
-  "gh pr merge '5'>f" \
   'gh pr merge 5 5>f'
 do
   guard_pr_exit "$c"
@@ -709,15 +712,18 @@ for c in \
   'gh pr merge 7 >| f' \
   'gh pr merge 7 <> f' \
   'gh pr merge 7 3<&0' \
-  'gh pr merge --squash 2>&1 7' \
   'gh pr merge --squash >out 7' \
-  'gh pr merge --subject 2>&1 x 7' \
+  'gh pr merge &>f 7' \
+  'gh pr merge --squash &>f 7' \
+  'gh pr merge 7 >f' \
+  'gh pr merge 7 &>f' \
+  'gh pr merge 7 12>f' \
+  'gh pr merge 7 007>f' \
+  'gh pr merge 7 5<&-' \
+  'gh pr merge --squash 7 5>&2' \
   'gh pr merge 7 <<< "x"' \
   $'gh pr merge --body-file - 7 <<EOF\nbody\nEOF' \
   'cd /x && gh pr merge 7 --squash 2>&1; echo $?' \
-  '2>/dev/null gh pr merge --squash' \
-  'gh pr merge --squash 2>&1' \
-  'gh pr merge 5>f' \
   'gh pr merge 7 > "$OUT"' \
   'gh pr merge 7 > $(mktemp)' \
   'gh pr merge 7 2>&1 && gh pr merge 7 2>&1' \
@@ -772,7 +778,32 @@ for c in \
   $'gh pr merge 7\v' \
   $'gh pr merge 7\f' \
   $'gh pr merge 7\xc2\xa0' \
-  $'gh pr merge --squash\r7'
+  $'gh pr merge --squash\r7' \
+  'gh pr merge --squash 2>&1 7' \
+  'gh pr merge --subject 2>&1 x 7' \
+  '2>/dev/null gh pr merge --squash' \
+  'gh pr merge --squash 2>&1' \
+  'gh pr merge 5>f' \
+  'gh pr merge 7>f' \
+  'gh pr merge 5<f' \
+  'gh pr merge 12>f' \
+  'gh pr merge 007>f' \
+  "gh pr merge '5'>f" \
+  'gh pr merge 5&>f' \
+  'gh pr merge 5&>/dev/null' \
+  'gh pr merge 5&>/tmp/x' \
+  'gh pr merge 5&>>/tmp/x' \
+  'gh pr merge 5&>/dev/null && echo ok' \
+  'gh pr merge 5&>f 7' \
+  'gh pr merge 7 --subject 5>f x' \
+  'gh pr merge --subject 5>f 7' \
+  'gh pr merge 7 --subject 5>f' \
+  'gh pr merge 5<<<7' \
+  $'gh pr merge 5<<EOF\nx\nEOF' \
+  'gh pr merge ٥>f' \
+  'gh pr merge ²>f' \
+  'gh pr merge 7 ٥>f' \
+  'gh pr merge 7 ²>f'
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: селектор не определён однозначно или PR не прочитан — блокируется (fail-closed): $c" 2 $?
@@ -811,14 +842,46 @@ assert_contains "issue #266: перенаправление — PR не проч
 guard_pr_run 'gh pr merge 7 --squash --delete-branch 2>&1' >/dev/null
 assert_contains "issue #266: перенаправление не селектор — запрошен PR из слов вызова" "$(cat "$gh_stub_dir/calls")" '^7|$'
 assert_not_contains "issue #266: цель перенаправления не запрашивалась как PR" "$(cat "$gh_stub_dir/calls")" '1|'
-guard_pr_run 'gh pr merge 5>f' >/dev/null
-assert_contains "issue #266: 5>f — перенаправление fd 5, селектора нет, запрошен PR текущей ветки" "$(cat "$gh_stub_dir/calls")" '^|$'
+guard_msg=$(guard_pr_run 'gh pr merge 5&>/dev/null')
+assert_contains "issue #266: 5&>/dev/null — слово 5 вплотную к оператору не отбрасывается, PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
+assert_not_contains "issue #266: 5&>/dev/null — статус PR не запрашивался, нет отката на PR текущей ветки" "$(cat "$gh_stub_dir/calls")" '|'
+guard_msg=$(guard_pr_run 'gh pr merge 5>f')
+assert_contains "issue #266: 5>f — слово 5 вплотную к оператору не считается дескриптором, PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
+assert_not_contains "issue #266: 5>f — статус PR не запрашивался, нет отката на PR текущей ветки" "$(cat "$gh_stub_dir/calls")" '|'
+guard_msg=$(guard_pr_run 'gh pr merge 5 >f')
+assert_contains "issue #266: 5 >f — селектор, отделённый пробелом, остаётся селектором (draft)" "$guard_msg" 'PR ещё черновик'
+guard_pr_run 'gh pr merge 7 12>f' >/dev/null
+assert_contains "issue #266: 12>f после селектора — перенаправление, запрошен PR 7" "$(cat "$gh_stub_dir/calls")" '^7|$'
+assert_not_contains "issue #266: 12>f после селектора — не селектор и не второй запрос" "$(cat "$gh_stub_dir/calls")" '12'
 guard_pr_run 'gh pr merge 7 && gh pr merge 5' >/dev/null
 assert_contains "issue #266: заглушка gh читает stdin — второй вызов всё равно проверен (stdin gh закрыт)" "$(cat "$gh_stub_dir/calls")" '^5|$'
 guard_msg=$(guard_pr_run $'gh pr merge -t\r 5')
 assert_contains "issue #266: CR внутри слова — PR не определён, а не откат на PR текущей ветки" "$guard_msg" 'не удалось определить, какой PR мержится'
 guard_msg=$(guard_pr_run "gh pr merge \$'\\065'")
 assert_contains "issue #266: \$'\\065' в селекторе — PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
+
+for c in \
+  '>cat bash -c "gh pr merge 5"' \
+  '>echo sh -c "gh pr merge --squash 5"' \
+  '2>/dev/null bash -c "gh pr merge 5"' \
+  '>grep eval "gh pr merge 5"'
+do
+  guard_exit "$c"
+  assert_exit "issue #266: перенаправление перед неинертной командой с упоминанием — отказ: $c" 2 $?
+done
+for c in \
+  '> merge' \
+  'echo ok && > merge'
+do
+  guard_exit "$c"
+  assert_exit "issue #266: команда из одних перенаправлений инертна, без сбоя разбора: $c" 0 $?
+done
+guard_exit $'cat <<EOF\r\nmerge notes\r\nEOF\r\n'
+assert_exit "issue #266: heredoc с CRLF в инертной команде — фраза в теле не блокируется" 0 $?
+guard_exit $'cat <<EOF\r\ngh pr merge 5\r\nEOF\r\n'
+assert_exit "issue #266: heredoc с CRLF — \\r часть разделителя, как в bash; упоминание не блокируется" 0 $?
+guard_exit $'bash <<EOF\r\ngh pr merge 5\r\nEOF\r\n'
+assert_exit "issue #266: heredoc с CRLF в неинертной команде — упоминание блокируется" 2 $?
 guard_msg=$(guard_pr_run 'gh pr merge --squash 5 7')
 assert_contains "issue #266: селектор не определён — текст про то, что PR не удалось определить" "$guard_msg" 'не удалось определить, какой PR мержится'
 guard_msg=$(guard_pr_run 'echo 5 | xargs gh pr merge')
