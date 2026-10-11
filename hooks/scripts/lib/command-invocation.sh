@@ -48,6 +48,10 @@ class Ambiguous(Exception):
     pass
 
 
+class Redir(str):
+    pass
+
+
 PHRASE = (r"gh\b", r"\bpr\b", r"\bmerge\b")
 
 
@@ -61,6 +65,10 @@ def in_order(text):
     return True
 
 
+def words(cmd):
+    return [w for w in cmd if not isinstance(w, Redir)]
+
+
 def mentions(cmd):
     return any(in_order(line) for word in cmd for line in word.split("\n"))
 
@@ -70,19 +78,33 @@ class Frame:
         self.cmds = []
         self.cmd = []
         self.chars = None
+        self.plain = True
+        self.redir = False
 
-    def add(self, text):
+    def add(self, text, plain=False):
         if self.chars is None:
             self.chars = []
+            self.plain = True
+        if not plain:
+            self.plain = False
         self.chars.append(text)
 
     def flush_word(self):
         if self.chars is not None:
-            self.cmd.append("".join(self.chars))
+            word = "".join(self.chars)
+            self.cmd.append(Redir(word) if self.redir else word)
+            self.redir = False
         self.chars = None
+
+    def redirect_word(self):
+        if self.chars is not None and self.plain and "".join(self.chars).isdigit():
+            self.chars = None
+        else:
+            self.flush_word()
 
     def end_cmd(self):
         self.flush_word()
+        self.redir = False
         if self.cmd:
             self.cmds.append(self.cmd)
             self.cmd = []
@@ -114,7 +136,7 @@ class Parser:
                 break
             c = s[self.i]
             nxt = s[self.i + 1] if self.i + 1 < n else ""
-            if c in " \t\r":
+            if c in " \t":
                 f.flush_word()
                 self.i += 1
             elif c == "\n":
@@ -131,13 +153,11 @@ class Parser:
                 f.end_cmd()
                 self.i += 2 if nxt in ("|", "&") else 1
             elif c == "&":
-                prev = s[self.i - 1] if self.i else ""
                 if nxt == "&":
                     f.end_cmd()
                     self.i += 2
-                elif prev in ("<", ">") or nxt == ">":
-                    f.add(c)
-                    self.i += 1
+                elif nxt == ">":
+                    self.redirect(f)
                 else:
                     f.end_cmd()
                     self.i += 1
@@ -180,7 +200,8 @@ class Parser:
                     f.add("$")
                     self.i += 1
             elif c == "<" and s.startswith("<<<", self.i):
-                f.add("<<<")
+                f.redirect_word()
+                f.redir = True
                 self.i += 3
             elif c == "<" and nxt == "<":
                 self.heredoc_op(f)
@@ -188,11 +209,25 @@ class Parser:
                 self.i += 2
                 f.absorb(self.lex(True))
                 f.add(NUL)
+            elif c in "<>":
+                self.redirect(f)
             else:
-                f.add(c)
+                f.add(c, True)
                 self.i += 1
         f.end_cmd()
         return f.cmds
+
+    def redirect(self, f):
+        s, n = self.s, self.n
+        f.redirect_word()
+        if s[self.i] == "&":
+            self.i += 1
+        op = s[self.i]
+        self.i += 1
+        nxt = s[self.i] if self.i < n else ""
+        if (op == ">" and nxt in (">", "|", "&")) or (op == "<" and nxt in (">", "&")):
+            self.i += 1
+        f.redir = True
 
     def dquote(self, f):
         s, n = self.s, self.n
@@ -234,11 +269,13 @@ class Parser:
         s, n = self.s, self.n
         j = self.i + 2
         buf = []
+        escaped = False
         while True:
             if j >= n:
                 raise Ambiguous()
             if s[j] == "\\" and j + 1 < n:
                 buf.append(s[j + 1])
+                escaped = True
                 j += 2
             elif s[j] == "'":
                 break
@@ -246,6 +283,8 @@ class Parser:
                 buf.append(s[j])
                 j += 1
         f.add("".join(buf))
+        if escaped:
+            f.add(NUL)
         self.i = j + 1
 
     def heredoc_op(self, f):
@@ -257,9 +296,7 @@ class Parser:
             self.i += 1
         while self.i < n and s[self.i] in " \t":
             self.i += 1
-        f.flush_word()
-        f.add("<<")
-        f.flush_word()
+        f.redirect_word()
         literal = False
         buf = []
         while self.i < n and s[self.i] not in " \t\r\n;&|()<>":
@@ -302,7 +339,7 @@ class Parser:
             body = "\n".join(lines)
             if not literal and ("$(" in body or "`" in body):
                 raise Ambiguous()
-            cmd.append(body)
+            cmd.append(Redir(body))
         self.pending = []
 
 
@@ -313,6 +350,7 @@ BOOL_FLAGS = {"--admin", "--auto", "-d", "--delete-branch", "--disable-auto",
 REPO_FLAGS = {"-R", "--repo"}
 TRANSPARENT = {"env", "command", "sudo", "time"}
 ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+ODD_CHARS = re.compile(r"[^\S \t\n]|[\x01-\x08\x0e-\x1f\x7f-\x9f]")
 SELECTOR = re.compile(r"[A-Za-z0-9#][A-Za-z0-9._/:@#+-]*\Z")
 REPO = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){1,2}\Z")
 
@@ -331,20 +369,22 @@ def split_flag(word):
     return flags
 
 
-def scan(words):
+def scan(args):
     positional, repos, k = [], [], 0
-    while k < len(words):
-        word = words[k]
+    while k < len(args):
+        word = args[k]
         k += 1
+        if ODD_CHARS.search(word):
+            raise Ambiguous()
         if not word.startswith("-") or len(word) < 2:
             positional.append(word)
             continue
         for flag, value in split_flag(word):
             if flag in VALUE_FLAGS:
                 if value is None:
-                    if k >= len(words):
+                    if k >= len(args):
                         raise Ambiguous()
-                    value = words[k]
+                    value = args[k]
                     k += 1
                 if flag in REPO_FLAGS:
                     repos.append(value)
@@ -372,6 +412,7 @@ def merge_target(cmd, g, p, m):
 
 
 def merge_call(cmd):
+    cmd = words(cmd)
     for g, w in enumerate(cmd):
         if w.rsplit("/", 1)[-1] != "gh" and "$" not in w and NUL not in w:
             continue
@@ -388,6 +429,9 @@ def merge_call(cmd):
 
 
 def inert(cmd):
+    cmd = words(cmd)
+    if not cmd:
+        return True
     head = cmd[0]
     if NUL in head:
         return False

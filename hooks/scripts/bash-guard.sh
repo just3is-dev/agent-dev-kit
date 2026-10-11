@@ -77,7 +77,7 @@ if [ "$merge_rc" -ne 1 ]; then
       if [ "$selector" != "?" ]; then
         # Один сетевой вызов на оба поля PR
         pr_fields=$(adk_gh_pr_fields "$selector" "$repo" "$git_root" \
-          isDraft,reviewDecision '"\(.isDraft) \(.reviewDecision)"')
+          isDraft,reviewDecision '"\(.isDraft) \(.reviewDecision)"' </dev/null)
         case "$pr_fields" in
           *' '*) gh_isdraft="${pr_fields%% *}"; gh_decision="${pr_fields#* }" ;;
         esac

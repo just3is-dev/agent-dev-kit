@@ -577,6 +577,7 @@ gh_stub_dir="$TMP/ghstub-266"
 mkdir -p "$gh_stub_dir"
 cat > "$gh_stub_dir/gh" <<'EOF'
 #!/usr/bin/env bash
+cat > /dev/null
 sel=""
 repo=""
 shift 2
@@ -589,7 +590,7 @@ while [ $# -gt 0 ]; do
 done
 echo "$sel|$repo" >> "$GH_STUB_CALLS"
 case "$sel" in
-  ""|7|"#7"|https://github.com/o/r/pull/7|ready-branch) echo 'false APPROVED' ;;
+  ""|7|"#7"|https://github.com/o/r/pull/7|ready-branch|065|x35|067) echo 'false APPROVED' ;;
   9) echo 'false REVIEW_REQUIRED' ;;
   5|https://github.com/o/r/pull/5|draft-branch) echo 'true REVIEW_REQUIRED' ;;
   *) exit 1 ;;
@@ -650,7 +651,20 @@ for c in \
   'env gh pr merge --squash 5' \
   '/usr/local/bin/gh pr merge --squash 5' \
   'echo "x" && gh pr merge --squash 5' \
-  'gh pr merge 5 --body "gh pr merge 7"'
+  'gh pr merge 5 --body "gh pr merge 7"' \
+  'gh pr merge 5 --squash --delete-branch 2>&1' \
+  'gh pr merge --squash 5 2>&1 | tail -5' \
+  'gh pr merge 5 &>/dev/null' \
+  'gh pr merge 5 > /tmp/x 2>&1' \
+  'gh pr merge 5 >> log' \
+  'gh pr merge --squash 2>&1 5' \
+  'gh pr merge --squash >out 5' \
+  'gh pr merge 5 <<< "x"' \
+  $'gh pr merge --body-file - 5 <<EOF\nbody\nEOF' \
+  'cd /x && gh pr merge 5 --squash 2>&1; echo $?' \
+  'gh pr merge 7 2>&1 && gh pr merge 5 2>&1' \
+  "gh pr merge '5'>f" \
+  'gh pr merge 5 5>f'
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: draft-PR по селектору из слов вызова блокируется: $c" 2 $?
@@ -681,7 +695,36 @@ for c in \
   'cd repo && gh pr merge 7' \
   'env gh pr merge --squash' \
   'gh pr merge 7 --body "gh pr merge 5"' \
-  'gh pr merge --squash 7 && echo "gh pr merge 5"'
+  'gh pr merge --squash 7 && echo "gh pr merge 5"' \
+  'gh pr merge 7 --squash --delete-branch 2>&1' \
+  'gh pr merge --squash 7 2>&1 | tail -5' \
+  'gh pr merge 7 &>/dev/null' \
+  'gh pr merge 7 &>> log' \
+  'gh pr merge 7 > /tmp/x 2>&1' \
+  'gh pr merge 7 >> log' \
+  'gh pr merge 7 2>/dev/null' \
+  'gh pr merge 7 < /dev/null' \
+  'gh pr merge 7 2>&-' \
+  'gh pr merge 7 >&2' \
+  'gh pr merge 7 >| f' \
+  'gh pr merge 7 <> f' \
+  'gh pr merge 7 3<&0' \
+  'gh pr merge --squash 2>&1 7' \
+  'gh pr merge --squash >out 7' \
+  'gh pr merge --subject 2>&1 x 7' \
+  'gh pr merge 7 <<< "x"' \
+  $'gh pr merge --body-file - 7 <<EOF\nbody\nEOF' \
+  'cd /x && gh pr merge 7 --squash 2>&1; echo $?' \
+  '2>/dev/null gh pr merge --squash' \
+  'gh pr merge --squash 2>&1' \
+  'gh pr merge 5>f' \
+  'gh pr merge 7 > "$OUT"' \
+  'gh pr merge 7 > $(mktemp)' \
+  'gh pr merge 7 2>&1 && gh pr merge 7 2>&1' \
+  'gh pr merge 7 --subject $'\''a\nb'\''' \
+  $'gh pr merge --body \'a\tb\' 7' \
+  $'gh pr merge --body "a\nb" 7' \
+  $'gh pr merge --body "a\rb" 7'
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: ready-PR по селектору из слов вызова проходит как раньше: $c" 0 $?
@@ -718,7 +761,18 @@ for c in \
   'gh pr merge 7 && gh pr merge $N' \
   'gh pr merge 7 && gh pr merge --unknown 7' \
   'gh pr merge 7 && gh pr merge 99' \
-  'gh pr merge 99'
+  'gh pr merge 99' \
+  'gh pr merge 99 2>&1' \
+  "gh pr merge \$'\\065'" \
+  "gh pr merge \$'\\x35'" \
+  "gh pr merge --squash \$'\\067'" \
+  $'gh pr merge -t\r 5' \
+  $'gh pr merge -t\r 7' \
+  $'gh pr merge 7\r' \
+  $'gh pr merge 7\v' \
+  $'gh pr merge 7\f' \
+  $'gh pr merge 7\xc2\xa0' \
+  $'gh pr merge --squash\r7'
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: селектор не определён однозначно или PR не прочитан — блокируется (fail-closed): $c" 2 $?
@@ -749,6 +803,22 @@ guard_msg=$(guard_pr_run 'gh pr merge --squash 5')
 assert_contains "issue #266: отказ для draft-PR с флагом до номера — прежний текст про черновик" "$guard_msg" 'PR ещё черновик'
 guard_msg=$(guard_pr_run 'gh pr merge 99')
 assert_contains "issue #266: PR не прочитан — прежний текст про непроверяемый статус" "$guard_msg" 'статус PR проверить не удалось'
+guard_msg=$(guard_pr_run 'gh pr merge --squash --delete-branch 5 2>&1')
+assert_contains "issue #266: перенаправление после флагов — прежний текст про черновик" "$guard_msg" 'PR ещё черновик'
+assert_not_contains "issue #266: перенаправление после флагов — нет текста про неопределённый PR" "$guard_msg" 'не удалось определить'
+guard_msg=$(guard_pr_run 'gh pr merge 99 2>&1')
+assert_contains "issue #266: перенаправление — PR не прочитан, прежний текст про непроверяемый статус" "$guard_msg" 'статус PR проверить не удалось'
+guard_pr_run 'gh pr merge 7 --squash --delete-branch 2>&1' >/dev/null
+assert_contains "issue #266: перенаправление не селектор — запрошен PR из слов вызова" "$(cat "$gh_stub_dir/calls")" '^7|$'
+assert_not_contains "issue #266: цель перенаправления не запрашивалась как PR" "$(cat "$gh_stub_dir/calls")" '1|'
+guard_pr_run 'gh pr merge 5>f' >/dev/null
+assert_contains "issue #266: 5>f — перенаправление fd 5, селектора нет, запрошен PR текущей ветки" "$(cat "$gh_stub_dir/calls")" '^|$'
+guard_pr_run 'gh pr merge 7 && gh pr merge 5' >/dev/null
+assert_contains "issue #266: заглушка gh читает stdin — второй вызов всё равно проверен (stdin gh закрыт)" "$(cat "$gh_stub_dir/calls")" '^5|$'
+guard_msg=$(guard_pr_run $'gh pr merge -t\r 5')
+assert_contains "issue #266: CR внутри слова — PR не определён, а не откат на PR текущей ветки" "$guard_msg" 'не удалось определить, какой PR мержится'
+guard_msg=$(guard_pr_run "gh pr merge \$'\\065'")
+assert_contains "issue #266: \$'\\065' в селекторе — PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
 guard_msg=$(guard_pr_run 'gh pr merge --squash 5 7')
 assert_contains "issue #266: селектор не определён — текст про то, что PR не удалось определить" "$guard_msg" 'не удалось определить, какой PR мержится'
 guard_msg=$(guard_pr_run 'echo 5 | xargs gh pr merge')
@@ -762,7 +832,9 @@ for c in \
   'gh pr merge 7' \
   'gh pr merge --squash 7' \
   'gh pr merge --subject 9 --squash 7' \
-  'gh pr merge 7 && gh pr merge --squash 7'
+  'gh pr merge 7 && gh pr merge --squash 7' \
+  'gh pr merge 7 2>&1' \
+  'gh pr merge --squash --delete-branch 7 2>&1 | tail -5'
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: human-review-required — approve читается у PR из слов вызова, проходит: $c" 0 $?
@@ -773,7 +845,9 @@ for c in \
   'gh pr merge --subject 7 9' \
   'gh pr merge 7 && gh pr merge --squash 9' \
   'gh pr merge 9 && gh pr merge 7' \
-  'gh pr merge 5'
+  'gh pr merge 5' \
+  'gh pr merge 9 2>&1' \
+  'gh pr merge --squash --delete-branch 9 2>&1 | tail -5'
 do
   guard_pr_exit "$c"
   assert_exit "issue #266: human-review-required — PR без approve блокируется: $c" 2 $?
@@ -781,6 +855,12 @@ done
 printf '{"policies": {"merge": "human-only"}}' > "$P/adk.config.json"
 guard_pr_exit 'gh pr merge --squash 7'
 assert_exit "issue #266: human-only — merge ready-PR по селектору из слов вызова блокируется" 2 $?
+guard_msg=$(guard_pr_run 'gh pr merge --squash 7 2>&1')
+assert_contains "issue #266: human-only с перенаправлением — прежний текст про политику" "$guard_msg" 'policies.merge=human-only'
+printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
+guard_msg=$(guard_pr_run 'gh pr merge --squash 9 2>&1')
+assert_contains "issue #266: human-review-required с перенаправлением — прежний текст про approve" "$guard_msg" 'policies.merge=human-review-required'
+assert_not_contains "issue #266: human-review-required с перенаправлением — нет текста про неопределённый PR" "$guard_msg" 'не удалось определить'
 rm "$P/adk.config.json"
 
 # issue #78: проект — подкаталог более крупного репозитория со своим
