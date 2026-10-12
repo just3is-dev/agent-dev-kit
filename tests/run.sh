@@ -1196,6 +1196,644 @@ printf '{"tool_input":{"command":"cd %s && git commit -m x"}}' "$P" | CLAUDE_PRO
 assert_exit "bash-guard: секрет-гейт через cd в команде" 2 $?
 rm "$P/src/leak2.ts"
 
+# issue #265: хук решает по вызову git commit / git push, а не по подстроке
+# в тексте команды: флаг внутри вызова (-n, --no-verify, force и ссылка на
+# main/master) читается из слов простой команды тем же лексером, что и
+# вызов merge (ADR-026, ADR-028). Каждая строка таблицы — «команда => вид»,
+# на каждой строке сверяются код выхода И причина отказа: текст конкретного
+# правила и наличие/отсутствие префикса про упоминание; для allow — exit 0
+# и пустой stderr. Состояние PR (draft) на git-правила не влияет.
+git_guard_case() { # git_guard_case <вид> <команда>
+  local kind="$1" c="$2" payload msg rc want_rc want="" mention=0 t
+  local text_nv='git commit --no-verify обходит гейты качества'
+  local text_force='force push в main/master'
+  local text_pnv='git push --no-verify обходит pre-push-хуки'
+  local text_amb='не может однозначно разобрать'
+  local text_men='не может отличить упоминание от вызова'
+  case "$kind" in
+    allow) want_rc=0 ;;
+    nv) want_rc=2; want="$text_nv" ;;
+    force) want_rc=2; want="$text_force" ;;
+    pnv) want_rc=2; want="$text_pnv" ;;
+    amb) want_rc=2; want="$text_amb" ;;
+    mention-nv) want_rc=2; want="$text_nv"; mention=1 ;;
+    mention-force) want_rc=2; want="$text_force"; mention=1 ;;
+    mention-pnv) want_rc=2; want="$text_pnv"; mention=1 ;;
+    *) echo "FAIL: issue #265: неизвестный вид строки таблицы: $kind"; fails=$((fails + 1)); return ;;
+  esac
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}, "cwd": sys.argv[2]}))' "$c" "$P")
+  msg=$(printf '%s' "$payload" | ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
+  rc=$?
+  assert_exit "issue #265 ($kind): код выхода: $c" "$want_rc" "$rc"
+  if [ "$kind" = allow ]; then
+    [ -z "$msg" ]
+    assert_exit "issue #265 (allow): stderr пуст: $c" 0 $?
+    return
+  fi
+  assert_contains "issue #265 ($kind): причина отказа: $c" "$msg" "$want"
+  for t in "$text_nv" "$text_force" "$text_pnv" "$text_amb"; do
+    [ "$t" = "$want" ] || assert_not_contains "issue #265 ($kind): нет чужой причины «${t}»: $c" "$msg" "$t"
+  done
+  if [ "$mention" -eq 1 ]; then
+    assert_contains "issue #265 ($kind): есть пояснение про упоминание: $c" "$msg" "$text_men"
+  else
+    assert_not_contains "issue #265 ($kind): нет пояснения про упоминание: $c" "$msg" "$text_men"
+  fi
+}
+
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  git_guard_case "${row##* => }" "${row%% => *}"
+done <<'TABLE_265'
+git commit -m "msg" => allow
+git commit -am "msg" => allow
+git commit -m msg -s => allow
+git commit -m x --allow-empty => allow
+git commit --amend --no-edit => allow
+git commit --amend -C HEAD => allow
+git commit -F msg.txt => allow
+git commit -m x -- file.txt => allow
+git commit -m x -- -n => allow
+git commit -- -n => allow
+git commit -m x -- --no-verify => allow
+git commit -m x -S => allow
+git commit -m x -Sn => allow
+git commit -m x -u => allow
+git commit -m x -un => allow
+git commit -m x --untracked-files=no => allow
+git commit -mn => allow
+git commit -amn => allow
+git commit -Fn => allow
+git commit -Cn => allow
+git commit -cn => allow
+git commit -tn => allow
+git commit --message=-n => allow
+git commit --file=-n => allow
+git commit -m -n => allow
+git commit -m --no-verify => allow
+git commit -am -n => allow
+git commit -F -n => allow
+git commit -C -n => allow
+git commit -c -n => allow
+git commit -t -n => allow
+git commit --message -n => allow
+git commit --file -n => allow
+git commit --author -n => allow
+git commit --date -n => allow
+git commit --reuse-message -n => allow
+git commit --reedit-message -n => allow
+git commit --fixup -n => allow
+git commit --squash -n => allow
+git commit --cleanup -n => allow
+git commit --template -n => allow
+git commit --trailer -n => allow
+git commit --pathspec-from-file -n => allow
+git commit -m x --gpg-sign=n => allow
+git commit -F msg.txt -s => allow
+git commit -m "$(cat msg.txt)" => allow
+git commit -m "$msg" => allow
+git commit -F "$f" => allow
+git commit -m x --author="$A" => allow
+git commit -m x -- "$f" => allow
+git -C dir commit -m x => allow
+git -c user.name=t commit -m x => allow
+git --git-dir=.git commit -m x => allow
+git --git-dir .git commit -m x => allow
+git --work-tree=. commit -m x => allow
+git --work-tree . commit -m x => allow
+git --namespace=ns commit -m x => allow
+git --namespace ns commit -m x => allow
+git --config-env=a.b=ENV commit -m x => allow
+git --config-env a.b=ENV commit -m x => allow
+git --super-prefix=p commit -m x => allow
+git --super-prefix p commit -m x => allow
+git --exec-path=/x commit -m x => allow
+git --no-pager commit -m x => allow
+git -p commit -m x => allow
+git -P commit -m x => allow
+git --paginate commit -m x => allow
+git --bare commit -m x => allow
+git --no-replace-objects commit -m x => allow
+git --no-lazy-fetch commit -m x => allow
+git --no-optional-locks commit -m x => allow
+git --no-advice commit -m x => allow
+git --literal-pathspecs commit -m x => allow
+git --glob-pathspecs commit -m x => allow
+git --noglob-pathspecs commit -m x => allow
+git --icase-pathspecs commit -m x => allow
+git -C a -c b=c --no-pager commit -m x => allow
+/usr/bin/git commit -m x => allow
+"$GIT" commit -m x => allow
+git commit -m "unclosed => allow
+git commit -m x 2>&1 => allow
+git commit -m x > out.txt => allow
+git commit -m x && git status => allow
+git commit -m x; git log --oneline => allow
+git add -A && git commit -m x => allow
+git push origin issue-265-x => allow
+git push -u origin HEAD => allow
+git push --force-with-lease origin my-branch => allow
+git push --force origin issue-42-fix => allow
+git push -f origin feature => allow
+git push -fu origin issue-265-x => allow
+git push origin main => allow
+git push origin HEAD:main => allow
+git push -u origin main => allow
+git push origin master => allow
+git push upstream main => allow
+git push --all origin => allow
+git push --branches origin => allow
+git push --tags origin => allow
+git push -n origin main => allow
+git push --dry-run origin main => allow
+git push -f origin main:feature => allow
+git push -f origin master:my-branch => allow
+git push --force-with-lease origin main:refs/heads/feature => allow
+git push -f origin feature-main => allow
+git push -f origin mainline => allow
+git push -f origin maintenance => allow
+git push -f origin feat/main => allow
+git push -f origin refs/heads/feature/main => allow
+git push -f origin HEAD => allow
+git push -f origin => allow
+git push --force-with-lease => allow
+git push origin +feature main => allow
+git push origin main +feature => allow
+git push --force-with-lease=main:abc origin feature => allow
+git commit -m x ; ls -n => allow
+git commit -m x && ls -n => allow
+git commit -m x || ls -n => allow
+git commit -m x | cat -n => allow
+git commit -m x & ls -n => allow
+git push origin foo ; rm -f main => allow
+git push origin foo && rm -f main => allow
+git push origin foo || rm -f main => allow
+git push origin foo | rm -f main => allow
+git push origin foo & rm -f main => allow
+git commit -m x > -n => allow
+git commit -m x >> -n => allow
+git commit -m x 2> -n => allow
+git commit -m x &> -n => allow
+git commit -m x < -n => allow
+git commit -m x <<< -n => allow
+git push -f origin foo > main => allow
+git push -f origin foo 2> main => allow
+git push -f origin foo <<< main => allow
+git push -o main -f origin foo => allow
+git push -fo main origin foo => allow
+git push --push-option main -f origin foo => allow
+git push --push-option=main -f origin foo => allow
+git push --repo main -f foo => allow
+git push --receive-pack main -f origin foo => allow
+git push --exec main -f origin foo => allow
+git push -f origin foo -- main => force
+git push origin foo => allow
+git push origin foo -- main => allow
+git push origin "unclosed => allow
+git -C dir push -u origin HEAD => allow
+git --no-pager push origin issue-265-x => allow
+git commit -m x -n => nv
+git commit -m x --no-verify => nv
+git commit --no-verify -m x => nv
+git commit -n -m x => nv
+git commit -nm x => nv
+git commit -anm x => nv
+git commit -vn -m x => nv
+git commit -a -n => nv
+git commit -n => nv
+git commit -m x -s -n => nv
+git commit -m x -n -s => nv
+git commit -F msg.txt -n => nv
+git commit -C HEAD -n => nv
+git commit -c HEAD --no-verify => nv
+git commit -t tpl -n => nv
+git commit --message x -n => nv
+git commit --message=x -n => nv
+git commit --file f --no-verify => nv
+git commit --author a --no-verify => nv
+git commit --date d --no-verify => nv
+git commit --reuse-message HEAD --no-verify => nv
+git commit --reedit-message HEAD --no-verify => nv
+git commit --fixup HEAD --no-verify => nv
+git commit --squash HEAD --no-verify => nv
+git commit --cleanup strip --no-verify => nv
+git commit --template t --no-verify => nv
+git commit --trailer a=b --no-verify => nv
+git commit --pathspec-from-file f --no-verify => nv
+git commit --gpg-sign=k -n => nv
+git commit -S -n => nv
+git commit -nS => nv
+git commit -u -n => nv
+git commit -m -- -n => nv
+git commit -m x -- file -n => allow
+git commit --no-verify=1 -m x => nv
+git commit --no-veri -m x => nv
+git commit --no-verif -m x => nv
+git commit --no-v -m x => nv
+git commit --no-verify => nv
+git commit -m x -n file.txt => nv
+git commit -m x -n -- file.txt => nv
+git commit -m "$msg" -n => nv
+git commit -m "$(cat msg.txt)" --no-verify => nv
+git commit -F "$f" -n => nv
+git -C dir commit -n -m x => nv
+git -c user.name=t commit -n -m x => nv
+git --git-dir=.git commit -n => nv
+git --git-dir .git commit -n => nv
+git --work-tree=. commit -n => nv
+git --work-tree . commit -n => nv
+git --namespace=ns commit -n => nv
+git --namespace ns commit -n => nv
+git --config-env=a.b=ENV commit -n => nv
+git --config-env a.b=ENV commit -n => nv
+git --super-prefix=p commit -n => nv
+git --super-prefix p commit -n => nv
+git --exec-path=/x commit -n => nv
+git --no-pager commit -n => nv
+git -p commit -n => nv
+git -P commit -n => nv
+git --paginate commit -n => nv
+git --bare commit -n => nv
+git --no-replace-objects commit -n => nv
+git --no-lazy-fetch commit -n => nv
+git --no-optional-locks commit -n => nv
+git --no-advice commit -n => nv
+git --literal-pathspecs commit -n => nv
+git --glob-pathspecs commit -n => nv
+git --noglob-pathspecs commit -n => nv
+git --icase-pathspecs commit -n => nv
+git -C a -c b=c --no-pager commit -n => nv
+/usr/bin/git commit -n => nv
+"git" commit -n => nv
+g''it commit -n => nv
+"$GIT" commit -n => nv
+$GIT commit --no-verify => nv
+"$(command -v git)" commit -n => nv
+$(echo git) commit -n => nv
+command git commit -n => nv
+env git commit -n => nv
+env GIT_AUTHOR_NAME=x git commit -n => nv
+GIT_AUTHOR_NAME=x git commit -n => nv
+sudo git commit -n => nv
+time git commit -n => nv
+nohup git commit -n => nv
+xargs git commit -n => nv
+eval git commit -n => nv
+echo x | xargs -I{} git commit -n -m {} => nv
+cd repo && git commit -n -m x => nv
+cd repo; git commit -n -m x => nv
+true || git commit -n => nv
+false && git commit -n => nv
+echo ok | git commit -n => nv
+echo ok & git commit -n => nv
+git status && git commit -n => nv
+git commit -n && git status => nv
+git commit -n ; git status => nv
+git commit -n || true => nv
+git commit -n | tee out => nv
+(git commit -n) => nv
+{ git commit -n; } => nv
+if true; then git commit -n; fi => nv
+for f in a b; do git commit -n -m "$f"; done => nv
+echo $(git commit -n) => nv
+echo "$(git commit -n)" => nv
+echo `git commit -n` => nv
+x=$(git commit -n) => nv
+git commit -n 2>&1 => nv
+git commit -n > out.txt => nv
+git commit -m x -n 2>&1 => nv
+git commit -m x -n 2>&1 | tail -3 => nv
+2>&1 git commit -n => nv
+git 2>&1 commit -n => nv
+git 2>/dev/null push -f origin main => force
+git push --repo=origin -f main => force
+git commit -n -F - <<< msg => nv
+git commit -n -m "unclosed => amb
+git commit -m "it's" -n => nv
+git commit -m 'a "quoted" word' -n => nv
+git push -f origin main => force
+git push --force origin main => force
+git push --force-with-lease origin main => force
+git push --force-with-lease=main origin main => force
+git push --force-with-lease=main:abc origin main => force
+git push --force-w origin main => force
+git push --force-with origin main => force
+git push -f origin master => force
+git push -f upstream main => force
+git push -f upstream master => force
+git push --force upstream master => force
+git push origin main -f => force
+git push origin main --force => force
+git push origin main --force-with-lease => force
+git push origin +main => force
+git push origin +master => force
+git push upstream +main => force
+git push origin +HEAD:main => force
+git push origin +HEAD:master => force
+git push origin +feature:main => force
+git push origin +HEAD:refs/heads/main => force
+git push origin +refs/heads/main => force
+git push origin +refs/heads/feature:refs/heads/main => force
+git push origin HEAD:main --force => force
+git push origin HEAD:main -f => force
+git push origin HEAD:master --force-with-lease => force
+git push -f origin HEAD:main => force
+git push -f origin HEAD:refs/heads/main => force
+git push -f origin HEAD:refs/heads/master => force
+git push -f origin HEAD:heads/main => force
+git push -f origin feature:main => force
+git push -f origin refs/heads/main => force
+git push -f origin refs/heads/feature:refs/heads/main => force
+git push -f origin :main => force
+git push -fu origin main => force
+git push -uf origin main => force
+git push -nf origin main => force
+git push -vf origin main => force
+git push -f -u origin main => force
+git push -u -f origin main => force
+git push -f origin feature main => force
+git push -f origin main feature => force
+git push -f origin feature:other main => force
+git push origin feature +main => force
+git push -f fork main => force
+git push -f https://github.com/o/r.git main => force
+git push --force --set-upstream origin main => force
+git push -f -- origin main => force
+git push -f origin main -- => force
+git push -f origin 'refs/heads/*:refs/heads/*' => force
+git push origin '+refs/heads/*:refs/heads/*' => force
+git push origin '+refs/heads/*:refs/heads/ma*' => force
+git push -f --all origin => force
+git push -f origin --all => force
+git push -f --branches origin => force
+git push --force-with-lease --all => force
+git push --mirror origin => force
+git push --mirror => force
+git push --mirro origin => force
+git push --all -f origin => force
+git -C dir push -f origin main => force
+git -c a=b push --force origin main => force
+git --git-dir=.git push -f origin main => force
+git --no-pager push -f origin main => force
+git push -f origin main 2>&1 => force
+git push -f origin main 2>&1 | tail -3 => force
+git push -f origin main > out.txt => force
+git push -f origin main && echo ok => force
+echo ok && git push -f origin main => force
+echo ok; git push -f origin main => force
+true || git push -f origin main => force
+echo ok | git push -f origin main => force
+echo ok & git push -f origin main => force
+cd repo && git push --force origin main => force
+(git push -f origin main) => force
+if true; then git push -f origin main; fi => force
+xargs git push -f origin main => force
+env git push -f origin main => force
+command git push -f origin main => force
+sudo git push -f origin main => force
+/usr/bin/git push -f origin main => force
+"$GIT" push -f origin main => force
+$GIT push -f origin main => force
+echo $(git push -f origin main) => force
+echo `git push -f origin main` => force
+eval git push -f origin main => force
+git push --no-verify origin foo => pnv
+git push origin foo --no-verify => pnv
+git push --no-verify => pnv
+git push -u --no-verify origin HEAD => pnv
+git push --no-verif origin foo => pnv
+git push --no-veri origin foo => pnv
+git -C dir push --no-verify origin foo => pnv
+git --no-pager push --no-verify origin foo => pnv
+git push --no-verify origin foo 2>&1 => pnv
+git push --no-verify origin foo && echo ok => pnv
+echo ok && git push --no-verify origin foo => pnv
+xargs git push --no-verify => pnv
+"$GIT" push --no-verify => pnv
+git push -n --no-verify origin foo => pnv
+git push -f --no-verify origin main => force
+git commit -n && git push -f origin main => nv
+git push -f origin main && git commit -n => nv
+git commit $FILES -m x => amb
+git commit "$f" -m x => amb
+git commit "$f" => amb
+git commit {a,b}.txt -m x => amb
+git commit -$FLAG => amb
+git commit -{a..z} => amb
+git commit -{n,a} => amb
+git commit --$X => amb
+git commit --{no-verify,x} => amb
+git commit -m x $(git ls-files -m) => amb
+git commit -m x "$(git ls-files -m)" => amb
+git commit -m x -$'\x6e' => amb
+git commit -m x $'\x2dn' => amb
+git commit -m x foo$(date).txt => amb
+git commit -m x -- foo$(date).txt => allow
+git commit -m x -- $'\x2dn' => allow
+git push -f origin $'main' => force
+git push -f origin $'\x6dain' => amb
+SUB=commit; git $SUB -n => amb
+SUB=commit; git "$SUB" -m x => amb
+SUB=push; git $SUB => amb
+git --new-flag commit -m x => amb
+git --weird=1 commit -n => amb
+git -x push origin foo => amb
+git --git-dir=.git --new-flag push -f origin main => amb
+git $OPTS commit -m x => amb
+git $OPTS push origin foo => amb
+git push -f origin "$B" => amb
+git push origin "$B" => amb
+git push -u origin $(git branch --show-current) => amb
+git push -u origin "$(git branch --show-current)" => amb
+git push $FLAGS origin foo => amb
+git push origin HEAD:refs/heads/$B => amb
+git push origin foo"$B" => amb
+git push --force-with-lease origin "$B" => amb
+git push -f origin main "unclosed => amb
+git push -f $(echo origin) main => force
+git push --$X origin foo => amb
+git push -{f,u} origin foo => amb
+git push -f origin main $(echo x) => force
+echo $HOME $USER commits => allow
+echo $HOME $USER push => amb
+echo git commit -m x => allow
+echo git commit -n => nv
+echo 'git commit --no-verify' => allow
+echo "git commit -n" => allow
+echo 'git commit -nm x' => allow
+echo 'git push -f origin main' => allow
+echo "git push --force-with-lease origin main" => allow
+echo 'git push origin +main' => allow
+echo 'git push --no-verify origin foo' => allow
+echo 'git push --mirror origin' => allow
+echo --no-verify => allow
+grep -n 'git commit' README.md && echo '--no-verify' => allow
+grep -rn 'git commit --no-verify' hooks/ => allow
+grep -n "git commit -n" docs/ => allow
+grep -rn "git push -f origin main" docs/ => allow
+grep -n 'git commit' README.md => allow
+grep -c 'git commit --no-verify' a.md; grep -c 'git push --force origin main' b.md => allow
+git commit -m 'docs: запрет git commit --no-verify' => allow
+git commit -m "fix: объяснить git push --force origin main" => allow
+git commit -am "git commit -n" => allow
+git commit -m "docs: git push origin +main в тексте" => allow
+git commit -m "git commit -nm x и git push -f origin main" => allow
+git commit -F msg.txt -m "git commit --no-verify" => allow
+git log --grep 'git commit -n' => allow
+git log --grep "git push -f origin main" => allow
+git tag -a v1 -m "git commit --no-verify" => allow
+printf '%s\n' "git commit -n" >> notes.txt => allow
+echo 'git commit --no-verify' > notes.txt => allow
+echo ok # git commit --no-verify => allow
+echo ok # git push -f origin main => allow
+./hooks/scripts/adk-log.sh issue-265 event=outcome reason="git commit --no-verify отклонён" => allow
+gh pr comment 5 --body "git commit --no-verify и git push -f origin main" => allow
+gh issue create --title x --body "git push -f origin main" => allow
+cd repo && grep -n "git commit --no-verify" file => allow
+echo "it's git commit -n" => allow
+echo "ls -n && git commit -m x" | sort => allow
+echo "git push -f origin foo" | sort => allow
+git commit -m "x" && git commit -m "git commit --no-verify" => allow
+git commit -m "git commit --no-verify" && git push origin foo => mention-nv
+git commit -m "git push -f origin main" && git push origin foo => mention-force
+grep "git commit -n" f | sort => mention-nv
+grep "git commit --no-verify" f && ./scripts/check => mention-nv
+for f in a b; do grep -n "git commit -n" "$f"; done => mention-nv
+X=1 grep -n "git commit -n" file => mention-nv
+bash -c 'git commit --no-verify -m x' => mention-nv
+bash -c 'git commit -n -m x' => mention-nv
+sh -c "git commit -nm x" => mention-nv
+bash -c "git commit -m x -n" => mention-nv
+eval "git commit -n" => mention-nv
+echo 'git commit --no-verify' | bash => mention-nv
+echo "git commit -n" | sh => mention-nv
+printf 'git commit -n' | bash => mention-nv
+bash <(echo "git commit -n") => mention-nv
+bash <<< "git commit -n" => mention-nv
+ssh host 'git commit -n' => mention-nv
+python3 -c 'import os; os.system("git commit -n")' => mention-nv
+echo 'git commit -n' > run.sh && sh run.sh => mention-nv
+echo 'git commit -n' > run.sh; ./run.sh => mention-nv
+bash -c 'git push -f origin main' => mention-force
+sh -c "git push --force-with-lease origin master" => mention-force
+bash -c 'git push origin +main' => mention-force
+bash -c 'git push origin HEAD:main --force' => mention-force
+bash -c 'git push --mirror origin' => mention-force
+bash -c 'git push -f --all origin' => mention-force
+bash -c "git push -f origin 'refs/heads/*:refs/heads/*'" => mention-force
+bash -c 'git push -f --branches origin' => mention-force
+eval "git push -f origin main" => mention-force
+echo 'git push -f origin main' | bash => mention-force
+ssh host 'git push -f origin main' => mention-force
+bash -c 'git push --no-verify origin foo' => mention-pnv
+sh -c "git push origin foo --no-verify" => mention-pnv
+echo 'git push --no-verify origin foo' | sh => mention-pnv
+bash -c 'git commit -m x' => allow
+bash -c 'git push origin foo' => allow
+bash -c "git push -n origin main" => allow
+sh -c "git push origin foo && git push -u origin HEAD" => allow
+bash -c 'git push --force-with-lease origin foo' => allow
+TABLE_265
+git_guard_case nv $'echo ok\ngit commit -n -m x'
+git_guard_case nv $'git commit -m x \\\n-n'
+git_guard_case nv $'git commit \\\n  --no-verify \\\n  -m x'
+git_guard_case nv $'git add -A\ngit commit -n -m x\ngit status'
+git_guard_case nv $'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" -n'
+git_guard_case nv $'git commit -F - -n <<\'EOF\'\nmsg\nEOF'
+git_guard_case nv $'git commit -m "строка\nвторая строка" -n'
+git_guard_case allow $'git commit -m x\nls -n'
+git_guard_case allow $'git push origin foo\nrm -f main'
+git_guard_case allow $'git commit -m x <<EOF\n-n\nEOF'
+git_guard_case allow $'git push -f origin foo <<EOF\nmain\nEOF'
+git_guard_case force $'echo ok\ngit push -f origin main'
+git_guard_case force $'git push \\\n  --force \\\n  origin main'
+git_guard_case force $'git push origin main \\\n  -f'
+git_guard_case pnv $'echo ok\ngit push --no-verify origin foo'
+git_guard_case allow $'git commit -m "строка\nвторая строка: git commit --no-verify"'
+git_guard_case allow $'git commit -m "$(cat <<\'EOF\'\nfix: git commit --no-verify и git push -f origin main\n\ntело: git commit -n\nEOF\n)"'
+git_guard_case allow $'git commit -F - <<\'EOF\'\nтекст: git commit --no-verify\nEOF'
+git_guard_case allow $'cat <<\'EOF\'\ngit commit --no-verify\nEOF'
+git_guard_case allow $'cat <<EOF\ngit push -f origin main\nEOF'
+git_guard_case allow $'cat <<-EOF\n\tgit commit -n\n\tEOF'
+git_guard_case allow $'cat <<\'EOF\' > notes.md\nсначала git push --force origin main\nEOF'
+git_guard_case allow $'git commit -m x\ngit push origin issue-265-x'
+git_guard_case allow $'echo "строка один\nстрока два: git commit -n"'
+git_guard_case mention-nv $'bash <<\'EOF\'\ngit commit --no-verify\nEOF'
+git_guard_case mention-nv $'cat <<EOF | sh\ngit commit -n\nEOF'
+git_guard_case mention-force $'bash <<\'EOF\'\ngit push -f origin main\nEOF'
+git_guard_case mention-force $'cat <<EOF | sh\ngit push origin +main\nEOF'
+git_guard_case amb $'cat <<EOF\n$(git commit -n)\nEOF'
+git_guard_case amb $'git commit -n -m "unclosed\nstill'
+git_guard_case amb "echo ${deep_open}git commit -n${deep_close}"
+# issue #265, конец таблицы
+
+. "$HOOKS/lib/command-invocation.sh"
+(PATH="$TMP/no-python-bin"; adk_command_git_bypass 'git commit -m x')
+assert_exit "issue #265: python3 недоступен — хелпер трактует команду как вызов (fail-closed)" 0 $?
+(adk_command_git_bypass 'git status')
+assert_exit "issue #265: хелпер — команда без commit/push даёт 1, python не нужен" 1 $?
+(adk_command_git_bypass 'git commit -m x')
+assert_exit "issue #265: хелпер — штатный commit даёт 1 (не обход)" 1 $?
+(adk_command_git_bypass 'git commit -n -m x')
+assert_exit "issue #265: хелпер — commit -n даёт 0 (вызов)" 0 $?
+(adk_command_git_bypass 'echo "git commit -n" | sort')
+assert_exit "issue #265: хелпер — упоминание рядом с неинертной командой даёт 2" 2 $?
+(adk_command_git_bypass 'echo "git commit -n"')
+assert_exit "issue #265: хелпер — упоминание в инертной команде даёт 1" 1 $?
+(adk_command_git_bypass 'git commit -n -m "unclosed')
+assert_exit "issue #265: хелпер — разобрать не удалось (незакрытая кавычка) даёт 0, не 2" 0 $?
+(adk_command_git_bypass "echo ${deep_open}git commit -n${deep_close}")
+assert_exit "issue #265: хелпер — сбой разбора (исключение) даёт 0, не 2" 0 $?
+(adk_command_git_bypass 'git push origin "$B"')
+assert_exit "issue #265: хелпер — подстановка вместо ссылки в push даёт 0" 0 $?
+adk_command_git_bypass 'git commit -n -m x'
+assert_contains "issue #265: хелпер — находка no-verify" "$ADK_GIT_FINDINGS" 'no-verify'
+adk_command_git_bypass 'git push -f origin main'
+assert_contains "issue #265: хелпер — находка force-push" "$ADK_GIT_FINDINGS" 'force-push'
+adk_command_git_bypass 'git push --no-verify origin foo'
+assert_contains "issue #265: хелпер — находка push-no-verify" "$ADK_GIT_FINDINGS" 'push-no-verify'
+adk_command_git_bypass 'git push origin "$B"'
+assert_contains "issue #265: хелпер — находка ambiguous" "$ADK_GIT_FINDINGS" 'ambiguous'
+adk_command_git_bypass 'git -C d commit -m x'
+assert_contains "issue #265: хелпер — штатный commit через -C отмечен для секрет-скана" "$ADK_GIT_FINDINGS" 'commit'
+adk_command_git_bypass 'git push origin foo'
+assert_exit "issue #265: хелпер — штатный push без находок" 0 "${#ADK_GIT_FINDINGS}"
+
+# issue #265: секрет-скан перед git commit — условие запуска расширено, не
+# сужено (ADR-028): подстрока `git commit` ИЛИ вызов commit по словам
+# (git -C dir commit, git -c k=v commit, "$GIT" commit — подстрока их не
+# видела). Упоминание рядом с неинертной командой по-прежнему сканируется.
+echo "aws3 = '$FAKE_AWS'" > "$P/src/leak265.ts"
+for c in \
+  'git commit -m x' \
+  'git -C . commit -m x' \
+  'git -c user.name=t commit -m x' \
+  'git --no-pager commit -m x' \
+  'git --git-dir=.git commit -m x' \
+  '"$GIT" commit -m x' \
+  'git -C . commit -m "unclosed' \
+  'git  commit -m x' \
+  'bash -c "git commit -m x"' \
+  'echo ok | xargs git commit -m x'
+do
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}, "cwd": sys.argv[2]}))' "$c" "$P")
+  guard_msg=$(printf '%s' "$payload" | ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
+  assert_exit "issue #265: секрет в дереве блокирует commit: $c" 2 $?
+  assert_contains "issue #265: секрет в дереве — причина «похожее на секрет»: $c" "$guard_msg" 'похожее на секрет'
+done
+for c in \
+  'git status' \
+  'git -C . log --oneline' \
+  'git push origin issue-265-x' \
+  'git add src/config.ts'
+do
+  payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}, "cwd": sys.argv[2]}))' "$c" "$P")
+  guard_msg=$(printf '%s' "$payload" | ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
+  assert_exit "issue #265: без commit секрет-скан не запускается: $c" 0 $?
+  assert_not_contains "issue #265: без commit нет причины про секрет: $c" "$guard_msg" 'похожее на секрет'
+done
+rm "$P/src/leak265.ts"
+
 # ── pr-title-check: PostToolUse-валидация заголовка PR (commitStyle=conventional, AC-5) ──
 # SPEC-002: заголовок PR — будущее сообщение squash-коммита в main, поэтому
 # точка контроля конвенции одна — он, не веточные коммиты. После gh pr
