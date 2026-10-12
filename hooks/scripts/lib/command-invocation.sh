@@ -15,7 +15,18 @@
 # удалось (fail-closed); 1 — вызова нет; 2 — прямого вызова не найдено, но
 # фраза упомянута рядом с командой, про которую нельзя доказать, что она её
 # не исполнит (fail-closed). Правила — в ADR-026.
+#
+# Кроме кода возврата функция выставляет глобальную переменную
+# ADK_PR_MERGE_TARGETS (issue #266, ADR-027): по записи на каждый найденный
+# вызов, по одной на строку. Запись — «<селектор>|<-R>»: селектор (номер, URL
+# или ветка из слов вызова; пустой — PR текущей ветки, семантика gh) и
+# значение -R/--repo из слов того же вызова. Запись «?» — PR не определён
+# однозначно (значение флага без селектора, подстановка, неизвестный флаг,
+# лишний аргумент, селектор от обёртки вроде xargs, фраза внутри строки для
+# bash -c/eval). Пусто при коде 1 и 2 и при сбое разбора — вызывающий
+# трактует пустое как «?».
 adk_command_invokes_pr_merge() {
+  ADK_PR_MERGE_TARGETS=""
   case "$1" in
     *merge*) ;;
     *) return 1 ;;
@@ -37,6 +48,17 @@ class Ambiguous(Exception):
     pass
 
 
+class Redir(str):
+    pass
+
+
+class Glued(str):
+    pass
+
+
+ASCII_DIGITS = re.compile(r"[0-9]+\Z")
+
+
 PHRASE = (r"gh\b", r"\bpr\b", r"\bmerge\b")
 
 
@@ -50,6 +72,10 @@ def in_order(text):
     return True
 
 
+def words(cmd):
+    return [w for w in cmd if not isinstance(w, Redir)]
+
+
 def mentions(cmd):
     return any(in_order(line) for word in cmd for line in word.split("\n"))
 
@@ -59,19 +85,24 @@ class Frame:
         self.cmds = []
         self.cmd = []
         self.chars = None
+        self.redir = False
 
     def add(self, text):
         if self.chars is None:
             self.chars = []
         self.chars.append(text)
 
-    def flush_word(self):
+    def flush_word(self, glued=False):
         if self.chars is not None:
-            self.cmd.append("".join(self.chars))
+            word = "".join(self.chars)
+            kind = Redir if self.redir else Glued if glued and ASCII_DIGITS.match(word) else str
+            self.cmd.append(kind(word))
+            self.redir = False
         self.chars = None
 
     def end_cmd(self):
         self.flush_word()
+        self.redir = False
         if self.cmd:
             self.cmds.append(self.cmd)
             self.cmd = []
@@ -103,7 +134,7 @@ class Parser:
                 break
             c = s[self.i]
             nxt = s[self.i + 1] if self.i + 1 < n else ""
-            if c in " \t\r":
+            if c in " \t":
                 f.flush_word()
                 self.i += 1
             elif c == "\n":
@@ -120,13 +151,11 @@ class Parser:
                 f.end_cmd()
                 self.i += 2 if nxt in ("|", "&") else 1
             elif c == "&":
-                prev = s[self.i - 1] if self.i else ""
                 if nxt == "&":
                     f.end_cmd()
                     self.i += 2
-                elif prev in ("<", ">") or nxt == ">":
-                    f.add(c)
-                    self.i += 1
+                elif nxt == ">":
+                    self.redirect(f)
                 else:
                     f.end_cmd()
                     self.i += 1
@@ -169,7 +198,8 @@ class Parser:
                     f.add("$")
                     self.i += 1
             elif c == "<" and s.startswith("<<<", self.i):
-                f.add("<<<")
+                f.flush_word(True)
+                f.redir = True
                 self.i += 3
             elif c == "<" and nxt == "<":
                 self.heredoc_op(f)
@@ -177,11 +207,25 @@ class Parser:
                 self.i += 2
                 f.absorb(self.lex(True))
                 f.add(NUL)
+            elif c in "<>":
+                self.redirect(f)
             else:
                 f.add(c)
                 self.i += 1
         f.end_cmd()
         return f.cmds
+
+    def redirect(self, f):
+        s, n = self.s, self.n
+        f.flush_word(True)
+        if s[self.i] == "&":
+            self.i += 1
+        op = s[self.i]
+        self.i += 1
+        nxt = s[self.i] if self.i < n else ""
+        if (op == ">" and nxt in (">", "|", "&")) or (op == "<" and nxt in (">", "&")):
+            self.i += 1
+        f.redir = True
 
     def dquote(self, f):
         s, n = self.s, self.n
@@ -223,11 +267,13 @@ class Parser:
         s, n = self.s, self.n
         j = self.i + 2
         buf = []
+        escaped = False
         while True:
             if j >= n:
                 raise Ambiguous()
             if s[j] == "\\" and j + 1 < n:
                 buf.append(s[j + 1])
+                escaped = True
                 j += 2
             elif s[j] == "'":
                 break
@@ -235,6 +281,8 @@ class Parser:
                 buf.append(s[j])
                 j += 1
         f.add("".join(buf))
+        if escaped:
+            f.add(NUL)
         self.i = j + 1
 
     def heredoc_op(self, f):
@@ -246,12 +294,10 @@ class Parser:
             self.i += 1
         while self.i < n and s[self.i] in " \t":
             self.i += 1
-        f.flush_word()
-        f.add("<<")
-        f.flush_word()
+        f.flush_word(True)
         literal = False
         buf = []
-        while self.i < n and s[self.i] not in " \t\r\n;&|()<>":
+        while self.i < n and s[self.i] not in " \t\n;&|()<>":
             ch = s[self.i]
             if ch in "'\"":
                 j = s.find(ch, self.i + 1)
@@ -291,11 +337,86 @@ class Parser:
             body = "\n".join(lines)
             if not literal and ("$(" in body or "`" in body):
                 raise Ambiguous()
-            cmd.append(body)
+            cmd.append(Redir(body))
         self.pending = []
 
 
-def invokes_merge(cmd):
+VALUE_FLAGS = {"-t", "--subject", "-b", "--body", "-F", "--body-file",
+               "--match-head-commit", "-A", "--author-email", "-R", "--repo"}
+BOOL_FLAGS = {"--admin", "--auto", "-d", "--delete-branch", "--disable-auto",
+              "-m", "--merge", "-r", "--rebase", "-s", "--squash", "-h", "--help"}
+REPO_FLAGS = {"-R", "--repo"}
+TRANSPARENT = {"env", "command", "sudo", "time"}
+ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+ODD_CHARS = re.compile(r"[^\S \t\n]|[\x01-\x08\x0e-\x1f\x7f-\x9f]")
+SELECTOR = re.compile(r"[A-Za-z0-9#][A-Za-z0-9._/:@#+-]*\Z")
+REPO = re.compile(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){1,2}\Z")
+
+
+def split_flag(word):
+    if word.startswith("--") and len(word) > 2:
+        name, eq, value = word.partition("=")
+        return [(name, value if eq else None)]
+    flags = []
+    for j in range(1, len(word)):
+        flag = "-" + word[j]
+        if flag in VALUE_FLAGS:
+            flags.append((flag, word[j + 1:] or None))
+            break
+        flags.append((flag, None))
+    return flags
+
+
+def scan(args):
+    positional, repos, k = [], [], 0
+    while k < len(args):
+        word = args[k]
+        k += 1
+        if isinstance(word, Glued):
+            if positional:
+                continue
+            raise Ambiguous()
+        if ODD_CHARS.search(word):
+            raise Ambiguous()
+        if not word.startswith("-") or len(word) < 2:
+            positional.append(word)
+            continue
+        for flag, value in split_flag(word):
+            if flag in VALUE_FLAGS:
+                if value is None:
+                    if k >= len(args):
+                        raise Ambiguous()
+                    value = args[k]
+                    k += 1
+                    if isinstance(value, Glued):
+                        raise Ambiguous()
+                if flag in REPO_FLAGS:
+                    repos.append(value)
+            elif flag not in BOOL_FLAGS or value is not None:
+                raise Ambiguous()
+    return positional, repos
+
+
+def merge_target(cmd, g, p, m):
+    try:
+        before, before_repos = scan(cmd[g + 1:p] + cmd[p + 1:m])
+        positional, repos = scan(cmd[m + 1:])
+    except Ambiguous:
+        return "?"
+    repos = before_repos + repos
+    if before or len(positional) > 1 or len(repos) > 1:
+        return "?"
+    selector = positional[0] if positional else ""
+    repo = repos[0] if repos else ""
+    if (selector and not SELECTOR.match(selector)) or (repo and not REPO.match(repo)):
+        return "?"
+    if not selector and not all(ASSIGN.match(w) or w in TRANSPARENT for w in cmd[:g]):
+        return "?"
+    return selector + "|" + repo
+
+
+def merge_call(cmd):
+    cmd = words(cmd)
     for g, w in enumerate(cmd):
         if w.rsplit("/", 1)[-1] != "gh" and "$" not in w and NUL not in w:
             continue
@@ -307,11 +428,14 @@ def invokes_merge(cmd):
         m = cmd.index("merge", p + 1)
         if cmd[m + 1:m + 2] in (["--help"], ["-h"]):
             continue
-        return True
-    return False
+        return merge_target(cmd, g, p, m)
+    return None
 
 
 def inert(cmd):
+    cmd = words(cmd)
+    if not cmd:
+        return True
     head = cmd[0]
     if NUL in head:
         return False
@@ -336,21 +460,27 @@ def verdict(text):
     try:
         cmds = Parser(text).run()
     except Ambiguous:
-        return "call" if in_order(text) else "inert"
-    if any(invokes_merge(c) for c in cmds):
-        return "call"
-    if not any(mentions(c) for c in cmds):
-        return "inert"
-    return "inert" if all(inert(c) for c in cmds) else "mention"
+        return ("call" if in_order(text) else "inert"), []
+    calls = [t for t in map(merge_call, cmds) if t is not None]
+    mention = any(mentions(c) for c in cmds)
+    quiet = all(inert(c) for c in cmds)
+    if calls:
+        return "call", calls + (["?"] if mention and not quiet else [])
+    if not mention:
+        return "inert", []
+    return ("inert" if quiet else "mention"), []
 
 
 try:
-    result = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+    kind, targets = verdict(sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+    print("\n".join([kind] + targets))
 except Exception:
-    result = "call"
-print(result)
+    print("call")
 PY
   verdict=$(printf '%s' "$1" | python3 -c "$src" 2>/dev/null) || verdict=call
+  case "$verdict" in
+    *$'\n'*) ADK_PR_MERGE_TARGETS="${verdict#*$'\n'}"; verdict="${verdict%%$'\n'*}" ;;
+  esac
   case "$verdict" in
     inert) return 1 ;;
     mention) return 2 ;;

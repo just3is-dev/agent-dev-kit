@@ -66,40 +66,54 @@ if [ "$merge_rc" -ne 1 ]; then
     deny_merge "Запрещено: policies.merge=human-only — merge из агентской сессии запрещён при любом статусе PR; merge делает человек вне процесса."
   fi
 
-  state="${ADK_GUARD_PR_STATE:-}"
-  decision="${ADK_GUARD_PR_REVIEW_DECISION:-}"
-  gh_isdraft=""
-  gh_decision=""
-  if [ -z "$state" ] || { [ "$merge_policy" = "human-review-required" ] && [ -z "$decision" ]; }; then
-    # Один сетевой вызов на оба поля PR
-    pr_fields=$(adk_gh_pr_fields \
-      "$(adk_command_pr_number "$cmd" merge)" \
-      "$(adk_command_repo_flag "$cmd")" \
-      "$git_root" isDraft,reviewDecision '"\(.isDraft) \(.reviewDecision)"')
-    case "$pr_fields" in
-      *' '*) gh_isdraft="${pr_fields%% *}"; gh_decision="${pr_fields#* }" ;;
-    esac
-  fi
-
-  if [ -z "$state" ]; then
-    case "$gh_isdraft" in
-      false) state="ready" ;;
-      true)  state="draft" ;;
-      *)     state="unknown" ;;
-    esac
-  fi
-  case "$state" in
-    ready) ;;
-    draft) deny_merge "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
-    *) deny_merge "Запрещено: статус PR проверить не удалось (нет git-репозитория в контексте команды или gh недоступен) — merge только для PR со статусом ready. Подсказка: выполняй merge из директории репозитория или с флагом -R owner/repo." ;;
-  esac
-
-  if [ "$merge_policy" = "human-review-required" ]; then
-    [ -n "$decision" ] || decision="$gh_decision"
-    if [ "$decision" != "APPROVED" ]; then
-      deny_merge "Запрещено: policies.merge=human-review-required — merge только при человеческом approve на PR (reviewDecision=APPROVED); сейчас: ${decision:-approve отсутствует или статус недоступен}."
+  # Селектор и -R приходят из слов самого вызова (ADK_PR_MERGE_TARGETS,
+  # запись «<селектор>|<-R>», «?» — не определён, ADR-027); пустой селектор —
+  # PR текущей ветки, семантика gh.
+  check_merge_target() {
+    local selector="$1" repo="$2" state decision gh_isdraft="" gh_decision="" pr_fields
+    state="${ADK_GUARD_PR_STATE:-}"
+    decision="${ADK_GUARD_PR_REVIEW_DECISION:-}"
+    if [ -z "$state" ] || { [ "$merge_policy" = "human-review-required" ] && [ -z "$decision" ]; }; then
+      if [ "$selector" != "?" ]; then
+        # Один сетевой вызов на оба поля PR
+        pr_fields=$(adk_gh_pr_fields "$selector" "$repo" "$git_root" \
+          isDraft,reviewDecision '"\(.isDraft) \(.reviewDecision)"' </dev/null)
+        case "$pr_fields" in
+          *' '*) gh_isdraft="${pr_fields%% *}"; gh_decision="${pr_fields#* }" ;;
+        esac
+      fi
     fi
-  fi
+
+    if [ -z "$state" ]; then
+      if [ "$selector" = "?" ]; then
+        deny_merge "Запрещено: не удалось определить, какой PR мержится — селектор (номер, URL или ветка) не читается из слов вызова однозначно: подстановка или переменная вместо номера, неизвестный флаг, лишний аргумент, номер приходит от обёртки (xargs) или вызов спрятан в строке для bash -c/eval. Вызывай merge отдельной командой с одним селектором: gh pr merge <номер|URL|ветка> <флаги>."
+      fi
+      case "$gh_isdraft" in
+        false) state="ready" ;;
+        true)  state="draft" ;;
+        *)     state="unknown" ;;
+      esac
+    fi
+    case "$state" in
+      ready) ;;
+      draft) deny_merge "Запрещено: PR ещё черновик — merge возможен только после вердикта APPROVE (в ready PR переводит ревью-процесс, не merge-намерение)." ;;
+      *) deny_merge "Запрещено: статус PR проверить не удалось (нет git-репозитория в контексте команды или gh недоступен) — merge только для PR со статусом ready. Подсказка: выполняй merge из директории репозитория или с флагом -R owner/repo." ;;
+    esac
+
+    if [ "$merge_policy" = "human-review-required" ]; then
+      [ -n "$decision" ] || decision="$gh_decision"
+      if [ "$decision" != "APPROVED" ]; then
+        deny_merge "Запрещено: policies.merge=human-review-required — merge только при человеческом approve на PR (reviewDecision=APPROVED); сейчас: ${decision:-approve отсутствует или статус недоступен}."
+      fi
+    fi
+  }
+
+  merge_targets="${ADK_PR_MERGE_TARGETS:-?}"
+  while IFS= read -r merge_target; do
+    check_merge_target "${merge_target%%|*}" "${merge_target#*|}"
+  done <<EOF
+$merge_targets
+EOF
 fi
 
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---
