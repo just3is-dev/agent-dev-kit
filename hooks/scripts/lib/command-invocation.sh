@@ -446,9 +446,15 @@ SUB_VALUE_LONG = {
     "commit": {"--message", "--file", "--author", "--date", "--reuse-message",
                "--reedit-message", "--fixup", "--squash", "--cleanup",
                "--template", "--trailer", "--pathspec-from-file"},
-    "push": {"--repo", "--receive-pack", "--exec", "--push-option"},
+    "push": {"--repo", "--receive-pack", "--exec", "--push-option",
+             "--recurse-submodules"},
 }
 LONG_NAME = re.compile(r"--[A-Za-z0-9-]+\Z")
+ANSI_WORD = re.compile(r"\$'[^']*\\")
+GIT_PHRASE = re.compile(r"\bgit\b.*?\b(?:commit|push)\b", re.S)
+GIT_PHRASE_LOOSE = re.compile(r"git.*(?:commit|push)", re.S)
+STDIN_ARGS = ("xargs", "parallel")
+STDIN_ARGS_WORD = re.compile(r"\b(?:xargs|parallel)\b")
 MAIN_BRANCHES = {"main", "master"}
 NV_TOKEN = re.compile(r"(?<![\w-])(?:--no-v|-[A-Za-z]*n)")
 PUSH_NV_TOKEN = re.compile(r"(?<![\w-])--no-v")
@@ -529,7 +535,7 @@ def push_hits(args):
     forced = mirror or (force and wide)
     unknown = False
     for ref in before + after:
-        if dynamic(ref):
+        if dynamic(ref) or "{" in ref:
             unknown = True
             continue
         plus = ref.startswith("+")
@@ -538,7 +544,7 @@ def push_hits(args):
         for prefix in ("refs/heads/", "heads/"):
             if dst.startswith(prefix):
                 dst = dst[len(prefix):]
-        if (force or plus) and (dst in MAIN_BRANCHES or re.search(r"[*?\[]", dst)):
+        if (force or plus) and (dst in MAIN_BRANCHES or "*" in dst):
             forced = True
     if forced:
         hits.append("force-push")
@@ -585,12 +591,12 @@ def git_calls(cmd):
     return hits, commit_seen
 
 
-def git_mentions(line):
+def git_mentions(text):
     kinds = []
-    m = re.search(r"\bgit\b", line)
+    m = re.search(r"\bgit\b", text)
     if m is None:
         return kinds
-    rest = line[m.end():]
+    rest = text[m.end():]
     c = re.search(r"\bcommit\b", rest)
     if c and NV_TOKEN.search(rest[c.end():]):
         kinds.append("no-verify")
@@ -605,11 +611,39 @@ def git_mentions(line):
     return kinds
 
 
+def cmd_mentions(cmd):
+    kinds = set()
+    spoken = [w for w in cmd if not isinstance(w, Redir)]
+    for w in cmd:
+        if isinstance(w, Redir):
+            kinds.update(git_mentions(w))
+    for i, w in enumerate(spoken):
+        if NUL in w and GIT_PHRASE_LOOSE.search(w):
+            kinds.add("ambiguous")
+        if GIT_PHRASE.search(w):
+            kinds.update(git_mentions(" ".join(spoken[i:])))
+    return kinds
+
+
+def reads_stdin_args(cmd):
+    spoken = words(cmd)
+    for k, w in enumerate(spoken):
+        if w.rsplit("/", 1)[-1] not in STDIN_ARGS:
+            continue
+        program = next((x for x in spoken[k + 1:] if not x.startswith("-")), "")
+        if program in TEXT_TOOLS:
+            continue
+        joined = " ".join(spoken)
+        return bool(GIT_PHRASE.search(joined) or (NUL in joined and GIT_PHRASE_LOOSE.search(joined)))
+    return False
+
+
 def git_verdict(text):
     try:
         cmds = Parser(text).run()
     except Ambiguous:
-        if any(git_mentions(line) for line in text.split("\n")):
+        if (git_mentions(text) or (ANSI_WORD.search(text) and GIT_PHRASE_LOOSE.search(text))
+                or (STDIN_ARGS_WORD.search(text) and GIT_PHRASE.search(text))):
             return "call", ["ambiguous"]
         return "inert", ["commit"] if re.search(r"\bcommit\b", text) else []
     hits, commit_seen = [], False
@@ -617,10 +651,11 @@ def git_verdict(text):
         found, seen = git_calls(c)
         hits += found
         commit_seen = commit_seen or seen
+        if reads_stdin_args(c):
+            hits.append("ambiguous")
     if hits:
         return "call", sorted(set(hits))
-    mentioned = sorted({kind for c in cmds for word in c for line in word.split("\n")
-                        for kind in git_mentions(line)})
+    mentioned = sorted({kind for c in cmds for kind in cmd_mentions(c)})
     if mentioned and not all(inert(c) for c in cmds):
         return "mention", mentioned
     return "inert", ["commit"] if commit_seen else []

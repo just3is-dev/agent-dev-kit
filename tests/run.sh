@@ -1219,6 +1219,7 @@ git_guard_case() { # git_guard_case <вид> <команда>
     mention-nv) want_rc=2; want="$text_nv"; mention=1 ;;
     mention-force) want_rc=2; want="$text_force"; mention=1 ;;
     mention-pnv) want_rc=2; want="$text_pnv"; mention=1 ;;
+    mention-amb) want_rc=2; want="$text_amb"; mention=1 ;;
     *) echo "FAIL: issue #265: неизвестный вид строки таблицы: $kind"; fails=$((fails + 1)); return ;;
   esac
   payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}, "cwd": sys.argv[2]}))' "$c" "$P")
@@ -1360,6 +1361,7 @@ git push --force-with-lease => allow
 git push origin +feature main => allow
 git push origin main +feature => allow
 git push --force-with-lease=main:abc origin feature => allow
+git commit -m x -- -n && make => allow
 git commit -m x ; ls -n => allow
 git commit -m x && ls -n => allow
 git commit -m x || ls -n => allow
@@ -1655,7 +1657,25 @@ git push --$X origin foo => amb
 git push -{f,u} origin foo => amb
 git push -f origin main $(echo x) => force
 echo $HOME $USER commits => allow
-echo $HOME $USER push => amb
+echo --no-verify | xargs git commit -m x => amb
+printf '%s\n' --no-verify | xargs git commit -m x => amb
+echo -m x --no-verify | xargs git commit => amb
+echo origin main | xargs git push -f => amb
+echo main | xargs git push -f origin => amb
+echo main | xargs -I{} git push -f origin {} => amb
+echo x | xargs sh -c 'git commit -m x "$1"' _ => amb
+echo --no-verify | xargs -n1 -I{} git commit {} => amb
+parallel git push ::: --force => amb
+ls | xargs git add => allow
+ls docs/*.md | xargs grep -n "git commit" => allow
+git ls-files | xargs grep -n "git push" => allow
+git ls-files | xargs -n1 grep "git commit" => allow
+git push -f origin {main,x} => amb
+git push origin +{main,} => amb
+git push -f origin ma{in,} => amb
+git push --recurse-submodules main -f origin foo => allow
+git push --recurse-submodules=check -f origin main => force
+git push --recurse-submodules on-demand origin foo => allow
 echo git commit -m x => allow
 echo git commit -n => nv
 echo 'git commit --no-verify' => allow
@@ -1720,6 +1740,35 @@ bash -c 'git push origin +main' => mention-force
 bash -c 'git push origin HEAD:main --force' => mention-force
 bash -c 'git push --mirror origin' => mention-force
 bash -c 'git push -f --all origin' => mention-force
+eval "git commit -m x" --no-verify => mention-nv
+eval "git commit" --no-verify -m x => mention-nv
+sh -c 'git commit "$@"' _ --no-verify -m x => mention-nv
+bash -c 'git commit $*' _ --no-verify => mention-nv
+bash -c 'git commit -m x "$1"' _ --no-verify => mention-nv
+bash -c 'git commit -an -m x' => mention-nv
+bash -c 'git commit -vn' => mention-nv
+bash -c 'git commit -m x -an' => mention-nv
+echo 'git commit -an -m x' | bash => mention-nv
+echo 'git commit -vn' | sh => mention-nv
+eval "git commit -an -m x" => mention-nv
+ssh host 'git commit -vn' => mention-nv
+eval "git push -f" origin main => mention-force
+eval "git push" -f origin main => mention-force
+sh -c 'git push -f "$@"' _ origin main => mention-force
+bash -c 'git push "$@"' _ origin +main => mention-force
+bash -c 'git push -uf origin main' => mention-force
+bash -c 'git push -vf origin main' => mention-force
+eval "git push -uf origin main" => mention-force
+ssh host 'git push -vf origin main' => mention-force
+echo 'git push -uf origin main' | sh => mention-force
+echo 'git push -vf origin main' | bash => mention-force
+bash -c $'git commit\t--no-verify -m x' => mention-amb
+bash -c $'git push\t-f origin main' => mention-amb
+bash -c $'git commit\x20--no-verify' => mention-amb
+bash -c $'git commit \x2dn' => mention-amb
+echo a | xargs bash -c $'git commit\t"$1"' _ => amb
+bash -c "git commit $(echo --no-verify)" => mention-amb
+eval "git push $(echo -f) origin main" => mention-amb
 bash -c "git push -f origin 'refs/heads/*:refs/heads/*'" => mention-force
 bash -c 'git push -f --branches origin' => mention-force
 eval "git push -f origin main" => mention-force
@@ -1763,6 +1812,21 @@ git_guard_case mention-nv $'cat <<EOF | sh\ngit commit -n\nEOF'
 git_guard_case mention-force $'bash <<\'EOF\'\ngit push -f origin main\nEOF'
 git_guard_case mention-force $'cat <<EOF | sh\ngit push origin +main\nEOF'
 git_guard_case amb $'cat <<EOF\n$(git commit -n)\nEOF'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit commit \\\n-n -m x'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit commit \\\n--no-verify -m x'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit commit -m "a\nb" -n'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit push -f \\\norigin main'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit push \\\norigin +main'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nbash -c $\'git commit \\x2dn\''
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nbash -c \'git commit --no-verify -m x\''
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nxargs git commit -m x'
+git_guard_case allow $'cat <<EOF\n$(date)\nEOF\ngit commit -m "a\nb"'
+git_guard_case allow $'cat <<EOF\n$(date)\nEOF\ngit push origin foo'
+git_guard_case mention-nv $'bash -c \'git commit -m "a\nb" --no-verify\''
+git_guard_case mention-nv $'bash <<\'E\'\ngit commit -m "a\nb" --no-verify\nE'
+git_guard_case mention-nv $'bash -c \'git commit \\\n--no-verify -m x\''
+git_guard_case mention-force $'bash -c \'git push -f \\\norigin main\''
+git_guard_case mention-force $'bash -c \'git push \\\norigin +main\''
 git_guard_case amb $'git commit -n -m "unclosed\nstill'
 git_guard_case amb "echo ${deep_open}git commit -n${deep_close}"
 # issue #265, конец таблицы
@@ -1770,8 +1834,10 @@ git_guard_case amb "echo ${deep_open}git commit -n${deep_close}"
 . "$HOOKS/lib/command-invocation.sh"
 (PATH="$TMP/no-python-bin"; adk_command_git_bypass 'git commit -m x')
 assert_exit "issue #265: python3 недоступен — хелпер трактует команду как вызов (fail-closed)" 0 $?
-(adk_command_git_bypass 'git status')
-assert_exit "issue #265: хелпер — команда без commit/push даёт 1, python не нужен" 1 $?
+(PATH="$TMP/no-python-bin"; adk_command_git_bypass 'git status')
+assert_exit "issue #265: хелпер — команда без commit/push даёт 1 и без python3 (быстрый выход)" 1 $?
+(PATH="$TMP/no-python-bin"; adk_command_git_bypass 'git log -n 1')
+assert_exit "issue #265: хелпер — быстрый выход не требует python3 и для log -n" 1 $?
 (adk_command_git_bypass 'git commit -m x')
 assert_exit "issue #265: хелпер — штатный commit даёт 1 (не обход)" 1 $?
 (adk_command_git_bypass 'git commit -n -m x')
@@ -1814,7 +1880,7 @@ for c in \
   'git -C . commit -m "unclosed' \
   'git  commit -m x' \
   'bash -c "git commit -m x"' \
-  'echo ok | xargs git commit -m x'
+  'echo ok | env git commit -m x'
 do
   payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": sys.argv[1]}, "cwd": sys.argv[2]}))' "$c" "$P")
   guard_msg=$(printf '%s' "$payload" | ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" 2>&1 >/dev/null)
