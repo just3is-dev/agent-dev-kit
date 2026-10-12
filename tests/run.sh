@@ -592,7 +592,7 @@ echo "$sel|$repo" >> "$GH_STUB_CALLS"
 case "$sel" in
   ""|7|"#7"|https://github.com/o/r/pull/7|ready-branch|065|x35|067) echo 'false APPROVED' ;;
   9) echo 'false REVIEW_REQUIRED' ;;
-  5|https://github.com/o/r/pull/5|draft-branch) echo 'true REVIEW_REQUIRED' ;;
+  5|"#5"|owner:draft-branch|https://github.com/o/r/pull/5|draft-branch) echo 'true REVIEW_REQUIRED' ;;
   *) exit 1 ;;
 esac
 EOF
@@ -924,6 +924,165 @@ assert_contains "issue #266: селектор от обёртки — текст
 guard_msg=$(guard_pr_run 'grep "gh pr merge" f | sort')
 assert_contains "issue #266: упоминание рядом с неинертной командой — пояснение про упоминание сохранено" "$guard_msg" 'не может отличить упоминание от вызова'
 assert_contains "issue #266: упоминание рядом с неинертной командой — PR не определён" "$guard_msg" 'не удалось определить, какой PR мержится'
+
+# issue #266, таблица: каждая строка «команда => вид => журнал запросов gh».
+# Вид: draft (exit 2, «PR ещё черновик»), undet (exit 2, «не удалось
+# определить», запросов нет), ready (exit 0), nocall (не вызов, exit 0).
+# Журнал сверяется целиком: «<селектор>|<-R>» одной строкой, «-» — пусто.
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  c="${row%% => *}"
+  rest="${row#* => }"
+  kind="${rest%% => *}"
+  want_call="${rest#* => }"
+  [ "$want_call" != '-' ] || want_call=''
+  guard_msg=$(guard_pr_run "$c")
+  rc=$?
+  got_calls=$(cat "$gh_stub_dir/calls")
+  case "$kind" in
+    draft) want_rc=2; want_msg='PR ещё черновик'; bad_msg='не удалось определить' ;;
+    undet) want_rc=2; want_msg='не удалось определить, какой PR мержится'; bad_msg='PR ещё черновик' ;;
+    *) want_rc=0; want_msg=''; bad_msg='не удалось определить' ;;
+  esac
+  assert_exit "issue #266 (таблица): код выхода: $c" "$want_rc" "$rc"
+  if [ -n "$want_msg" ]; then
+    assert_contains "issue #266 (таблица): причина отказа: $c" "$guard_msg" "$want_msg"
+  fi
+  assert_not_contains "issue #266 (таблица): нет чужой причины отказа: $c" "$guard_msg" "$bad_msg"
+  [ "$got_calls" = "$want_call" ]
+  assert_exit "issue #266 (таблица): журнал запросов gh «${want_call}»: $c" 0 $?
+done <<'TABLE_266'
+gh pr merge --admin 5 => draft => 5|
+gh pr merge 5 --admin => draft => 5|
+gh pr merge --auto 5 => draft => 5|
+gh pr merge 5 --auto => draft => 5|
+gh pr merge -d 5 => draft => 5|
+gh pr merge 5 -d => draft => 5|
+gh pr merge --delete-branch 5 => draft => 5|
+gh pr merge 5 --delete-branch => draft => 5|
+gh pr merge --disable-auto 5 => draft => 5|
+gh pr merge 5 --disable-auto => draft => 5|
+gh pr merge -m 5 => draft => 5|
+gh pr merge 5 -m => draft => 5|
+gh pr merge --merge 5 => draft => 5|
+gh pr merge 5 --merge => draft => 5|
+gh pr merge -r 5 => draft => 5|
+gh pr merge 5 -r => draft => 5|
+gh pr merge --rebase 5 => draft => 5|
+gh pr merge 5 --rebase => draft => 5|
+gh pr merge -s 5 => draft => 5|
+gh pr merge 5 -s => draft => 5|
+gh pr merge --squash 5 => draft => 5|
+gh pr merge 5 --squash => draft => 5|
+gh pr merge 5 -h => draft => 5|
+gh pr merge 5 --help => draft => 5|
+gh pr merge -h 5 => nocall => -
+gh pr merge --help 5 => nocall => -
+gh pr merge 7 -h => ready => 7|
+gh pr merge 7 --help => ready => 7|
+gh pr merge 7 --disable-auto => ready => 7|
+gh pr merge --disable-auto 7 => ready => 7|
+gh pr merge --admin 7 => ready => 7|
+gh pr merge --auto 7 => ready => 7|
+gh pr merge -d 7 => ready => 7|
+gh pr merge --delete-branch 7 => ready => 7|
+gh pr merge --disable-auto 7 => ready => 7|
+gh pr merge -m 7 => ready => 7|
+gh pr merge --merge 7 => ready => 7|
+gh pr merge -r 7 => ready => 7|
+gh pr merge --rebase 7 => ready => 7|
+gh pr merge -s 7 => ready => 7|
+gh pr merge --squash 7 => ready => 7|
+gh pr merge -t 7 --squash => ready => |
+gh pr merge -t v 7 => ready => 7|
+gh pr merge 7 -t v => ready => 7|
+gh pr merge --subject 7 --squash => ready => |
+gh pr merge --subject v 7 => ready => 7|
+gh pr merge 7 --subject v => ready => 7|
+gh pr merge -b 7 --squash => ready => |
+gh pr merge -b v 7 => ready => 7|
+gh pr merge 7 -b v => ready => 7|
+gh pr merge --body 7 --squash => ready => |
+gh pr merge --body v 7 => ready => 7|
+gh pr merge 7 --body v => ready => 7|
+gh pr merge -F 7 --squash => ready => |
+gh pr merge -F v 7 => ready => 7|
+gh pr merge 7 -F v => ready => 7|
+gh pr merge --body-file 7 --squash => ready => |
+gh pr merge --body-file v 7 => ready => 7|
+gh pr merge 7 --body-file v => ready => 7|
+gh pr merge --match-head-commit 7 --squash => ready => |
+gh pr merge --match-head-commit v 7 => ready => 7|
+gh pr merge 7 --match-head-commit v => ready => 7|
+gh pr merge -A 7 --squash => ready => |
+gh pr merge -A v 7 => ready => 7|
+gh pr merge 7 -A v => ready => 7|
+gh pr merge --author-email 7 --squash => ready => |
+gh pr merge --author-email v 7 => ready => 7|
+gh pr merge 7 --author-email v => ready => 7|
+gh pr merge -F - 7 => ready => 7|
+gh pr merge -R o/r --squash => ready => |o/r
+gh pr merge '#5' => draft => #5|
+gh pr merge "#5" => draft => #5|
+gh pr merge --squash '#5' => draft => #5|
+gh pr merge owner:draft-branch => draft => owner:draft-branch|
+gh pr merge --squash owner:draft-branch => draft => owner:draft-branch|
+gh pr merge '#7' => ready => #7|
+gh pr merge https://github.com/o/r/pull/5 => draft => https://github.com/o/r/pull/5|
+gh pr merge draft-branch => draft => draft-branch|
+gh -R o/r pr merge 5 => draft => 5|o/r
+gh --repo o/r pr merge 5 => draft => 5|o/r
+gh pr -R o/r merge 5 => draft => 5|o/r
+gh pr --repo o/r merge 5 => draft => 5|o/r
+gh pr merge -R o/r 5 => draft => 5|o/r
+gh pr merge --repo o/r 5 => draft => 5|o/r
+gh pr merge 5 -R o/r => draft => 5|o/r
+gh pr merge 5 --repo o/r => draft => 5|o/r
+gh pr merge --repo=o/r 5 => draft => 5|o/r
+gh pr merge 5 --repo=o/r => draft => 5|o/r
+gh pr merge -Ro/r 5 => draft => 5|o/r
+gh pr merge 5 -Ro/r => draft => 5|o/r
+gh pr merge -sRo/r 5 => draft => 5|o/r
+gh pr merge -sR o/r 5 => draft => 5|o/r
+gh pr merge 5 -sR o/r => draft => 5|o/r
+gh pr merge 5 -sRo/r => draft => 5|o/r
+gh pr merge --squash -R o/r 5 => draft => 5|o/r
+gh pr merge -R o/r --squash 5 => draft => 5|o/r
+gh pr merge 7>>f => undet => -
+gh pr merge --squash 7>>f => undet => -
+gh pr merge --squash --delete-branch 7>>f => undet => -
+gh pr merge 7>|f => undet => -
+gh pr merge --squash 7>|f => undet => -
+gh pr merge --squash --delete-branch 7>|f => undet => -
+gh pr merge 7<>f => undet => -
+gh pr merge --squash 7<>f => undet => -
+gh pr merge --squash --delete-branch 7<>f => undet => -
+gh pr merge 7<f => undet => -
+gh pr merge --squash 7<f => undet => -
+gh pr merge --squash --delete-branch 7<f => undet => -
+gh pr merge 7>&2 => undet => -
+gh pr merge --squash 7>&2 => undet => -
+gh pr merge --squash --delete-branch 7>&2 => undet => -
+gh pr merge 7>&- => undet => -
+gh pr merge --squash 7>&- => undet => -
+gh pr merge --squash --delete-branch 7>&- => undet => -
+gh pr merge 7<&0 => undet => -
+gh pr merge --squash 7<&0 => undet => -
+gh pr merge --squash --delete-branch 7<&0 => undet => -
+gh pr merge 7&>f => undet => -
+gh pr merge --squash 7&>f => undet => -
+gh pr merge --squash --delete-branch 7&>f => undet => -
+gh pr merge 7&>>f => undet => -
+gh pr merge --squash 7&>>f => undet => -
+gh pr merge --squash --delete-branch 7&>>f => undet => -
+gh pr merge 7>f => undet => -
+gh pr merge --squash 7>f => undet => -
+gh pr merge --squash --delete-branch 7>f => undet => -
+gh pr merge 7<<<x => undet => -
+gh pr merge --squash 7<<<x => undet => -
+gh pr merge --squash --delete-branch 7<<<x => undet => -
+TABLE_266
+# issue #266, конец таблицы
 
 printf '{"policies": {"merge": "human-review-required"}}' > "$P/adk.config.json"
 for c in \
