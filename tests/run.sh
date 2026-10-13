@@ -1361,17 +1361,17 @@ git push --force-with-lease => allow
 git push origin +feature main => allow
 git push origin main +feature => allow
 git push --force-with-lease=main:abc origin feature => allow
-git commit -m x -- -n && make => allow
+git commit -m x -- -n && ls => allow
 git commit -m x ; ls -n => allow
 git commit -m x && ls -n => allow
 git commit -m x || ls -n => allow
 git commit -m x | cat -n => allow
 git commit -m x & ls -n => allow
-git push origin foo ; rm -f main => allow
-git push origin foo && rm -f main => allow
-git push origin foo || rm -f main => allow
-git push origin foo | rm -f main => allow
-git push origin foo & rm -f main => allow
+git push origin foo ; ls -f main => allow
+git push origin foo && ls -f main => allow
+git push origin foo || ls -f main => allow
+git push origin foo | ls -f main => allow
+git push origin foo & ls -f main => allow
 git commit -m x > -n => allow
 git commit -m x >> -n => allow
 git commit -m x 2> -n => allow
@@ -1634,15 +1634,15 @@ git commit -m x -- foo$(date).txt => allow
 git commit -m x -- $'\x2dn' => allow
 git push -f origin $'main' => force
 git push -f origin $'\x6dain' => amb
-SUB=commit; git $SUB -n => amb
-SUB=commit; git "$SUB" -m x => amb
-SUB=push; git $SUB => amb
-git --new-flag commit -m x => amb
-git --weird=1 commit -n => amb
-git -x push origin foo => amb
-git --git-dir=.git --new-flag push -f origin main => amb
-git $OPTS commit -m x => amb
-git $OPTS push origin foo => amb
+SUB=commit; git $SUB -n => mention-nv
+SUB=commit; git "$SUB" -m x => allow
+SUB=push; git $SUB => allow
+git --new-flag commit -m x => allow
+git --weird=1 commit -n => mention-nv
+git -x push origin foo => allow
+git --git-dir=.git --new-flag push -f origin main => mention-force
+git $OPTS commit -m x => allow
+git $OPTS push origin foo => allow
 git push -f origin "$B" => amb
 git push origin "$B" => amb
 git push -u origin $(git branch --show-current) => amb
@@ -1657,17 +1657,17 @@ git push --$X origin foo => amb
 git push -{f,u} origin foo => amb
 git push -f origin main $(echo x) => force
 echo $HOME $USER commits => allow
-echo --no-verify | xargs git commit -m x => amb
-printf '%s\n' --no-verify | xargs git commit -m x => amb
-echo -m x --no-verify | xargs git commit => amb
-echo origin main | xargs git push -f => amb
-echo main | xargs git push -f origin => amb
+echo --no-verify | xargs git commit -m x => mention-nv
+printf '%s\n' --no-verify | xargs git commit -m x => mention-nv
+echo -m x --no-verify | xargs git commit => mention-nv
+echo origin main | xargs git push -f => mention-force
+echo main | xargs git push -f origin => mention-force
 echo main | xargs -I{} git push -f origin {} => amb
-echo x | xargs sh -c 'git commit -m x "$1"' _ => amb
+echo x | xargs sh -c 'git commit -m x "$1"' _ => allow
 echo --no-verify | xargs -n1 -I{} git commit {} => amb
-parallel git push ::: --force => amb
+parallel git push ::: --force => allow
 ls | xargs git add => allow
-ls docs/*.md | xargs grep -n "git commit" => allow
+ls docs/*.md | xargs grep -n "git commit" => mention-nv
 git ls-files | xargs grep -n "git push" => allow
 git ls-files | xargs -n1 grep "git commit" => allow
 git push -f origin {main,x} => amb
@@ -1711,11 +1711,11 @@ gh pr comment 5 --body "git commit --no-verify и git push -f origin main" => al
 gh issue create --title x --body "git push -f origin main" => allow
 cd repo && grep -n "git commit --no-verify" file => allow
 echo "it's git commit -n" => allow
-echo "ls -n && git commit -m x" | sort => allow
+echo "ls -n && git commit -m x" | sort => mention-nv
 echo "git push -f origin foo" | sort => allow
 git commit -m "x" && git commit -m "git commit --no-verify" => allow
-git commit -m "git commit --no-verify" && git push origin foo => mention-nv
-git commit -m "git push -f origin main" && git push origin foo => mention-force
+git commit -m "git commit --no-verify" && git push origin foo => allow
+git commit -m "git push -f origin main" && git push origin foo => allow
 grep "git commit -n" f | sort => mention-nv
 grep "git commit --no-verify" f && ./scripts/check => mention-nv
 for f in a b; do grep -n "git commit -n" "$f"; done => mention-nv
@@ -1762,13 +1762,13 @@ eval "git push -uf origin main" => mention-force
 ssh host 'git push -vf origin main' => mention-force
 echo 'git push -uf origin main' | sh => mention-force
 echo 'git push -vf origin main' | bash => mention-force
-bash -c $'git commit\t--no-verify -m x' => mention-amb
-bash -c $'git push\t-f origin main' => mention-amb
-bash -c $'git commit\x20--no-verify' => mention-amb
-bash -c $'git commit \x2dn' => mention-amb
-echo a | xargs bash -c $'git commit\t"$1"' _ => amb
-bash -c "git commit $(echo --no-verify)" => mention-amb
-eval "git push $(echo -f) origin main" => mention-amb
+bash -c $'git commit\t--no-verify -m x' => mention-nv
+bash -c $'git push\t-f origin main' => mention-force
+bash -c $'git commit\x20--no-verify' => mention-nv
+bash -c $'git commit \x2dn' => mention-nv
+echo a | xargs bash -c $'git commit\t"$1"' _ => allow
+bash -c "git commit $(echo --no-verify)" => mention-nv
+eval "git push $(echo -f) origin main" => mention-force
 bash -c "git push -f origin 'refs/heads/*:refs/heads/*'" => mention-force
 bash -c 'git push -f --branches origin' => mention-force
 eval "git push -f origin main" => mention-force
@@ -1782,6 +1782,95 @@ bash -c 'git push origin foo' => allow
 bash -c "git push -n origin main" => allow
 sh -c "git push origin foo && git push -u origin HEAD" => allow
 bash -c 'git push --force-with-lease origin foo' => allow
+F=--no-verify; bash -c "git commit -m x $F" => mention-nv
+F=--no-verify bash -c 'git commit -m x $F' => mention-nv
+export F=--no-verify; sh -c 'git commit -m x $F' => mention-nv
+env F=--no-verify sh -c 'git commit -m x $F' => mention-nv
+read F <<< --no-verify; bash -c "git commit -m x $F" => mention-nv
+for f in --no-verify; do bash -c "git commit -m x $f"; done => mention-nv
+F=--no-verify; eval "git commit -m x $F" => mention-nv
+echo --no-verify > fl; bash -c 'git commit -m x $(cat fl)' => mention-nv
+F=-f; bash -c "git push $F origin main" => mention-force
+echo 'git commit -m x "$@"' | bash -s -- --no-verify => mention-nv
+bash <(echo 'git commit -m x "$@"') --no-verify => mention-nv
+sh -c "$(echo 'git commit -m x "$@"')" _ --no-verify => mention-nv
+echo 'git push -f "$@"' | bash -s -- origin main => mention-force
+echo --no-verify | xargs echo git commit -m x | bash => mention-nv
+printf '%s\n' --no-verify | xargs printf 'git commit -m x %s\n' | sh => mention-nv
+echo origin main | xargs echo git push -f | sh => mention-force
+echo --no-verify | xargs -I echo git commit -m x echo => mention-nv
+echo --no-verify | /usr/bin/xargs git commit -m x => mention-nv
+echo 'git commit -n' | xargs -I{} sh -c {} => mention-nv
+echo 'git commit -n' | parallel => mention-nv
+echo 'git push -f origin main' | parallel => mention-force
+C='git commit'; $C --no-verify -m x => mention-nv
+C="git commit -m x"; $C --no-verify => mention-nv
+C='git commit -m x'; eval "$C" --no-verify => mention-nv
+cmd=(git commit); "${cmd[@]}" --no-verify -m x => mention-nv
+X='git commit'; ${=X} --no-verify -m x => mention-nv
+C='git commit'; $C -n -m x => mention-nv
+P='git push'; $P -f origin main => mention-force
+P='git push -f'; $P origin main => mention-force
+=git commit --no-verify -m x => mention-nv
+=git commit -n => mention-nv
+=git push -f origin main => mention-force
+/usr/local/bin/git commit -n && make => nv
+env =git commit -n => mention-nv
+bash -c 'git commit --no-veri -m x' => mention-nv
+bash -c 'git commit --no-v' => mention-nv
+bash -c 'git commit -n' => mention-nv
+bash -c 'git commit -nm x' => mention-nv
+bash -c 'git push --force origin main' => mention-force
+bash -c 'git push --force-with-lease origin main' => mention-force
+bash -c 'git push --force-w origin master' => mention-force
+bash -c 'git push -f origin master' => mention-force
+bash -c "git push origin '+main'" => mention-force
+bash -c 'git push origin +HEAD:main' => mention-force
+bash -c 'git push -f origin HEAD:refs/heads/main' => mention-force
+bash -c 'git push -f origin refs/heads/master' => mention-force
+bash -c 'git push -f origin heads/main' => mention-force
+bash -c 'git push origin +refs/heads/*:refs/heads/*' => mention-force
+bash -c 'git push -f --branches origin' => mention-force
+bash -c 'git push --mirror' => mention-force
+bash -c 'git push --no-verif origin foo' => mention-pnv
+ssh host 'git push -f origin main' => mention-force
+make && git commit -m x --no-verify => nv
+make && git push -f origin main => force
+bash -c 'git push --force-with-lease origin issue-265-x' => allow
+bash -c 'git push origin main' => allow
+bash -c 'git push -u origin issue-main-fix' => allow
+bash -c 'git push --force-with-lease origin issue-main-fix' => allow
+bash -c 'git push --force-with-lease origin feat/main' => allow
+bash -c 'git push --force-with-lease origin main-menu' => allow
+bash -c 'git push -f origin origin/main' => allow
+bash -c 'git commit -m x --no-edit' => allow
+bash -c 'git commit -am x' => allow
+bash -c 'git commit -m x --amend' => allow
+make && git push --force-with-lease origin issue-265-x => allow
+make && git push origin main => allow
+make && git commit -m "x" => allow
+./scripts/check && git commit -am "x" && git push -u origin HEAD => allow
+cd "$ROOT" && git commit -m x => allow
+cd "$ROOT" && git add -A && git commit -m x && git push -u origin issue-1-x => allow
+echo $HOME $USER push => allow
+git --help commit => allow
+git commit-tree HEAD^{tree} -m x => allow
+docker push img => allow
+npm run push => allow
+git stash push -m wip => allow
+make commit => allow
+bash -c "git push -f origin '*:*'" => mention-force
+bash -c $'git commit \055n' => mention-nv
+bash -c 'git log -n 5' => allow
+bash -c 'git checkout -f main' => allow
+make -n commit repo.git => allow
+bash -c 'git checkout -f main && git commit -m x' => allow
+bash -c 'git log -n 5 && git push origin foo' => allow
+docker push img && echo 'git commit -n' => mention-nv
+git fetch origin && git rebase origin/main && ./scripts/check && git push --force-with-lease origin issue-1-x => allow
+git rebase origin/main && ./scripts/check && ./scripts/test && git push --force-with-lease origin issue-1-main-page => allow
+git fetch origin && git merge origin/main && ./scripts/test && git push origin issue-1-x => allow
+./scripts/check && ./scripts/test && git commit -am "fix: x (#265)" && git push -u origin HEAD => allow
 TABLE_265
 git_guard_case nv $'echo ok\ngit commit -n -m x'
 git_guard_case nv $'git commit -m x \\\n-n'
@@ -1791,7 +1880,7 @@ git_guard_case nv $'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" -n'
 git_guard_case nv $'git commit -F - -n <<\'EOF\'\nmsg\nEOF'
 git_guard_case nv $'git commit -m "строка\nвторая строка" -n'
 git_guard_case allow $'git commit -m x\nls -n'
-git_guard_case allow $'git push origin foo\nrm -f main'
+git_guard_case allow $'git push origin foo\nls -f main'
 git_guard_case allow $'git commit -m x <<EOF\n-n\nEOF'
 git_guard_case allow $'git push -f origin foo <<EOF\nmain\nEOF'
 git_guard_case force $'echo ok\ngit push -f origin main'
@@ -1819,7 +1908,8 @@ git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit push -f \\\norigin main'
 git_guard_case amb $'cat <<EOF\n$(date)\nEOF\ngit push \\\norigin +main'
 git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nbash -c $\'git commit \\x2dn\''
 git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nbash -c \'git commit --no-verify -m x\''
-git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nxargs git commit -m x'
+git_guard_case allow $'cat <<EOF\n$(date)\nEOF\nxargs git commit -m x'
+git_guard_case amb $'cat <<EOF\n$(date)\nEOF\nxargs git commit --no-verify -m x'
 git_guard_case allow $'cat <<EOF\n$(date)\nEOF\ngit commit -m "a\nb"'
 git_guard_case allow $'cat <<EOF\n$(date)\nEOF\ngit push origin foo'
 git_guard_case mention-nv $'bash -c \'git commit -m "a\nb" --no-verify\''
@@ -1829,6 +1919,30 @@ git_guard_case mention-force $'bash -c \'git push -f \\\norigin main\''
 git_guard_case mention-force $'bash -c \'git push \\\norigin +main\''
 git_guard_case amb $'git commit -n -m "unclosed\nstill'
 git_guard_case amb "echo ${deep_open}git commit -n${deep_close}"
+git_guard_case mention-nv $'bash -s -- --no-verify <<\'E\'\ngit commit -m x "$@"\nE'
+git_guard_case mention-nv $'bash /dev/stdin --no-verify <<\'E\'\ngit commit -m x "$@"\nE'
+git_guard_case mention-force $'bash -s -- origin main <<\'E\'\ngit push -f "$@"\nE'
+git_guard_case mention-nv $'alias gc=\'git commit\'\ngc --no-verify -m x'
+git_guard_case mention-force $'alias gp=\'git push -f\'\ngp origin main'
+git_guard_case amb $'cat <<E\n$(date)\nE\nF=--no-verify; git commit -m x $F'
+git_guard_case amb $'cat <<E\n$(date)\nE\nbash -s -- --no-verify <<< \'git commit "$@"\''
+git_guard_case amb $'cat <<E\n$(date)\nE\nbash -c $\'git\\tcommit\\t-n\''
+git_guard_case amb $'cat <<E\n$(date)\nE\nbash -c "git push origin \'+main\'"'
+git_guard_case allow $'cat <<E\n$(date)\nE\nbash -c \'git commit -m x\''
+# issue #265, время: разбор линеен по длине команды (много слов git/push в
+# одной простой команде, ~100 КБ; квадратичный разбор давал десятки секунд,
+# таймаут хука — 10 с).
+for slow_word in 'git push ' 'git commit '; do
+  python3 -c 'import json,sys; print(json.dumps({"tool_input": {"command": "echo " + sys.argv[1] * 10000 + "| sort"}}))' "$slow_word" > "$TMP/slow-payload.json"
+  SECONDS=0
+  ADK_GUARD_PR_STATE=draft CLAUDE_PROJECT_DIR="$P" "$HOOKS/bash-guard.sh" < "$TMP/slow-payload.json" >/dev/null 2>&1
+  slow_rc=$?
+  slow_sec=$SECONDS
+  assert_exit "issue #265: команда ~100 КБ с множеством «${slow_word}» разбирается без отказа: exit 0" 0 "$slow_rc"
+  [ "$slow_sec" -lt 5 ]
+  assert_exit "issue #265: время разбора 100 КБ «${slow_word}» меньше 5 с (было $slow_sec с)" 0 $?
+done
+rm -f "$TMP/slow-payload.json"
 # issue #265, конец таблицы
 
 . "$HOOKS/lib/command-invocation.sh"

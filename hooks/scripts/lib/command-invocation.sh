@@ -450,17 +450,17 @@ SUB_VALUE_LONG = {
              "--recurse-submodules"},
 }
 LONG_NAME = re.compile(r"--[A-Za-z0-9-]+\Z")
-ANSI_WORD = re.compile(r"\$'[^']*\\")
-GIT_PHRASE = re.compile(r"\bgit\b.*?\b(?:commit|push)\b", re.S)
-GIT_PHRASE_LOOSE = re.compile(r"git.*(?:commit|push)", re.S)
-STDIN_ARGS = ("xargs", "parallel")
-STDIN_ARGS_WORD = re.compile(r"\b(?:xargs|parallel)\b")
 MAIN_BRANCHES = {"main", "master"}
-NV_TOKEN = re.compile(r"(?<![\w-])(?:--no-v|-[A-Za-z]*n)")
-PUSH_NV_TOKEN = re.compile(r"(?<![\w-])--no-v")
-PUSH_FORCE_TOKEN = re.compile(r"(?<![\w-])(?:-[A-Za-z]*f|--for)|(?:^|[\s'\"])\+\S")
-PUSH_MIRROR_TOKEN = re.compile(r"(?<![\w-])--mirror")
-PUSH_BRANCH_TOKEN = re.compile(r"\b(?:main|master)\b|(?<![\w-])--(?:all|branches)\b|\*")
+ESCAPE = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|.)", re.S)
+GIT_WORD = re.compile(r"(?<![\w.-])git\b")
+COMMIT_WORD = re.compile(r"\bcommit\b")
+PUSH_WORD = re.compile(r"\bpush\b")
+LONG_NO_VERIFY = re.compile(r"(?<![\w-])--no-v")
+SHORT_N = re.compile(r"(?<![\w-])-[A-Za-z]*n[A-Za-z]*(?![\w-])")
+FORCE_TOKEN = re.compile(r"(?<![\w-])(?:--for|-[A-Za-z]*f[A-Za-z]*(?![\w-]))|(?<![\w+])\+\S")
+MIRROR_TOKEN = re.compile(r"(?<![\w-])--mirror")
+BRANCH_TOKEN = re.compile(
+    r"(?<![\w./-])(?:refs/heads/|heads/)?(?:main|master)(?![\w./-])|(?<![\w-])--(?:all|branches)(?![\w-])|(?:heads/|:)\*")
 
 
 def dynamic(word):
@@ -557,13 +557,9 @@ def git_calls(cmd):
     cmd = words(cmd)
     hits, commit_seen = [], False
     for g, word in enumerate(cmd):
-        literal = word.rsplit("/", 1)[-1] == "git"
-        if not literal and not dynamic(word):
+        if word.rsplit("/", 1)[-1] != "git" and not dynamic(word):
             continue
         k = g + 1
-        sub = None
-        unclear = False
-        dynamic_sub = False
         while k < len(cmd):
             x = cmd[k]
             if isinstance(x, Glued):
@@ -572,93 +568,62 @@ def git_calls(cmd):
                 k += 2
             elif x in GIT_BOOL_GLOBALS or ("=" in x and x.split("=", 1)[0] in GIT_EQ_GLOBALS):
                 k += 1
-            elif dynamic(x):
-                unclear = dynamic_sub = True
-                break
-            elif x.startswith("-"):
-                unclear = True
-                break
             else:
-                sub = x
                 break
+        sub = cmd[k] if k < len(cmd) else None
         if sub == "commit":
             commit_seen = True
             hits += commit_hits(cmd[k + 1:])
-        elif sub == "push":
+            break
+        if sub == "push":
             hits += push_hits(cmd[k + 1:])
-        elif unclear and (any(x in ("commit", "push") for x in cmd[k:]) or (literal and dynamic_sub)):
-            hits.append("ambiguous")
+            break
     return hits, commit_seen
 
 
-def git_mentions(text):
+def git_push_head(cmd):
+    cmd = words(cmd)
+    k = 1
+    while k < len(cmd) and cmd[k] == "-C":
+        k += 2
+    return k < len(cmd) and cmd[0] == "git" and cmd[k] == "push"
+
+
+def text_kinds(text):
+    text = ESCAPE.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else
+                      chr(int(m.group(2), 8) & 0xFF) if m.group(2) else " ", text)
     kinds = []
-    m = re.search(r"\bgit\b", text)
-    if m is None:
+    if GIT_WORD.search(text) is None:
         return kinds
-    rest = text[m.end():]
-    c = re.search(r"\bcommit\b", rest)
-    if c and NV_TOKEN.search(rest[c.end():]):
+    if COMMIT_WORD.search(text) and (LONG_NO_VERIFY.search(text) or SHORT_N.search(text)):
         kinds.append("no-verify")
-    p = re.search(r"\bpush\b", rest)
-    if p:
-        tail = rest[p.end():]
-        if PUSH_NV_TOKEN.search(tail):
+    if PUSH_WORD.search(text):
+        if LONG_NO_VERIFY.search(text):
             kinds.append("push-no-verify")
-        if PUSH_MIRROR_TOKEN.search(tail) or (
-                PUSH_FORCE_TOKEN.search(tail) and PUSH_BRANCH_TOKEN.search(tail)):
+        if MIRROR_TOKEN.search(text) or (FORCE_TOKEN.search(text) and BRANCH_TOKEN.search(text)):
             kinds.append("force-push")
     return kinds
-
-
-def cmd_mentions(cmd):
-    kinds = set()
-    spoken = [w for w in cmd if not isinstance(w, Redir)]
-    for w in cmd:
-        if isinstance(w, Redir):
-            kinds.update(git_mentions(w))
-    for i, w in enumerate(spoken):
-        if NUL in w and GIT_PHRASE_LOOSE.search(w):
-            kinds.add("ambiguous")
-        if GIT_PHRASE.search(w):
-            kinds.update(git_mentions(" ".join(spoken[i:])))
-    return kinds
-
-
-def reads_stdin_args(cmd):
-    spoken = words(cmd)
-    for k, w in enumerate(spoken):
-        if w.rsplit("/", 1)[-1] not in STDIN_ARGS:
-            continue
-        program = next((x for x in spoken[k + 1:] if not x.startswith("-")), "")
-        if program in TEXT_TOOLS:
-            continue
-        joined = " ".join(spoken)
-        return bool(GIT_PHRASE.search(joined) or (NUL in joined and GIT_PHRASE_LOOSE.search(joined)))
-    return False
 
 
 def git_verdict(text):
     try:
         cmds = Parser(text).run()
     except Ambiguous:
-        if (git_mentions(text) or (ANSI_WORD.search(text) and GIT_PHRASE_LOOSE.search(text))
-                or (STDIN_ARGS_WORD.search(text) and GIT_PHRASE.search(text))):
+        if text_kinds(text):
             return "call", ["ambiguous"]
-        return "inert", ["commit"] if re.search(r"\bcommit\b", text) else []
+        return "inert", ["commit"] if COMMIT_WORD.search(text) else []
     hits, commit_seen = [], False
     for c in cmds:
         found, seen = git_calls(c)
         hits += found
         commit_seen = commit_seen or seen
-        if reads_stdin_args(c):
-            hits.append("ambiguous")
     if hits:
         return "call", sorted(set(hits))
-    mentioned = sorted({kind for c in cmds for kind in cmd_mentions(c)})
-    if mentioned and not all(inert(c) for c in cmds):
-        return "mention", mentioned
-    return "inert", ["commit"] if commit_seen else []
+    extra = ["commit"] if commit_seen else []
+    if all(inert(c) or git_push_head(c) for c in cmds):
+        return "inert", extra
+    kinds = text_kinds(text)
+    return ("mention", kinds) if kinds else ("inert", extra)
 
 
 def verdict(text):
