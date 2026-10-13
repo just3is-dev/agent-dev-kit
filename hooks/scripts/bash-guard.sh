@@ -17,13 +17,23 @@ deny() {
 hook_cwd=$(json_field "$payload" "cwd" "")
 git_root=$(adk_command_git_root "$cmd" "$hook_cwd")
 
-if printf '%s' "$cmd" | grep -q 'git commit' && printf '%s' "$cmd" | grep -q -- '--no-verify'; then
-  deny "Запрещено: git commit --no-verify обходит гейты качества. Найди и устрани причину падения проверок."
-fi
-
-if printf '%s' "$cmd" | grep -Eq 'git push[^|;&]*( --force| -f)\b' \
-  && printf '%s' "$cmd" | grep -Eq '(^| )(origin|upstream) +(main|master)\b'; then
-  deny "Запрещено: force push в main/master."
+# Обход гейтов решается по вызову git commit/git push, а не по подстроке
+# (issue #265, ADR-028): флаги, ссылки и подкоманда читаются из слов простой
+# команды тем же лексером, что и вызов merge ниже.
+. "$(cd "$(dirname "$0")" && pwd)/lib/command-invocation.sh"
+git_rc=0
+adk_command_git_bypass "$cmd" || git_rc=$?
+if [ "$git_rc" -ne 1 ]; then
+  case $'\n'"$ADK_GIT_FINDINGS"$'\n' in
+    *$'\nno-verify\n'*) git_reason="Запрещено: git commit --no-verify обходит гейты качества. Найди и устрани причину падения проверок." ;;
+    *$'\nforce-push\n'*) git_reason="Запрещено: force push в main/master." ;;
+    *$'\npush-no-verify\n'*) git_reason="Запрещено: git push --no-verify обходит pre-push-хуки (гейты качества). Найди и устрани причину падения проверок." ;;
+    *) git_reason="Запрещено: хук не может однозначно разобрать вызов git commit/git push — не доказано, что в нём нет --no-verify/-n и принудительной записи в main/master (подстановка или переменная вместо флага, пути или ссылки, неизвестная опция git, незакрытая кавычка). Запиши вызов литерально: git commit -m \"…\", git push origin <ветка>; пути к файлам — после --." ;;
+  esac
+  if [ "$git_rc" -eq 2 ]; then
+    deny "В команде фраза про git commit с --no-verify/-n или про push с --force/+ссылкой в main/master стоит рядом с командой вне списка безопасных — хук не может отличить упоминание от вызова. Разделите на отдельные вызовы (поиск или чтение файла отдельно от остальных команд). Если это вызов: $git_reason"
+  fi
+  deny "$git_reason"
 fi
 
 # Политика merge (SPEC-002 AC-2, policies.merge из adk.config.json):
@@ -36,7 +46,6 @@ fi
 #   доказательство апрува.
 # Тестовые обходы сетевых вызовов: ADK_GUARD_PR_STATE=draft|ready|unknown,
 # ADK_GUARD_PR_REVIEW_DECISION=<reviewDecision, например APPROVED>.
-. "$(cd "$(dirname "$0")" && pwd)/lib/command-invocation.sh"
 merge_rc=0
 adk_command_invokes_pr_merge "$cmd" || merge_rc=$?
 deny_merge() {
@@ -117,7 +126,13 @@ EOF
 fi
 
 # --- Секрет-гейт: перед git commit сканируем изменения на ключи и .env ---
-if printf '%s' "$cmd" | grep -q 'git commit' && [ -n "$git_root" ]; then
+# Условие запуска расширено, не сужено (ADR-028): подстрока `git commit` ИЛИ
+# вызов commit по словам (git -C dir commit, git -c k=v commit, "$GIT" commit).
+git_commit_called=0
+case $'\n'"$ADK_GIT_FINDINGS"$'\n' in
+  *$'\ncommit\n'*) git_commit_called=1 ;;
+esac
+if { [ "$git_commit_called" -eq 1 ] || printf '%s' "$cmd" | grep -q 'git commit'; } && [ -n "$git_root" ]; then
   secret_re='sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{36}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----'
 
   hits=$( (git -C "$git_root" diff HEAD 2>/dev/null; git -C "$git_root" diff --cached 2>/dev/null) \
